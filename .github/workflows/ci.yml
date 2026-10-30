@@ -124,7 +124,7 @@ jobs:
       - name: stub host-only binaries for systemd-analyze verify
         if: always()
         run: |
-          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /usr/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver /usr/bin/rootlesskit /usr/bin/restic /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /opt/node-v22.23.3/bin/node; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/beacon /usr/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver /usr/bin/rootlesskit /usr/bin/restic /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /opt/node-v22.23.3/bin/node; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
           for b in beacon leviathan tofu; do install -D -m0755 /bin/true "$HOME/.local/bin/$b"; done
       - name: systemd-analyze verify over unit files
         # nullglob: an unmatched glob reaches systemd-analyze as a literal filename -> rc 1.
@@ -159,8 +159,11 @@ jobs:
           stub=$!
           trap 'kill $stub 2>/dev/null || true; sudo systemctl stop fleet-token-ci.service 2>/dev/null || true; sudo rm -f /etc/systemd/system/fleet-token-ci.service; sudo systemctl daemon-reload; sudo systemctl reset-failed fleet-token-ci.service 2>/dev/null || true' EXIT
           for _ in $(seq 1 20); do (echo > /dev/tcp/127.0.0.1/18795) 2>/dev/null && break; sleep 0.5; done
+          # The mint is tested on its own, so the unit's own follow-up keys are
+          # dropped. `[ -]*` covers ExecStartPost=- too: systemd ignores that failure, so
+          # this sed is belt-and-braces rather than what keeps the step green.
           sed -e "s|%h/.config/fleet-worker/nishfleet-worker.private-key.pem|$d/app.pem|" \
-              -e '/^OnFailure=/d' -e '/^ExecStartPost=/d' \
+              -e '/^OnFailure=/d' -e '/^ExecStartPost=[ -]*/d' \
               -e 's|^Environment=GITHUB_API_URL=.*|Environment=GITHUB_API_URL=http://127.0.0.1:18795|' \
               -e "s|^\[Service\]|[Service]\nUser=$(id -un)|" "$u" | sudo tee /etc/systemd/system/fleet-token-ci.service >/dev/null
           sudo systemctl daemon-reload
@@ -294,8 +297,13 @@ jobs:
           real_home=$(getent passwd "$(id -u)" | cut -d: -f6)
           test -n "$real_home"
           tmp_home=$(mktemp -d)
-          export HOME="$tmp_home" RUNNER_TEMP="$tmp_home/runner-temp"
+          export HOME="$tmp_home" RUNNER_TEMP="$tmp_home/runner-temp" CREDENTIALS_DIRECTORY="$tmp_home/.cred-store/nishfleet-agent"; cred_flags="--tmpfs $tmp_home/.cred-store/nishfleet-agent --tmpfs $tmp_home/.cred-store"; sibling="$tmp_home/.cred-store/nishfleet-agent-2"
           if [ "$HOME" = "$real_home" ] || [ -z "$HOME" ]; then echo "refusing to run against the real home directory"; exit 1; fi
+          # On the runner the App key is a systemd credential, so a jail must hide the
+          # credential directory the same way it hides $HOME/.config/fleet-worker.
+          # agent.yml hides the unit's directory and the store that holds it ($cred_hide),
+          # which is what keeps a sibling runner's copy of the same key out of reach, so
+          # the drill plants one in each (fleet-ops#10957).
           # Plant only where nothing exists, so a login is never overwritten.
           test ! -e "$HOME/.config/gh/hosts.yml"
           test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
@@ -307,7 +315,7 @@ jobs:
           bk1=$HOME/.claude-ci-backup
           bk2=$HOME/backups-claude-ci
           test ! -e "$seat_a" && test ! -e "$bk1" && test ! -e "$bk2" && test ! -e "$HOME/.claude/.credentials.json" && test ! -e "$HOME/.claude.json"
-          mkdir -p "$seat_a" "$bk1" "$bk2" "$HOME/.claude" "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare" "$HOME/.config/fleet-ops" "$HOME/.config/fleet-worker"
+          mkdir -p "$seat_a" "$bk1" "$bk2" "$HOME/.claude" "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare" "$HOME/.config/fleet-ops" "$HOME/.config/fleet-worker" "$CREDENTIALS_DIRECTORY" "$sibling"
           echo planted > "$bk1/creds"
           echo planted > "$bk2/creds"
           # The jail lines' hide lists come from agent.yml's own claude_hides function.
@@ -324,21 +332,18 @@ jobs:
           echo 'CLOUDFLARE_API_TOKEN=planted' > "$HOME/.config/cloudflare/deploy-ci.env"
           echo visible > "$HOME/.config/control"
           test ! -e "$HOME/.config/fleet-ops/planted-seat"
-          test ! -e "$HOME/.config/fleet-worker/planted-key"
-          trap 'rm -rf "$seat_a" "$bk1" "$bk2" "$tmp_home"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
+          test ! -e "$HOME/.config/fleet-worker/planted-key" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key" -a ! -e "$sibling/planted-key"
+          trap 'rm -rf "$seat_a" "$bk1" "$bk2" "$tmp_home"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key" "$CREDENTIALS_DIRECTORY/planted-key" "$sibling/planted-key"' EXIT
           echo planted > "$HOME/.config/fleet-ops/planted-seat"
-          echo planted > "$HOME/.config/fleet-worker/planted-key"
+          echo planted > "$HOME/.config/fleet-worker/planted-key"; echo planted > "$CREDENTIALS_DIRECTORY/planted-key"; echo planted > "$sibling/planted-key"
           sealed=0
           for line in "${lines[@]}"; do
             test -n "$line"
-            # The line's own variables expand, and so does its ${VAR:+...}, which
-            # leaves nothing behind on a runner that sets no VAR. No eval of file
-            # text. bwrap refuses the unexpanded token, so a line that keeps it
-            # fails here. The pattern escapes its $, {, } and " so the text it
-            # matches stays literal.
-            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}; exp=${exp//\$RUNNER_TEMP/$RUNNER_TEMP}; exp=${exp//\$\{CREDENTIALS_DIRECTORY:+--tmpfs \"\$CREDENTIALS_DIRECTORY\"\}/${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"}}
+            # The line's own variables expand. No eval of file text. bwrap refuses
+            # an unexpanded token, so a line that keeps one fails here.
+            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}; exp=${exp//\$RUNNER_TEMP/$RUNNER_TEMP}; exp=${exp//\$cred_hide/$cred_flags}
             read -ra jail <<< "$exp --"
-            "${jail[@]}" test -r "$HOME/.config/control"
+            "${jail[@]}" test -r "$HOME/.config/control" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key" -a ! -e "$sibling/planted-key"
             # No engine but claude can read either Claude seat's login: the bound
             # files are empty and the seat directory is an empty tmpfs.
             test "$("${jail[@]}" cat "$seat_a/.credentials.json" 2>/dev/null)" != planted
@@ -354,16 +359,16 @@ jobs:
             case "$line" in
               *'--tmpfs $HOME/.config/fleet-ops'*)
                 "${jail[@]}" test ! -e "$HOME/.config/fleet-ops/planted-seat"
-                "${jail[@]}" test ! -e "$HOME/.config/fleet-worker/planted-key"
+                "${jail[@]}" test ! -e "$HOME/.config/fleet-worker/planted-key" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key" -a ! -e "$sibling/planted-key"
                 sealed=$((sealed + 1)) ;;
             esac
           done
           test "$sealed" -ge 1
           # The claude lane sees its own seat and only that one.
           for v in a b; do
-            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}; l=${l//\$RUNNER_TEMP/$RUNNER_TEMP}; l=${l//\$\{CREDENTIALS_DIRECTORY:+--tmpfs \"\$CREDENTIALS_DIRECTORY\"\}/${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"}}
+            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}; l=${l//\$RUNNER_TEMP/$RUNNER_TEMP}; l=${l//\$cred_hide/$cred_flags}
             read -ra jail <<< "$l --"
-            "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
+            "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key" -a ! -e "$sibling/planted-key"
             "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
             got_a=$("${jail[@]}" cat "$seat_a/.credentials.json" 2>/dev/null || true)
             got_b=$("${jail[@]}" cat "$HOME/.claude/.credentials.json" 2>/dev/null || true)
@@ -374,7 +379,7 @@ jobs:
             else test "$got_a" != planted && test "$got_b" = planted && test "$got_j" = planted; fi
           done
           test -r "$HOME/.config/gh/hosts.yml"
-          rm -f "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"
+          rm -f "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key" "$CREDENTIALS_DIRECTORY/planted-key" "$sibling/planted-key"
           rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control"
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
         # systemd expands ${...} and % specifiers before any shell runs. Refused on Exec*= lines:
@@ -595,19 +600,19 @@ jobs:
           ! grep -E '^WorkingDirectory=(/home/nish/?|~|%h/?)$' "$u" || { echo "$u: WorkingDirectory must not be the home dir"; exit 1; }
           grep -qx 'Environment=CLAUDE_CONFIG_DIR=/home/nish/.claude-vps' "$u" || { echo "$u: CLAUDE_CONFIG_DIR is not set inline"; exit 1; } # gitleaks:allow
       - name: Sweep re-sends red claim PRs (RED_REWORK)
-        # Runs the list job's own RED_REWORK program, read out of the workflow
-        # with the CHECK_DEFS it shares with the missing-checks case, against
-        # every case in config/sweep-rework-cases.json. The grep lines pin the
-        # wiring: the program's verdict feeds the sweep's pick list, and a
+        # Runs the re-dispatch step's own RED_REWORK program, read out of the
+        # workflow with the CHECK_DEFS it shares with the missing-checks case,
+        # against every case in config/sweep-rework-cases.json. The grep lines pin
+        # the wiring: the program's verdict feeds the sweep's pick list, and a
         # live newest run is still skipped.
         if: always()
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          defs=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.CHECK_DEFS' "$f")
-          prog=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.RED_REWORK' "$f")
+          defs=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .env.CHECK_DEFS' "$f")
+          prog=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .env.RED_REWORK' "$f")
           [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
-          run=$(yq '.jobs.list.steps[] | select(.id == "list") | .run' "$f")
+          run=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .run' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
           for n in '"$CHECK_DEFS $RED_REWORK"' '--argjson d "$red"' '$o[], $d[]' 'run live, skip'; do
             grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing sweep wiring: $n"; exit 1; }
@@ -660,10 +665,9 @@ jobs:
           f=.github/workflows/agent-dispatch.yml
           t=$RUNNER_TEMP/sweep-deleted-issue
           mkdir -p "$t/bin" "$t/data"
-          yq '.jobs.list.steps[] | select(.id == "list") | .run' "$f" > "$t/list.sh"
-          [ -s "$t/list.sh" ] && ! grep -qx null "$t/list.sh"
-          defs=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.CHECK_DEFS' "$f")
-          prog=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.RED_REWORK' "$f")
+          for s in redispatch list; do yq ".jobs.list.steps[] | select(.id == \"$s\") | .run" "$f" > "$t/$s.sh"; [ -s "$t/$s.sh" ] && ! grep -qx null "$t/$s.sh" || exit 1; done
+          defs=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .env.CHECK_DEFS' "$f")
+          prog=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .env.RED_REWORK' "$f")
           [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
           cat > "$t/bin/gh" <<'MOCK'
           #!/usr/bin/env bash
@@ -687,7 +691,7 @@ jobs:
               exit 1 ;;
             "issue view"*) jq -n --arg n "${args#view }" '{comments: (if $n | startswith("7003") then [range(0; 3) | {body: ("x" * 60000)}] else [] end)}' | emit ;;
             "pr list "*--head*) echo '0' | emit ;;
-            "pr list"*) serve "$d/prs.json" ;;
+            "pr list"*) [ -z "${FAIL_PR_LIST:-}" ] || { echo 'gh: HTTP 502 (pr list)' >&2; exit 1; }; serve "$d/prs.json" ;;
             "pr view"*) n=${args#view }; serve "$d/pr-${n%% *}.json" ;;
             "run view"*) echo '"completed"' | emit ;;
             "api graphql"*) echo '{"data":{"repository":{"mergeQueue":{"entries":{"nodes":[]}}}}}' | emit ;;
@@ -715,9 +719,12 @@ jobs:
           jq -c --argjson r "$red" 'map(select(.number==8002))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:$r}' "$t/data/prs.json" > "$t/data/pr-8002.json"
           for body in 1 0; do
             : > "$t/out"
+            env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x BODY_ON_STDOUT=$body \
+              CHECK_DEFS="$defs" RED_REWORK="$prog" bash -eo pipefail "$t/redispatch.sh" > "$t/err" 2>&1 || { echo "the claim-PR re-dispatch exited $? on a deleted issue (BODY_ON_STDOUT=$body)"; exit 1; }
+            prs=$(sed -n 's/^prs=//p' "$t/out"); : > "$t/out"
             rc=0
             env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x BODY_ON_STDOUT=$body \
-              ISSUE='' CLOSED='' CHECK_DEFS="$defs" RED_REWORK="$prog" bash -eo pipefail "$t/list.sh" > "$t/err" 2>&1 || rc=$?
+              ISSUE='' CLOSED='' PRS="$prs" bash -eo pipefail "$t/list.sh" >> "$t/err" 2>&1 || rc=$?
             cat "$t/err"
             [ "$rc" -eq 0 ] || { echo "the sweep exited $rc on a deleted issue (BODY_ON_STDOUT=$body)"; exit 1; }
             want='["claim/issue-7001","claim/issue-7002","claim/issue-7003"]'
@@ -725,6 +732,18 @@ jobs:
             [ "$got" = "$want" ] || { echo "refs: got $got, want $want (BODY_ON_STDOUT=$body)"; exit 1; }
             grep -F '#9502: issue gone' "$t/err" >/dev/null || { echo "the skipped issue was not reported (BODY_ON_STDOUT=$body)"; exit 1; }
           done
+          # A read fault in the re-dispatch no longer costs the hour (fleet-ops#9368): the step is
+          # continue-on-error, so GitHub hands the pick empty outputs and outcome=failure. The pick
+          # must still exit 0 with the queued issues, and say why no claim PRs were appended.
+          : > "$t/out"; rc=0
+          env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x FAIL_PR_LIST=1 CHECK_DEFS="$defs" RED_REWORK="$prog" \
+            bash -eo pipefail "$t/redispatch.sh" > "$t/err2" 2>&1 || rc=$?
+          [ "$rc" -ne 0 ] && [ ! -s "$t/out" ] || { echo "the re-dispatch did not fail clean on a pr list fault (rc=$rc, outputs: $(cat "$t/out"))"; exit 1; }
+          env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x ISSUE='' CLOSED='' PRS='' REDISPATCH=failure \
+            bash -eo pipefail "$t/list.sh" >> "$t/err2" 2>&1 || { echo "the sweep exited $? after a failed re-dispatch"; exit 1; }
+          cat "$t/err2"
+          grep -F 'claim-PR re-dispatch failed; this run appends no claim PRs' "$t/err2" >/dev/null || { echo "the pick did not warn about the failed re-dispatch"; exit 1; }
+          [ "$(sed -n 's/^refs=//p' "$t/out")" = '["claim/issue-7001","claim/issue-7002"]' ] || { echo "refs after a failed re-dispatch: got $(sed -n 's/^refs=//p' "$t/out")"; exit 1; }
       - name: Dispatch pause flag skips dispatch, never the guards
         # A paused queue must still hold risky PRs: the weekly update once
         # disabled agent-dispatch, and hold-risky could not run in that window

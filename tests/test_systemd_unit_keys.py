@@ -2588,24 +2588,58 @@ def test_daily_host_config_timer_is_retired() -> None:
     assert (INSTALLED / "fleet-host-config-boot.timer").exists(), "the boot run stays"
 
 
-def test_grafana_provisioning_reload_retries_through_a_grafana_restart() -> None:
-    """fleet-ops#10171: the provisioning reload unit carries the keys a Grafana restart needs."""
+def test_grafana_provisioning_reload_never_spends_its_start_limit() -> None:
+    """fleet-ops#10848: a .path unit dies with unit-start-limit-hit the moment the unit it
+    triggers spends its start limit (systemd 255, src/core/path.c,
+    path_trigger_notify_impl), and a .path unit cannot restart itself, so the reload
+    service must never spend its burst. 2026-10-29 six Restart=on-failure starts spent
+    StartLimitBurst=6 and fleet-grafana-provisioning.path stayed failed until 14:39.
+    """
     keys = _unit_keys(GRAFANA_PROVISIONING)
-    assert keys["Restart"] == ["on-failure"], "a clean exit must not restart, and a failure restarts only inside the start limit"
-    assert keys["RestartMode"] == ["direct"], "systemd 254+ restarts without the failed state, so the token unit's start waits the retries out instead of failing with them, and OnFailure= fires once"
+    assert not {"Restart", "RestartSec", "RestartMode"} & keys.keys(), "a restart loop spends the burst, and a spent burst kills fleet-grafana-provisioning.path"
     assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"], "a real outage must still page"
     assert "fleet-grafana.service" not in keys.get("After", []), "fleet-grafana.service has After= on the token unit that starts this one, so an ordering edge back would hold a Grafana start until its timeout"
-    interval = int(keys["StartLimitIntervalSec"][0])
+    assert "--retry-max-time 60" in keys["ExecStart"][0], "the one start has to outlast the 30 s a Grafana restart holds the reload out (fleet-ops#10038)"
+    interval = _seconds("StartLimitIntervalSec", keys["StartLimitIntervalSec"][0])
     burst = int(keys["StartLimitBurst"][0])
-    restart = int(keys["RestartSec"][0])
-    attempt = int(keys["TimeoutStartSec"][0])
     assert interval > 0 and burst > 0, "a zero interval disables the start limit"
-    assert burst >= 3, "one retry does not outlast a Grafana start"
-    assert burst * restart < interval, "the limit must be reachable inside its interval"
-    assert (burst - 1) * restart >= 60, "the 2026-10-23 Grafana restart held the reload out for 30 s"
+    path = _unit_keys(ROOT / "systemd/fleet-grafana-provisioning.path")
+    window = _seconds("TriggerLimitIntervalSec", path["TriggerLimitIntervalSec"][0])
+    windows = -(-interval // window)
+    deliverable = windows * int(path["TriggerLimitBurst"][0]) + 2
+    assert burst > deliverable, "the path unit delivers TriggerLimitBurst starts a trigger window and the token unit adds its timer and one per Grafana start, so the service's own burst must sit above what one interval of trigger rate can deliver"
+    attempt = int(keys["TimeoutStartSec"][0])
+    flags = keys["ExecStart"][0]
+    retry_window = int(re.search(r"--retry-max-time (\d+)", flags).group(1))
+    one_attempt = int(re.search(r"--max-time (\d+)", flags).group(1))
+    assert attempt >= 5 + 2 * (retry_window + one_attempt), (
+        "curl retries until --retry-max-time and then lets the attempt in flight run to --max-time "
+        "(man curl, --retry-max-time), so one endpoint holds --retry-max-time + --max-time and the "
+        "sleep 5 plus two endpoints must fit inside TimeoutStartSec, or systemd kills the reload "
+        "half-loaded"
+    )
     token = _unit_keys(GRAFANA_TOKEN)
-    assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost, which is what failed with it"
-    assert int(token["TimeoutStartSec"][0]) > (burst - 1) * restart + attempt, "the token unit waits on the retries from its ExecStartPost, so its own timeout must cover the retry spacing plus one attempt at the reload unit's own TimeoutStartSec ceiling"
+    assert int(token["TimeoutStartSec"][0]) > attempt, "the token unit waits on the reload from its ExecStartPost, so its own timeout must cover the reload unit's ceiling"
+    assert token["ExecStartPost"][0].startswith("-"), "a reload that cannot get through pages through the reload unit's own OnFailure=, so it must not fail the mint with it"
+    assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost"
+
+
+def test_grafana_provisioning_reload_fails_loud_without_a_password(tmp_path: Path) -> None:
+    """The reload unit's own ExecStart, run the way systemd runs it: a missing or empty
+    admin password file fails the unit before either reload call, so a provisioning
+    change is never half-loaded (fleet-ops#10848).
+    """
+    keys = _unit_keys(GRAFANA_PROVISIONING)
+    command = keys["ExecStart"][0].replace("%h", str(tmp_path)).replace("$$", "$")
+    target = tmp_path / ".config" / "fleet-ops" / "grafana-admin-password"
+    target.parent.mkdir(parents=True)
+    for body in (None, ""):
+        target.unlink(missing_ok=True)
+        if body is not None:
+            target.write_text(body)
+        proc = subprocess.run(["/bin/bash", "-c", command], capture_output=True, text=True, timeout=30)
+        assert proc.returncode == 1, f"a {body!r} password file must fail the unit: {proc.stdout} {proc.stderr}"
+        assert "grafana admin password file missing or empty" in proc.stderr
 
 
 RESTART_POLICIES = {"always", "on-success", "on-failure", "on-abnormal", "on-abort", "on-watchdog"}

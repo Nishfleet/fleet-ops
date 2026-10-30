@@ -90,6 +90,26 @@ contactPoints:
               {{- end -}}
 
   - orgId: 1
+    name: nish-ask-dispatch
+    receivers:
+      - uid: nish-ask-gh-issues
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $__file{/run/secrets/github-token/token}
+          maxAlerts: 1
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- coll.Dict "title" (printf "grafana alert: %s" .Labels.alertname)
+                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC. Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting. No worker can pick this one up: the board it names is private, and only the account owner can give the worker tokens read on it." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "labels" (coll.Slice "needs-nish-decision") | data.ToJSON -}}
+              {{- end -}}
+
+  - orgId: 1
     name: prometheus-alert-dispatch
     receivers:
       - uid: prometheus-alert-gh-issues
@@ -195,6 +215,29 @@ policies:
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 7d
+      # A rule only the account owner can act on must not reach the worker queue.
+      # fleet-ops#10881: the ask rule reads the private Nishfleet/nish-vault board, and
+      # every worker token is minted with a body naming one repository
+      # (systemd/fleet-worker-github-token@.service), so a worker running a fleet-ops
+      # issue gets 404 there. The alert counted 40 open asks forever, and each firing
+      # filed an agent-ready issue that dispatched a worker which parked
+      # blocked-on: orchestrator: one worker run and one orchestrator run per day, with
+      # no ask reachable. Its issue goes to Nish instead, who can read the board and
+      # grant the read. DatasourceError and DatasourceNoData are excluded, so a read
+      # error on the ask rule still reaches the catch-all below and the fleet fixes the
+      # data source. This route is terminal, so an ask alert stops here. It re-files
+      # every 24h, the catch-all's cadence: a needs-nish-decision issue starts no
+      # worker run, so the plan route's weekly rule against re-filing the same
+      # decision does not apply, and the ask rule keeps the daily pressure its 4h
+      # no-slip guarantee needs.
+      - receiver: nish-ask-dispatch
+        object_matchers:
+          - [audience, "=", nish]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: ['...']
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 24h
       - receiver: fleet-alert-dispatch
         object_matchers:
           - [alertname, "=~", ".+"]

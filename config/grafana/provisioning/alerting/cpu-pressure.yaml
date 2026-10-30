@@ -10,9 +10,31 @@
 # alert needs roughly 30 minutes of real queueing before it fires.
 #
 # On 2026-10-05 the box ran load 21 on 12 cores with nothing on the fleet view
-# showing where the time went (fleet-ops#9304). Measured on this box: pressure
-# sits near 2% when idle and reads 33% when the cores are saturated, so 25% is
-# above ordinary churn and well below a genuinely blocked box.
+# showing where the time went (fleet-ops#9304).
+#
+# The 25% threshold came from "pressure sits near 2% when idle and reads 33%
+# when the cores are saturated, so 25% is above ordinary churn". The ten days
+# 2026-10-21 to 2026-10-30 (one sample a minute) falsify that. Three events
+# fired it there, and the peak of the 15m rate within 30 minutes of each one was
+# 43.6% (10-21), 60.0% (10-23, which fired twice) and 34.6% (10-30, filed as
+# #11127), while the processor read 79.1%, 70.1% and 67.7% busy at the moment
+# each fired. The box was working, not stuck: /proc/pressure/cpu reports
+# `full avg10=0.00 avg60=0.00 avg300=0.00 total=0`, so work that could not run
+# has never been observed on this host. On CPU the kernel publishes `some` only,
+# and `some` counts *any* single waiting task, so on a host running 28 agent
+# runners (measured 2026-10-30) it rises whenever the fleet is busy; the 10-21
+# event closed as "transient burst, no repo change needed".
+#
+# Time above each level over those ten days: 135 min above 25, 45 above 35, 21
+# above 40, 7 above 45, and the maximum was 60.0.
+#
+# 40 keeps both larger events (43.6 and 60.0) and drops the 34.6 one, which ran
+# at 67.7% busy with `full` at 0. At the 15m period it leaves 21 minutes of
+# signal in ten days: enough to fire on an event that holds, and far from the
+# 135 minutes the 25 threshold kept answering. The split is fitted and scored on
+# the same ten days, so it is provisional: the next firing is the held-out case,
+# and if that one reads 40 or above with `full` still 0, then busy is the wrong
+# signal for this rule and busy is where it should move.
 #
 # Severity warning: the policy tree files a fleet-ops issue and does not page (fleet-ops#9445).
 apiVersion: 1
@@ -55,7 +77,7 @@ groups:
             datasourceUid: __expr__
             model:
               conditions:
-                - evaluator: {params: [25], type: gt}
+                - evaluator: {params: [40], type: gt}
                   operator: {type: and}
                   query: {params: [C]}
                   reducer: {params: [], type: last}
@@ -71,8 +93,8 @@ groups:
         noDataState: OK
         execErrState: Error
         annotations:
-          summary: CPU pressure above 25% for 15 minutes, so work is queueing for cores.
-          description: 'Pressure has held at {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.1f" }}%{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} for 15 minutes while the processor read {{ with index $values "B" }}{{ if .Value }}{{ .Value | printf "%.1f" }}%{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} busy. Busy is the share of all cores in use; pressure is the share of time runnable work could not get a core. Runners per repo, the router and sessions all share this host, and none of them is named by this rule, so use `systemctl status` on the host to find the unit. See #9306 for per-unit and per-container CPU, which no exporter on this box publishes yet.'
+          summary: CPU pressure has held high for 15 minutes, so runnable work is waiting for cores.
+          description: 'Pressure has held at {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.1f" }}%{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} for 15 minutes while the processor read {{ with index $values "B" }}{{ if .Value }}{{ .Value | printf "%.1f" }}%{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} busy. Busy is the share of all cores in use; pressure is the share of time runnable work could not get a core. Runners per repo, the router and sessions all share this host, and none of them is named by this rule, so use `systemctl status` on the host to find the unit. No exporter on this box publishes per-unit CPU (#9306 closed 2026-10-29 as a process add-on), so the consumer is a manual read of `ps -eo pcpu,args --sort=-pcpu` on the host.'
         labels:
           severity: warning
           signal: cpu-pressure

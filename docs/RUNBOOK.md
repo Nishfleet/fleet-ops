@@ -159,7 +159,12 @@ It never uses `git pull`: a polluted `FETCH_HEAD` there merges into
 `fatal: Cannot fast-forward to multiple branches` and silently stops every
 deploy (fleet-ops#8893). A trailing `merge-base --is-ancestor` pair
 asserts `HEAD == origin/main`, so a stopped deploy is a failed unit rather
-than a lagging clone.
+than a lagging clone. Two things keep that true: the workflow's two deploy steps
+come first and its security probe runs last in the same job, so a red probe still
+fails the run and can never skip a deploy step, and
+`fleet-clone-lag.timer` (every 5 min) fails the unit when the oldest commit on
+`origin/main` the clone lacks is 35 min old, printing the fix
+in its message (fleet-ops#10046).
 Its LINK-GUARD passes fail the unit while any live symlink under
 `~/.config/systemd/user/`, `~/.local/bin/`, `~/.pi/agent/` or the vault is
 broken or resolves into a throwaway root (`*worktrees/*`, `agent-state`,
@@ -264,7 +269,10 @@ compare the rule's `expression` with the repo file. Wire the pair once after mer
 `fleet-litellm-proxy-config` (README "Wiring a NEW unit"): `systemctl --user link` both
 files, then `systemctl --user enable --now fleet-grafana-provisioning.path`. Until it is
 wired, reload by hand with `systemctl --user start fleet-grafana-provisioning.service`
-once linked, or `curl -X POST` the two endpoints.
+once linked, or `curl -X POST` the two endpoints. The service never restarts itself: systemd
+fails the `.path` unit with result `unit-start-limit-hit` the moment the service it triggers
+spends its start limit, and a `.path` unit cannot restart itself, so the wait for a Grafana
+restart lives inside the one start (fleet-ops#10848).
 
 Cloudflare cost alarm (fleet-ops#9355): `config/grafana/provisioning/alerting/cloudflare-spend.yaml`
 evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy-ci

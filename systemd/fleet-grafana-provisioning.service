@@ -1,37 +1,39 @@
 [Unit]
 Description=Reload Grafana alerting and datasource provisioning (fleet-ops#9449 follow-up)
 Documentation=https://grafana.com/docs/grafana/latest/developers/http_api/admin/#reload-provisioning-configurations
-# 2026-10-23 18:01:57 IST a Grafana restart (fleet-ops#10038) met this unit's
-# reload mid-flight: the reload could not reach Grafana for 30 s, so this unit
-# failed, and fleet-grafana-github-token.service failed with it, because its
-# ExecStartPost runs this very `systemctl start`.
-# Restart=on-failure with RestartMode=direct (systemd 254+, 255 on this host):
-# the retry restarts without passing through the failed state, so the token
-# unit's start waits the retries out instead of failing with them, and
-# OnFailure= fires once, when the start limit is spent. A retry whose
-# ExecCondition= below exits 1 (Grafana stopped) skips the unit, and the skip
-# counts as a success, which is what stops the retry loop once Grafana is gone
-# for good.
+# 2026-10-29 01:53 IST the reload could not get past Grafana's blocked admin
+# login for 2.5 h. Six Restart=on-failure starts 20 s apart spent
+# StartLimitBurst=6, and fleet-grafana-provisioning.path died with result
+# unit-start-limit-hit: systemd 255 propagates the triggered unit's spent start
+# limit to the .path unit (src/core/path.c, path_trigger_notify_impl), and a
+# .path unit cannot restart itself (systemd-analyze verify rejects Restart= for
+# one), so the watcher stayed failed until 14:39 and the daily update check
+# failed on it. The burst below is therefore sized for trigger rate only and
+# never for a retry loop: this unit starts once per trigger and waits inside
+# that one start.
+# Trigger rate is what the burst has to cover: the path unit's
+# TriggerLimitBurst=5/60s, plus the token unit's one start every 20 min, so six
+# starts a minute is the ceiling and ten is the limit.
 # No After=fleet-grafana.service, even though the reload needs Grafana up: this
 # unit is started from that token unit's ExecStartPost, and fleet-grafana.service
 # has After= on the token unit, so an ordering edge back to Grafana would hold a
-# Grafana start until its timeout. The retries are the wait: six starts,
-# 20 s apart, inside the 300 s window the burst has to fit, which outlasts
-# the 30 s Grafana window.
-StartLimitIntervalSec=300
-StartLimitBurst=6
+# Grafana start until its timeout. The wait is the curl retry below, which
+# outlasts the 30 s a Grafana restart holds the reload out (fleet-ops#10038).
+StartLimitIntervalSec=60s
+StartLimitBurst=10
 OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 Type=oneshot
-Restart=on-failure
-RestartMode=direct
-RestartSec=20
 # A stopped Grafana reads the files at its next start, so there is nothing to
 # reload: exit 1 here skips the unit without failing it (man systemd.service,
 # ExecCondition=).
 ExecCondition=/usr/bin/systemctl --user is-active --quiet fleet-grafana.service
 # git merge writes the changed files one after another; let the last one land.
+#
+# The wait lives inside the one start, so no retry ever spends the burst above:
+# --retry-max-time 60 per endpoint covers a Grafana restart, and curl does not
+# retry a 4xx, so a blocked admin login fails once instead of being hammered.
 ExecStartPre=/bin/sleep 5
 # The stock admin API, same calls as the "Reload provisioning configurations"
 # section of the Grafana HTTP API docs. Basic auth as admin, with the password
@@ -39,5 +41,9 @@ ExecStartPre=/bin/sleep 5
 # so it never reaches argv (docs/RUNBOOK.md, LiteLLM admin-API note). Both
 # endpoints are always tried; the unit fails (and fleet-unit-failed alerts) if
 # the password file is missing or empty, or either call answers non-2xx.
-ExecStart=/bin/bash -c "set -euo pipefail; f=$$1; test -s \"$$f\" || { echo \"grafana admin password file missing or empty: $$f\" >&2; exit 1; }; rc=0; for e in alerting datasources; do /usr/bin/curl -fsS --connect-timeout 5 --max-time 30 --retry 3 --retry-connrefused -X POST --config <(/usr/bin/sed 's/[\"\\\\]/\\\\&/g; s/^/user = \"admin:/; s/$$/\"/' \"$$f\") \"http://127.0.0.1:3001/api/admin/provisioning/$$e/reload\" || rc=1; echo; done; exit $$rc" bash %h/.config/fleet-ops/grafana-admin-password
-TimeoutStartSec=120
+ExecStart=/bin/bash -c "set -euo pipefail; f=$$1; test -s \"$$f\" || { echo \"grafana admin password file missing or empty: $$f\" >&2; exit 1; }; rc=0; for e in alerting datasources; do /usr/bin/curl -fsS --connect-timeout 5 --max-time 30 --retry 8 --retry-delay 5 --retry-max-time 60 --retry-connrefused -X POST --config <(/usr/bin/sed 's/[\"\\\\]/\\\\&/g; s/^/user = \"admin:/; s/$$/\"/' \"$$f\") \"http://127.0.0.1:3001/api/admin/provisioning/$$e/reload\" || rc=1; echo; done; exit $$rc" bash %h/.config/fleet-ops/grafana-admin-password
+# One start only: sleep 5, then two endpoints that can each hold
+# --retry-max-time 60 plus the --max-time 30 of the attempt in flight when the
+# retry timer runs out (man curl, --retry-max-time), which is 185 s, inside
+# TimeoutStartSec and inside the token unit's 300 s.
+TimeoutStartSec=190
