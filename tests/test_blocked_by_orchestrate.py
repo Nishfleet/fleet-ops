@@ -30,7 +30,7 @@ case "$*" in
   *issues/comments*) echo '[]' | jq -c "$q" ;;
   *"no:label"* | *agent-in-progress*) echo '[]' ;;
   "pr list"*) echo '[]' ;;
-  "issue list"*) jq -r "$q" "$FAKE_DIR/list.json" 2>/dev/null || echo '[]' ;;
+  "issue list"*) [ -f "$FAKE_DIR/list.json" ] && jq -r "$q" "$FAKE_DIR/list.json" ;;
   "label create"*) ;;
   "api repos/o/r/issues/"*) n=${2##*/}; jq -r "$q" "$FAKE_DIR/issue-$n.json" 2>/dev/null || jq -r "$q" "$FAKE_DIR/issue.json" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
@@ -133,6 +133,16 @@ def test_dependency_blocked_ready_issues_carry_the_dep_label_the_alert_excludes(
         "issue edit 2 -R o/r --add-label agent-blocked-dep",
         "issue edit 4 -R o/r --remove-label agent-blocked-dep"]
     assert all(l.endswith("token=x") for l in raw), "the sync write is the job token: it fires no run"
+
+
+def test_the_alert_excludes_the_label_the_sweep_carries():
+    yml = (ROOT / "config/grafana/provisioning/alerting/fleet-scorecard.yaml").read_text()
+    assert "-label:agent-blocked-dep" in yml
+    assert "agent-blocked-dep" in pathlib.Path(WF).read_text()
+
+
+def test_the_syncs_no_event_claim_is_a_property_of_the_workflow():
+    assert _y(f"{LIST_STEP} | .env.GH_TOKEN").strip() == "${{ github.token }}"
 
 
 def test_scheduled_sweep_syncs_the_dep_label_without_gating_the_queue(tmp_path):
