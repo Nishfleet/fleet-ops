@@ -35,6 +35,10 @@ NINE = [
     "dequeued", "auto_merge_disabled", "closed", "auto_merge_enabled",
     "synchronize", "labeled", "opened", "reopened", "ready_for_review",
 ]
+SEVEN = [
+    "dequeued", "auto_merge_enabled", "synchronize", "labeled",
+    "opened", "reopened", "ready_for_review",
+]
 DRIVE_EIGHT = [t for t in NINE if t != "ready_for_review"]
 REF = "a" * 40
 ABSENT = "absent"
@@ -375,7 +379,9 @@ def test_the_check_runs_in_one_job_ci_needs_and_always():
 
 
 def test_real_fleet_ops_config_and_dispatcher_are_accepted_offline():
+    """The dispatcher keeps only the consumed types: closed and auto_merge_disabled
+    fire no job (fleet-ops#10944), so the enrolled-stub requirement drops to seven."""
     config = json.loads(CONFIG.read_text())
     assert [r["name"] for r in config["repos"]]
     dispatcher = yaml.safe_load(DISPATCHER.read_text())
-    assert dispatcher[True]["pull_request_target"]["types"] == NINE
+    assert dispatcher[True]["pull_request_target"]["types"] == SEVEN

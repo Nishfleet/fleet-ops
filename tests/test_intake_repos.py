@@ -7,9 +7,8 @@ ENROLLED = {r["name"]: r for r in CFG["repos"]}
 DEFERRED = {r["name"]: r for r in CFG["deferred"]}
 SWEEP_ONLY = {r["name"] for r in CFG["sweep_only"]}
 EXCLUDED = {r["name"] for r in CFG["excluded"]}
-NEW = ("TinyStudio.io-public", "aiconverter-app", "rera-report-card", "tether")
+NEW = ("TinyStudio.io-public", "aiconverter-app", "rera-report-card")
 UNHOOKED = (
-    "mailbox",
     "nish-vault",
     "claude-mods",
     "fleet-console-worker",
@@ -17,17 +16,22 @@ UNHOOKED = (
     "pi-runner-guard",
 )
 CONTROL_PLANE = ("claude-mods", "fleet-console-worker", "pi-runner-guard", "nish-vault", "owner-gate")
+GONE = ("tether", "mailbox")
 
 
-def test_the_one_unhooked_repo_whose_code_is_a_product_is_enrolled():
-    """mailbox is the only unhooked repo whose code a customer uses.
+def test_deleted_repos_appear_in_no_section():
+    """tether and mailbox were deleted, and a dead name in .repos makes later-sweep fail every pass.
 
-    The other five gate the fleet itself, so product intake is the wrong door for them.
+    later-sweep mints one App token per .repos name and lists that repo's open
+    issues; a deleted repo fails both, so the whole run prints failed=1.
+    tests/intake_stub_check.py reads the same 404 as "private or gone" and skips
+    it, so no CI gate catches this: fleet-ops#11087.
     """
-    entry = ENROLLED["mailbox"]
-    assert entry["product"] is True
-    assert set(ENROLLED["0509"]) <= set(entry)
-    assert "2026-10-28" in entry["enrolled_by"]
+    for name in GONE:
+        assert name not in ENROLLED, name
+        assert name not in DEFERRED, name
+        assert name not in SWEEP_ONLY, name
+        assert name not in EXCLUDED, name
 
 
 def test_repos_that_gate_the_fleet_itself_are_never_enrolled():

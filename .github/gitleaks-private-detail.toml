@@ -66,10 +66,15 @@ regexes = ['''^home/nish/\.config/fleet-worker/nishfleet-worker\.private-key\.pe
 condition = "AND"
 
 [[allowlists]]
-description = "The Hermes sandbox drop-in must name the paths its ReadWritePaths= grants (the unit file has no %h for a system unit, and no inline comment to carry gitleaks:allow); the line is re-added whenever a path is added to it"
+description = "The Hermes sandbox drop-in and its lock test must name the paths the unit grants (ReadWritePaths) and, since fleet-ops#9981, hides (InaccessiblePaths): the unit file has no %h for a system unit, and no inline comment to carry gitleaks:allow; the list is re-added whenever a path is added to it"
 targetRules = ["private-home-path"]
-paths = ['''(^|/)rootfs/etc/systemd/system/hermes-\.service\.d/sandbox\.conf$''']
-regexes = ['''home/nish/(\.hermes|\.local/state/hermes|\.config/gh|workspaces/tooling/nish-vault/00)''']
+paths = ['''(^|/)rootfs/etc/systemd/system/hermes-\.service\.d/sandbox\.conf$''', '''^tests/test_systemd_unit_keys\.py$''']
+
+[[allowlists]]
+description = "The Beacon Hermes poll watcher names the binary it runs and the two paths its ReadWritePaths= grants (a system unit has no %h, and a unit line has no inline comment to carry gitleaks:allow), and its test reads those paths back; fleet-ops#11089"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/systemd/system/beacon-hermes-poll\.service$''', '''^tests/test_user_unit_sandboxing\.py$''']
+regexes = ['''home/nish/(\.local/bin/beacon|\.beacon|\.hermes)''']
 condition = "AND"
 
 [[allowlists]]
