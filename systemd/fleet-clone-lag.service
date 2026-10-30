@@ -69,7 +69,7 @@ git merge-base --is-ancestor HEAD refs/fleet-clone-lag/main || { echo "CLONE-LAG
 behind=$$(git rev-list --count HEAD..refs/fleet-clone-lag/main); \
 old=$$(git rev-list --reverse HEAD..refs/fleet-clone-lag/main | head -n1); \
 age=$$(git log -1 --format=%%ct "$$old"); \
-case "$$age" in ''|*[!0-9]*) echo "CLONE-LAG: cannot read the commit date of $$old (git log said \"$$age\"), so the lag is unknown"; exit 1;; esac; \
+case "$$age" in ""|*[!0-9]*) echo "CLONE-LAG: cannot read the commit date of $$old (git log said \"$$age\"), so the lag is unknown"; exit 1;; esac; \
 old=$$(git rev-parse --short "$$old"); \
 age=$$(( ($$(date +%%s) - age) / 60 )); [ "$$age" -ge 0 ] || age=0; \
 [ "$$age" -ge "$$LAG_MIN" ] || { echo "deploy pending: oldest unshipped commit $$old landed $${age} min ago, clone head $$head is behind origin/main ($$want) by $$behind commit(s)"; exit 0; }; \
