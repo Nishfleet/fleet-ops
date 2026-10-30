@@ -204,6 +204,15 @@ ExecStart=-/bin/sh -c 'w=%h/.config/systemd/user/default.target.wants/cua-desk-d
 #     disable --now fleet-d1-restore-drill.timer`.
 ExecStart=/bin/sh -c 'for f in fleet-d1-restore-drill.service fleet-d1-restore-drill.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-d1-restore-drill.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-d1-restore-drill.timer
+# 2m. The clone lag check (fleet-clone-lag.timer, fleet-ops#10046): link the unit pair
+#     and enable the timer on every deploy, the same way 2h links its pair, because it
+#     is the only thing that compares the clone to origin/main on a clock and a check
+#     that is silently off is the failure it ships to fix (a merge that started no
+#     deploy left the box on stale prompts for 63 min on 2026-10-22). Off switch:
+#     delete this step and the enable line below, then `systemctl --user disable --now
+#     fleet-clone-lag.timer`.
+ExecStart=/bin/sh -c 'for f in fleet-clone-lag.service fleet-clone-lag.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-clone-lag.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-clone-lag.timer
 ExecStart=/usr/bin/systemctl --user daemon-reload
 # 2l. A quadlet edit never reaches a running container (fleet-ops#10820).
 #    The daemon-reload above regenerates fleet-grafana.service from
@@ -240,6 +249,7 @@ ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
 ExecStart=-/usr/bin/systemctl --user enable --now beacon-hermes-poll.service
 ExecStart=-/usr/bin/systemctl --user restart beacon-hermes-poll.service
 ExecStart=/usr/bin/systemctl --user enable --now fleet-d1-restore-drill.timer
+ExecStart=/usr/bin/systemctl --user enable --now fleet-clone-lag.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
