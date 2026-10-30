@@ -4,7 +4,9 @@ InaccessiblePaths= hides a path only if it exists at the moment the unit starts.
 user services create later stays visible to jobs until the runner restarts. The agent runner
 drop-in therefore starts after the user manager and creates the runtime dirs that user
 services would otherwise make later. The fleet-ci and vault runner drop-ins do the same
-(fleet-ops#10120).
+(fleet-ops#10120). A drop-in that hides `/run/user` or `/run/user/1000` whole covers
+every recreation of what sits under it instead (fleet-ops#11232), so the pre-start
+maker is gone there.
 """
 
 import re
@@ -33,6 +35,7 @@ POOLS = {
 pool = pytest.mark.parametrize("start_conf,lockdown_conf", POOLS.values(), ids=POOLS.keys())
 USER_UNIT_DIRS = [ROOT / "systemd", ROOT / "rootfs/etc/systemd/user"]
 USER_RUN = "/run/user/1000/"
+KEY = "nishfleet-worker.private-key.pem"
 
 
 def values(text: str, key: str) -> list[str]:
@@ -86,11 +89,20 @@ def pre_created(agent_text: str) -> dict[str, str]:
 
 
 def uncovered(lockdown_text: str, agent_text: str, unit_dirs: list[Path]) -> list[str]:
-    """Hidden user-runtime paths that a user service creates later and the runner does not pre-create."""
+    """Hidden user-runtime paths that a user service creates later and the runner does not pre-create.
+
+    A hide of `/run/user` or `/run/user/1000` whole replaces the pre-start maker: everything
+    that appears under it later, across delete + recreate, is covered by the anchor mount
+    (fleet-ops#11232), so those pools pass with no ExecStartPre= at all.
+    """
     later = runtime_dirs_of_user_units(unit_dirs)
     made = pre_created(agent_text)
+    parents = {Path(t.lstrip("-")) for v in values(lockdown_text, "InaccessiblePaths") for t in shlex.split(v)}
+    covered = Path("/run/user") in parents or Path("/run/user/1000") in parents
     bad = []
     for name in sorted(masked_user_run_names(lockdown_text) & set(later)):
+        if covered:
+            continue
         mode, preserved = later[name]
         made_mode = made.get(USER_RUN + name)
         if made_mode is None:
@@ -261,6 +273,11 @@ def test_late_runtime_dirs_exist_before_the_runner_starts(start_conf: Path, lock
 @pool
 def test_the_pre_create_line_does_not_run_as_root(start_conf: Path, lockdown_conf: Path) -> None:
     lines = values(start_conf.read_text(), "ExecStartPre")
+    # A pool that covers the late dirs with a whole-parent hide (#11232) has no pre-create
+    # line left: the mkdir would sit under the hidden parent and fail the runner at start.
+    parents = {Path(t.lstrip("-")) for v in values(lockdown_conf.read_text(), "InaccessiblePaths") for t in shlex.split(v)}
+    if parents & {Path("/run/user"), Path("/run/user/1000")}:
+        return
     assert lines, "no ExecStartPre= pre-create line"
     # Check every drop-in of the pool: a "+" line anywhere would run outside the sandbox, as root.
     for conf in {start_conf, lockdown_conf}:
@@ -352,11 +369,20 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
     agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
     # The empty mount points the worker jail masks (#10934, #11097), named by their tail under the home tmpfs.
     mounts = [v.removeprefix(HOME) for v in merged_values(agent, "TemporaryFileSystem")]
-    assert mounts == [":mode=0700,uid=1000,gid=1000,size=512M", "/.config/cloudflare:ro", "/.config/gh:ro"]
+    assert mounts == [":mode=0700,uid=1000,gid=1000,size=512M", "/.config/cloudflare:ro", "/.config/gh:ro", "/.config/fleet-worker:ro"]
     bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
-    # pi's library tree, the App key dir and the seat token files the unjailed steps read.
-    for tail in ("/.local/lib", "/.config/fleet-worker", "/seats", "/.local/bin"):
+    # pi's library tree and the seat token files the unjailed steps read. The App key
+    # arrives as a credential, so the key dir is not bound (fleet-ops#10957).
+    for tail in ("/.local/lib", "/seats", "/.local/bin"):
         assert tail in bound, tail
+    assert [token for token in bound.split() if "/.config/fleet-worker" in token] == []
+    loaded = merged_values(agent, "LoadCredential")
+    assert len(loaded) == 1, loaded
+    name, _, source = loaded[0].partition(":")
+    # A wrong name, directory or file is a unit that fails at start, so the whole value
+    # is checked here, and by its tail: an absolute home path in a test is the public
+    # detail this issue takes out of the repo.
+    assert name == KEY and source.endswith(f"/.config/fleet-worker/{KEY}"), loaded
 
 
 FLEET_CONFIG_READ = re.compile(r"(?:\$\{?HOME\}?[\"']?|%h|~|/home/[^/\"' ]+)/\.config/fleet-ops/([A-Za-z0-9_.*/-]+)")
