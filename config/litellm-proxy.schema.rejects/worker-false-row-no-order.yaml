@@ -1,11 +1,15 @@
 # fleet-ops#9365: the same false verdict with no order key at all: order filtering
-# runs after the cooldown filter in LiteLLM v1.98.0 router.py, so a non-caching row
-# without an order is refused like one on order 1.
+# runs after the cooldown filter in LiteLLM v1.98.0 router.py, so a row whose
+# supports_prompt_caching says false and whose order key is missing entirely is
+# refused for the order the false verdict owes. The verdict is plausible and not a
+# real measurement, and the rows-and-settings clause still names live content:
+# both halves undo back into the live config.
 # The rows and router_settings are the live config's judge fallback, judge paid,
 # Synthetic worker-capable, Straitly worker-public and tether rows plus its own
 # router_settings, which pass the schema alone, so the change above is the only
 # one in this file.
-# undo: model_list.2.litellm_params.order = 2
+# undo: model_list.2.litellm_params.order = 1
+# undo: model_list.2.model_info.supports_prompt_caching = true
 model_list:
 - model_name: judge
   litellm_params:
@@ -65,7 +69,7 @@ model_list:
   model_info:
     mode: chat
     supports_prompt_caching: false
-    cache_proof: 'Cannot cache: own-path probe 2026-10-07, 8 streamed calls on a ~20k prefix, cached_tokens 0 on all 8 completed calls (https://github.com/Nishfleet/fleet-ops/issues/9365)'
+    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic.'
     id: synthetic-glm53flashe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
