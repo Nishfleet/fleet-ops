@@ -74,7 +74,7 @@ jobs:
           [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
           grep . "$keyfile" | sed 's/^/::add-mask::/'
           { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
-      # No owner: the token scopes to GITHUB_REPOSITORY (every caller event sets it), and the three writes are the App's whole grant (credentials/app-manifest.json).
+      # No owner and no repositories: the token scopes to GITHUB_REPOSITORY (every caller event sets it); the three writes are the App's whole grant (credentials/app-manifest.json).
       - name: App token
         id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -551,7 +551,7 @@ jobs:
           strong_free=false; regular_free=false
           strong_free=true
           if [ "$(live pi)" -lt "$slots" ]; then regular_free=true; fi
-          # A labeled run still waiting for a runner must not be poked: the new run displaces it in the agent-<repo>-<ref> group and GitHub cancels it (fleet-ops#9269); the sweep token (actions: write) reads runs too.
+          # A labeled run still waiting for a runner must not be poked: the new run displaces it in the agent-<repo>-<ref> group and GitHub cancels it (fleet-ops#9269); an issues-event run's title is the issue title (display_title, compared below); the sweep token (actions: write) reads runs too.
           waiting=$(for s in queued pending waiting requested in_progress; do
             GH_TOKEN=$SWEEP_TOKEN gh api "repos/$REPO/actions/workflows/agent-dispatch.yml/runs?event=issues&status=$s&per_page=100" --jq '.workflow_runs[].display_title'
           done) || { echo "::warning::could not list waiting dispatch runs"; waiting=; }
@@ -639,7 +639,7 @@ jobs:
           approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
           # An infrastructure failure is retry-able: the comment avoids the "reviewer: <sha>" phrase the already-reviewed check looks for, and the job goes red for a re-run.
           retry() { say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."; exit 1; }
-          # blk_re/none_re are the only copies (grep here, jq in the already-reviewed check); none_re is anchored at both ends, so "blocker: none of the callers check the token" still blocks.
+          # A line starting with blocker(s) blocks, unless only a none-variant follows (none, no blockers, n/a, a dash); blk_re/none_re are the only copies (grep here, jq in the already-reviewed check) and anchored at both ends, so "blocker: none of the callers check the token" still blocks (tests/test_review_scan.py holds the cases).
           tick=$(printf '\140')
           blk_re="^[[:space:]*_#>${tick}-]*blockers?([^[:alnum:]_/]|\$)"
           none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)([[:space:]*_${tick}.!;,]*|[[:space:]*_${tick}]*(\.|!|;|:|—|–)([[:space:]].*)?)\$"
@@ -664,7 +664,7 @@ jobs:
           base=$(jq -r .base.sha <<<"$pr"); bt="$RUNNER_TEMP/base"; rm -rf "$bt"; git init -q "$bt" || retry "the diff checkout could not be created"
           # gh is a git credential helper: it hands git this run's own token, so no header is built here.
           git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"; git -C "$bt" diff --no-color "refs/base...refs/head" > "$RUNNER_TEMP/diff.txt" || retry "the git diff of $base against $SHA failed"
-          # Review scope (#10681): an approval follows the change, not the commit; a workflow a PR adds could post the approval as the same bot, so a guard or workflow head is a full review on both sides of the comparison.
+          # Review scope (#10681): an approval follows the change, not the commit; git range-diff cannot decide it, because when the branch merged main its output is the same whether the conflict resolution kept the PR's own line or changed it (tests/test_review_carry.py holds that case); a workflow a PR adds could post the approval as the same bot, so a guard or workflow head is a full review on both sides.
           guard_hits() { jq -Rsc --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | $cfg.guard as $g | [$f[] | . as $x | select(any($g[]; . as $re | $x | test($re; "i")))] | unique | length'; }
           guard=false; [ "$(guard_hits < "$RUNNER_TEMP/files.txt")" = 0 ] || guard=true
           # Only an approval of another head can carry: any workflow on a branch posts as this bot, so the approval must also be approve()'s review on that head; a failed read means a full review, and it fails closed.
@@ -906,7 +906,7 @@ jobs:
       - name: Compile today's edition (candidates fetched here, model jailed, result rebuilt in a clean clone)
         id: compile
         if: steps.live.outputs.done != 'true'
-        # The fetch runs outside the jail; the jail hides the keys and seats (fleet-ops#9274) and pi reads a virtual worker-capable-only key, 3h, $5, revoked on exit (fleet-ops#9634); nothing the model leaves is trusted: only its size-capped edition JSON is taken, rebuilt and tested in a fresh clone that publish pushes from.
+        # The fetch (Jev key, GitHub search token, optional X key from seats/x-api.env) runs outside the jail before the model starts; the jail hides the keys and seats (fleet-ops#9274); pi reads a virtual worker-capable-only key, 3h, $5, revoked on exit (fleet-ops#9634); nothing the model leaves is trusted: only its size-capped edition JSON, a regular file, is taken and rebuilt in a fresh clone that publish pushes from, so model-written code, git hooks and .git state never reach the push.
         env:
           GH_TOKEN: ${{ steps.read-token.outputs.token }}
         run: |
@@ -926,7 +926,7 @@ jobs:
           pool="$RUNNER_TEMP/pool"
           # sys() gives a system PATH and no user git config: the jailed model can write under $HOME, so a shim in ~/.local/bin or a ~/.gitconfig line must not decide what gets fetched, built or pushed; /usr/local/bin holds gh.
           sys() { /usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@"; }
-          # Fresh clone per rebuild: the App installation token dies after an hour, before the second 40-minute attempt ends, and the dead token surfaced as "no valid edition" (fleet-ops#10876).
+          # Fresh clone per rebuild: the App installation token expires after an hour (actions/create-github-app-token: "An installation access token expires after 1 hour"), before the second 40-minute attempt ends, and 401 from a dead token surfaced as "no valid edition" (fleet-ops#10876).
           fresh_clone() { rm -rf "$1"; sys git clone -q --depth 1 https://github.com/Nishfleet/inish-site.git "$1"; }
           fresh_clone "$pool" || { echo "clone for the candidate fetch failed"; exit 1; }
           (cd "$pool" && JEV_URL=http://127.0.0.1:4000/jev TYPESAFE_API_KEY="$key" X_BEARER_TOKEN="$x_key" sys python3 -m inish_daily.fetch_candidates --date "$today") > "$RUNNER_TEMP/fetch.out" 2>&1 \

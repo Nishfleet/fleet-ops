@@ -369,6 +369,52 @@ over 15 minutes (STUCK)" step pins the wiring (`stuck-review:review_pr
 stuck-arm:arm_pr stuck-rework:ref stuck-file:stuck_pr`) and fails when the job
 is gone.
 
+### agent.yml: the comment diet (fleet-ops#10946)
+
+The issue's comment bullet — comments one short line or none — applied to 38
+multi-line blocks (149 lines). Each collapses to one line. The prose that does
+not fit a short line lives here, and the one-liner keeps the issue ref that
+finds it:
+
+- Labeled-run wait (fleet-ops#9269): a labeled run still waiting for a runner
+  must not be poked; the new run displaces the waiting one in the
+  `agent-<repo>-<ref>` group and GitHub cancels it (0509#7005 re-labeled six
+  times in 28 min, 258 cancelled drive runs in 3 days). An issues-event run's
+  title is the issue title, which is why the compare is `display_title`.
+- Review scope (fleet-ops#10681): an approval follows the change, not the
+  commit. A head whose own diff (merge-base to head) is unchanged since an
+  approved head carries that approval; a head whose own diff changed is
+  reviewed only against the approved diff. `git range-diff` cannot decide this:
+  when the branch merged main, its output is the same whether the conflict
+  resolution kept the PR's own line or changed it. tests/test_review_carry.py
+  holds that case and the moved-line case. Anything else is a full review.
+- carry(): the approved head's own diff, replayed onto this head's merge-base
+  with union merge (so a line main added beside it in a conflict is kept), must
+  give this head's tree exactly, and the two own diffs must read the same apart
+  from the line each hunk sits on. Compared as text, which is stricter than a
+  patch id (a patch id ignores the path a hunk is in). merge-tree --write-tree
+  arrived in git 2.40, so an older runner makes every carry fail and a full
+  review follows: it fails closed.
+- The review call: `--tools ""` because a tool could open the runner's key files
+  and the review posts publicly (claude honors an empty --tools, checked
+  2026-10-10). No fallback to another family, no approval without this review;
+  a call that fails or answers nothing, a usage limit included, did not finish:
+  retry.
+- Blocker lines: a line starting with blocker(s), with or without markup (not
+  the echoed header "blocker/risk/nit"), unless only a none-variant follows
+  (none, no blockers, n/a, a dash, then markup or a sentence). The grammar is
+  held by tests/test_review_scan.py.
+- inish-daily trust boundary: the candidate fetch (Jev key, GitHub search
+  token, optional X key from seats/x-api.env) runs outside the jail before the
+  model starts. The jail hides both, Nish's gh login, the Cloudflare tokens,
+  the seat files, the App key and litellm-master-key.env; pi reads a virtual
+  worker-capable-only key, 3h, $5 for the whole run, revoked on exit (the key
+  alias carries the run id). After each attempt only its edition JSON is taken
+  (a regular file, size-capped), a fresh clone of main is made, the edition and
+  the pristine candidate file are dropped in, and the builder and the whole
+  test suite run there. The publish step pushes from that clone, so
+  model-written code, git hooks and .git state never reach the push.
+
 ### coordinator-approval.yml: the merge-queue gate
 
 The risky-change gate as a required check (fleet-ops#9383, #10292). Fleet-ops runs it on
