@@ -102,18 +102,25 @@ def test_a_session_that_dies_on_a_router_error_is_an_infra_ending(tmp_path, log)
     assert "ended without a PR" not in comments(writes)[0], writes
 
 
+@pytest.mark.parametrize("outcome", ["success", "cancelled"])
+def test_a_pi_exit_or_a_wall_kill_on_a_router_error_is_an_infra_ending(tmp_path, outcome):
+    """pi exits 0 after printing the 429, and the job wall gives "cancelled": both still end on it."""
+    writes = run(tmp_path, outcome=outcome, log="work\nRateLimitError: Rate limit exceeded (429)\n")
+    assert "ended on infrastructure" in comments(writes)[0], writes
+
+
 @pytest.mark.parametrize(
     "outcome,log",
     [
         ("failure", "npm error code EFAIL\nnpm test failed\n"),
-        ("success", "the issue text quotes its own router (429) outage\n"),
+        ("failure", "the issue text quotes its own router (429) outage\n" + "work output\n" * 300),
         ("failure", None),
         ("skipped", "litellm.RateLimitError: (429)\n"),
     ],
-    ids=["clean-failure", "success-quoting-429", "no-log", "never-ran"]
+    ids=["clean-failure", "failure-quoting-429-early", "no-log", "never-ran"]
 )
 def test_a_clean_or_successful_session_is_still_the_works_ending(tmp_path, outcome, log):
-    """A clean failure, a session that succeeded but mentioned a 429, a missing log, and a skipped
+    """A clean failure, a session that mentioned a 429 only early in its output, a missing log, and a skipped
     session all count as the work's ending, so a broken issue still reaches the owner."""
     writes = run(tmp_path, outcome=outcome, log=log)
     assert edits(writes) == [
@@ -131,3 +138,9 @@ def test_both_sides_name_one_session_log():
     cleanup = _block(STEP)
     assert 'tee "$RUNNER_TEMP/orchestrator.log"' in session, session
     assert 'grep -qiE' in cleanup and "orchestrator.log" in cleanup, cleanup
+
+
+def test_the_session_step_keeps_a_failing_exit_through_tee():
+    """`| tee` hides a crash unless the step runs with pipefail."""
+    session = _block("Run the orchestrator session")
+    assert "set -euo pipefail" in session.splitlines()[0], session

@@ -1243,7 +1243,9 @@ jobs:
           # Daily cap (fleet-ops#9351): counts today's (IST) hand-off-started
           # comments, from members or the App, never this workflow's runs (fleet-ops#10641).
           DAILY_MAX=${DAILY_MAX:-10}
-          case $DAILY_MAX in ''|*[!0-9]*) echo "::error::orchestrate: ORCHESTRATE_DAILY_MAX must be a non-negative integer, got '$DAILY_MAX'"; exit 1 ;; esac
+          case $DAILY_MAX in
+            ''|*[!0-9]*) echo "::error::orchestrate: ORCHESTRATE_DAILY_MAX must be a non-negative integer, got '$DAILY_MAX'"; exit 1 ;;
+          esac
           if [ "$DAILY_MAX" -gt 0 ]; then
             since=$(date -u -d "$(TZ=Asia/Kolkata date +%F) 00:00 +0530" +%FT%TZ)
             retry() { local o i; for i in 1 2 3; do o=$("$@") && { printf '%s\n' "$o"; return 0; }; sleep $((i * 5)); done; return 1; }
@@ -1263,7 +1265,11 @@ jobs:
           # Sonnet for every hand-off; a bare `claude -p` would run Opus (#10750).
           { echo "model=claude-sonnet-5-5"; echo "turns=40"; } >> "$GITHUB_OUTPUT"
           # Pi on a LiteLLM seat unless ORCHESTRATE_RUNNER is claude (fleet-ops#9407).
-          if [ "${RUNNER_VAR:-pi}" = claude ]; then echo "runner=claude" >> "$GITHUB_OUTPUT"; else echo "runner=pi" >> "$GITHUB_OUTPUT"; fi
+          if [ "${RUNNER_VAR:-pi}" = claude ]; then
+            echo "runner=claude" >> "$GITHUB_OUTPUT"
+          else
+            echo "runner=pi" >> "$GITHUB_OUTPUT"
+          fi
           # Feeds the daily cap; posted as the App, so a failure only warns.
           gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator hand-off started: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" ||
             echo "::warning::orchestrate: the hand-off-started comment failed; today's daily cap count misses this run"
@@ -1474,11 +1480,12 @@ jobs:
           # An ending the provider owns is no strike (fleet-ops#11166): the sweep counts
           # only "orchestrator hand-off ended without a PR: ", so an ending with this
           # other prefix re-queues the issue and never walks it to needs-nish-decision.
-          # A failed session whose output names a router error (the same patterns
-          # agent.yml's Router wall step greps) is the provider's ending; a clean
-          # failure, or a 429 the session merely quoted on its way to success, is
-          # still the work's.
-          if [ "$SESSION_OUTCOME" = failure ] && grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|insufficient balance|model is unavailable|\b429\b' "${RUNNER_TEMP:-}/orchestrator.log" 2>/dev/null; then note="orchestrator hand-off ended on infrastructure: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"; fi
+          # Only the last 2000 bytes of the session output are read, because a session
+          # that died on a router error ends on it, while one that merely quoted a 429
+          # from the issue text on its way to another failure does not. The pi branch
+          # exits 0 and the job wall gives "cancelled", so every outcome but "skipped"
+          # (the session never ran) is read.
+          if [ "$SESSION_OUTCOME" != skipped ] && tail -c 2000 "${RUNNER_TEMP:-}/orchestrator.log" 2>/dev/null | grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|insufficient balance|model is unavailable|\b429\b'; then note="orchestrator hand-off ended on infrastructure: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"; fi
           if [ "$due" = true ]; then label=on-hold color=EDDEDD desc="Parked until the issue's due: date; later-sweep promotes it" note="orchestrator: on hold until the due date in this issue; nothing can be built before it, so this hand-off stops here and later-sweep promotes it then"; fi
           # These writes need issues: write, which the App token holds.
           # --force makes the label idempotent on a newly stubbed repo (drive#199).
