@@ -151,7 +151,6 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     permissions:
-      actions: read
       issues: write
     steps:
       - env:
@@ -162,17 +161,9 @@ jobs:
           SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
-          # A tool that prints errors as plain text leaves only the generic
-          # exit-code ##[error] line, so the failed log's last 30 lines stand
-          # in. A log that cannot be read still leaves a note with the run
-          # link, so the worker knows where to look.
-          log=$(gh run view "$RUN_ID" -R "$GITHUB_REPOSITORY" --log-failed 2>/dev/null) || log=
-          errors=$(grep -F '##[error]' <<<"$log" | sed 's/.*##\[error\]//' | grep -vx 'Process completed with exit code [0-9]*\.' |
-            cut -c1-300 | awk '!seen[$0]++' | head -n 30) || true
-          [ -n "$errors" ] || errors=$(cut -f3- <<<"$log" | cut -c1-300 | tail -n 30)
-          [ -n "$errors" ] || errors="(the failed log could not be read; open the run)"
-          # shellcheck disable=SC2016 # the backticks are a literal markdown fence
-          body=$(printf 'rework: CI run %s failed on %s. Fix these errors, then push to %s:\n\n```\n%s\n```' "$RUN_URL" "${SHA:0:7}" "$REF" "$errors")
+          # The note names the run, not an excerpt: the worker reads the full log with stock
+          # `gh run view --log-failed`, and a 30-line cut often missed the cause (fleet-ops#10808).
+          body="rework: CI run $RUN_URL failed on ${SHA:0:7}. Read it with \`gh run view $RUN_ID --log-failed\`, fix it, then push to $REF."
           gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "$body"
   rework:
     needs: rework-note
