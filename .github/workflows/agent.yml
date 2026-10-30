@@ -573,7 +573,7 @@ jobs:
           echo "next: none ready for a free lane"
           # An issue left agent-in-progress with a red or conflicting claim PR sends no event, so run the sweep now (drive #106 #117 #298); it starts no worker when nothing is stuck.
           GH_TOKEN=$SWEEP_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" || echo "::warning::sweep dispatch failed"
-          # Lane counts are host-wide but the listing is this repo's only, so sweep every other enrolled repo too (fleet-ops#10638).
+          # Lane counts are host-wide but the listing is this repo's only, so sweep every other enrolled repo too; .sweep_only[] retries agent-ready only (fleet-ops#10638).
           others=$(jq -r '.repos[].name, .sweep_only[]?.name' "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json") || others=
           [ -n "$others" ] || echo "::warning::intake-repos.json lists no repos"
           for other in $others; do
@@ -594,7 +594,7 @@ jobs:
     if: inputs.review_pr != '' && inputs.review_sha != '' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, review]  # netcup-agent-9 and -10 only, no agent label: a review never waits behind a build (#10587)
     timeout-minutes: 150  # worst case 107 min: three passes (both reviewers in parallel, then a fallback for each), each 4 calls of 480 s plus 210 s of backoff (#10447)
-    # The approval is a github-actions[bot] PR comment; this job runs from agent.yml@main, so the PR cannot change its reviewer; guard heads need three reviews; arming is the arm job's.
+    # The approval is a github-actions[bot] PR comment; this job runs from agent.yml@main, so the PR cannot change its reviewer; guard heads need three independent reviews (docs/workflow-notes.md); arming is the arm job's.
     permissions: {pull-requests: write, contents: read, issues: write}  # issues: write files the loud issue when every retry fails (#10447); contents: read fetches the held head's diff: a private repo refuses an anonymous fetch, and every agent-dispatch stub already grants contents: write
     outputs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
@@ -627,7 +627,7 @@ jobs:
           THIRD_FAMILY: Qwen
         run: |
           set -euo pipefail
-          # No review text goes public unscanned (fleet-ops#9528): every post runs gitleaks with the PR scan's own rules and binary; a scan that cannot run posts nothing at all.
+          # No review text goes public unscanned (fleet-ops#9528): every post runs gitleaks with the PR scan's own rules and binary, a matched line is withheld behind a note, and a scan that cannot run posts nothing at all.
           scan() { local r=$RUNNER_TEMP/rules.toml j=$RUNNER_TEMP/scan.json rc=0 PATH=$RUNNER_TEMP/gl:$PATH
             command -v gitleaks >/dev/null || { mkdir -p "$RUNNER_TEMP/gl" && curl -fsSL --retry 5 --retry-all-errors --max-time 180 -o "$RUNNER_TEMP/g.tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz && echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/g.tgz" | sha256sum --check --strict --status - && tar -xzf "$RUNNER_TEMP/g.tgz" -C "$RUNNER_TEMP/gl" gitleaks; } >&2
             curl -fsSL --retry 3 --max-time 60 -o "$r" https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/gitleaks-private-detail.toml || return 1

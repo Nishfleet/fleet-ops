@@ -374,12 +374,11 @@ is gone.
 The issue's comment bullet — comments one short line or none — collapsed 37 of
 the base file's 38 multi-line comment blocks. Count: `awk '/^[[:space:]]*#/{c++;
 next} {if(c>=2) print NR-c": "c; c=0}' .github/workflows/agent.yml`, which lists
-each block of two or more consecutive comment lines — 38 blocks totalling 149
-lines on the base commit (the same awk over the PR diff shows 37 of them
-replaced). The one left is the cap comment sitting beside the functional
-`# shellcheck disable=SC2016` pragma line, which a comment collapse cannot join.
-The prose that does not fit a short line lives here, and the one-liner keeps
-the issue ref that finds it:
+each block of two or more consecutive comment lines — on the base commit it
+prints 38 blocks totalling 149 lines; on this PR's tree it prints one block,
+2 lines (the cap comment beside its functional `# shellcheck disable=SC2016`
+pragma, which a comment collapse cannot join). The prose that does not fit a
+short line lives here, and the one-liner keeps the issue ref that finds it:
 
 - Labeled-run wait (fleet-ops#9269): a labeled run still waiting for a runner
   must not be poked; the new run displaces the waiting one in the
@@ -444,9 +443,17 @@ the issue ref that finds it:
   retry. Fable is not a default reviewer because it burned 44% of a seat's
   weekly limit in about two days when defaulted (Nish 2026-10-28, #10608); it
   is the second reviewer of guard heads only.
+- Guard heads (money, secrets, data, .github/, the review rules) need three
+  INDEPENDENT reviews because a PR that adds its own workflow could post an
+  approval as the same bot, and a later head that dropped the workflow would
+  then inherit a forged approval (the approval can never be one of the PR's own
+  additions).
 - The sweep's lane counts are host-wide but the listing is this repo's only, so
   the sweep covers every other enrolled repo too, whose own Gate admits only a
-  lane that is free; .repos[] and .sweep_only[] (fleet-ops#10638).
+  lane that is free (fleet-ops#10638). `.repos[]` names enrolled sweep targets;
+  `.sweep_only[]` names un-enrolled repos whose agent-ready items the
+  worker-exit top-up still re-sweeps: a retry of items already labelled, never
+  admit or intake (docs/intake-enrolment.md).
 - Blocker lines: a line starting with blocker(s), with or without markup (not
   the echoed header "blocker/risk/nit"), unless only a none-variant follows
   (none, no blockers, n/a, a dash, then markup or a sentence). The grammar is
