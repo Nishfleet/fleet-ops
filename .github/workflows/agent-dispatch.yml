@@ -1391,27 +1391,38 @@ jobs:
           if [ "$ORCH_RUNNER" = pi ]; then
             # No Claude spend and no turn cap: the step's timeout-minutes is the wall
             # (fleet-ops#10349).
-            FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" \
-              "${jail[@]}" "$HOME/.local/bin/pi" --print \
-              --provider litellm --model "${SEAT:-worker-capable}" \
-              < "$RUNNER_TEMP/orchestrator-prompt.md"
-            exit 0
+            engine=(env FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" "${jail[@]}" "$HOME/.local/bin/pi" --print
+              --provider litellm --model "${SEAT:-worker-capable}")
+          else
+            # The repo's hooks only spend turns here; ORCHESTRATE_HOOKS=on keeps them.
+            hook_args=(--settings '{"disableAllHooks":true}')
+            [ "$HOOKS" != on ] || hook_args=()
+            # Start-up trim: 51,407 input tokens and $0.334 untrimmed, 36,440 and
+            # $0.146 trimmed (VPS, bare prompt, cold cache).
+            engine=("${jail[@]}" "$HOME/.local/bin/claude" -p
+              --model "$MODEL"
+              "${hook_args[@]}"
+              --strict-mcp-config
+              --disable-slash-commands
+              --setting-sources "project,local"
+              --output-format json
+              --permission-mode bypassPermissions
+              --max-turns "$TURNS")
           fi
-          # The repo's hooks only spend turns here; ORCHESTRATE_HOOKS=on keeps them.
-          hook_args=(--settings '{"disableAllHooks":true}')
-          [ "$HOOKS" != on ] || hook_args=()
-          # Start-up trim: 51,407 input tokens and $0.334 untrimmed, 36,440 and
-          # $0.146 trimmed (VPS, bare prompt, cold cache).
-          "${jail[@]}" "$HOME/.local/bin/claude" -p \
-            --model "$MODEL" \
-            "${hook_args[@]}" \
-            --strict-mcp-config \
-            --disable-slash-commands \
-            --setting-sources project,local \
-            --output-format json \
-            --permission-mode bypassPermissions \
-            --max-turns "$TURNS" \
-            < "$RUNNER_TEMP/orchestrator-prompt.md"
+          # The engine runs as its own process group, and the step kills that group
+          # once the engine returns: a dev server the session backgrounded must not
+          # outlive it (four orphaned wrangler stacks plus the job's own dev
+          # server from one orchestrator job, fleet-ops#11140). The TERM-to-KILL
+          # pair covers a child that ignores TERM.
+          setsid "${engine[@]}" < "$RUNNER_TEMP/orchestrator-prompt.md" &
+          engine_pid=$!
+          trap 'kill -TERM "-$engine_pid" 2>/dev/null || true' EXIT
+          status=0
+          wait "$engine_pid" || status=$?
+          kill -TERM "-$engine_pid" 2>/dev/null || true
+          sleep 3
+          kill -KILL "-$engine_pid" 2>/dev/null || true
+          exit "$status"
       - name: Clean up and mark a PR-less hand-off
         if: always()
         env:

@@ -1652,8 +1652,11 @@ def test_runner_pressure_limit_kills_only_a_stalled_cgroup() -> None:
     assert _last(keys, "ManagedOOMMemoryPressure") == "kill"
     assert _last(keys, "MemoryHigh") == "4g", "the high line the 2026-10-05 sizing set is gone"
     limit = int(_last(keys, "ManagedOOMMemoryPressureLimit").removesuffix("%"))
-    assert 1 <= limit <= 40, (
-        "a cgroup pinned at its MemoryHigh reads 45-56% memory pressure and a busy one reads 0.00, so the line belongs between them: at 80% oomd never fires (fleet-ops#11123), at 0 it kills every job"
+    assert 2 <= limit <= 40, (
+        "a cgroup stalled by a leak reads 45-56% memory pressure (netcup-agent-19, 2026-10-30) and a real "
+        "workload pinned above its MemoryHigh reads 1.68% avg10 peak (same unit pinned at 4294M/4G line, "
+        "2026-10-30), so the line belongs between them: at 80% oomd never fires (fleet-ops#11123), below 2% "
+        "it kills real work, above 40% it only fires after a stall is already minutes deep"
     )
     shadow = [
         p.name
