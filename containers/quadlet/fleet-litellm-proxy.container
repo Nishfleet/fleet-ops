@@ -75,7 +75,6 @@ PodmanArgs=--env=ALIBABA_CODING_API_KEY
 # Anthropic Claude API (the tether group's Sonnet 5.5 row, Nish 2026-10-22): the prepaid key sits in a
 # seat file that the seat EnvironmentFile lines below already cover.
 PodmanArgs=--env=ANTHROPIC_API_KEY
-PodmanArgs=--env=COMMANDCODE_API_KEY
 PodmanArgs=--env=LITELLM_MASTER_KEY
 PodmanArgs=--env=MINIMAX_API_KEY
 PodmanArgs=--env=OPENCODE_API_KEY
@@ -121,7 +120,6 @@ Exec=--config /app/config.yaml --port 4000 --host 127.0.0.1 --num_workers 2
 # the config's os.environ/NAME vars are all passed); a glob would hand the router every other seat's key.
 EnvironmentFile=-%h/.config/fleet-ops/seats/alibaba-coding.env
 EnvironmentFile=-%h/.config/fleet-ops/seats/anthropic-api.env
-EnvironmentFile=-%h/.config/fleet-ops/seats/commandcode.env
 EnvironmentFile=-%h/.config/fleet-ops/seats/minimax.env
 EnvironmentFile=-%h/.config/fleet-ops/seats/opencode.env
 EnvironmentFile=-%h/.config/fleet-ops/seats/stepfun.env

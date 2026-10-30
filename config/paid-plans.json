@@ -1,5 +1,5 @@
 [
-  {"name": "CommandCode", "api_base": "https://api.commandcode.ai/provider/v1", "billing": "prepaid", "source": "fleet-ops#8855 (recharged by Nish 2026-09-28)"},
+  {"name": "CommandCode", "api_base": "https://api.commandcode.ai/provider/v1", "billing": "prepaid", "source": "fleet-ops#8855 (recharged by Nish 2026-09-28)", "rows_pending": "COMMANDCODE_API_KEY answers 401 on every row, so the four rows are out until the key works (fleet-ops#11065); renew or cancel is open in #10936"},
   {"name": "MiniMax Token Plan", "api_base": "https://api.minimax.io/anthropic", "billing": "subscription", "source": "fleet-ops#8828, #9009"},
   {"name": "StepFun Step Plan Pro", "api_base": "https://api.stepfun.ai/step_plan/v1", "billing": "subscription", "source": "fleet-ops#9060 (Pro since 2026-10-01)"},
   {"name": "Synthetic", "api_base": "https://api.synthetic.new/openai/v1", "billing": "subscription", "source": "cancelled 2026-10-01, rows leave when it lapses (fleet-ops#9048)"},
