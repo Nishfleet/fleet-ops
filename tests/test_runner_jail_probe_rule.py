@@ -1,6 +1,7 @@
 """Agent runs red for 6h (fleet-ops#10886): the rule's real SQL, read out with yq and run in
 sqlite, fires only when runs failed for 6 hours with no success among them, and only over the
-agent workflow of fleet-ops."""
+agent workflow of fleet-ops. WINDOW is the A query's relativeTimeRange: the GitHub plugin
+returns no run older than it, so a run outside the window is not in the answer."""
 import json
 import pathlib
 import shutil
@@ -16,7 +17,7 @@ NOW = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
 FMT = "%Y-%m-%dT%H:%M:%SZ"
 UID = "agent-runs-red-6h"
 COLUMNS = "created_at TEXT, conclusion TEXT"
-WINDOW = 43200  # the A query's relativeTimeRange: the GitHub plugin returns no run older than this
+WINDOW = 43200
 
 pytestmark = pytest.mark.skipif(shutil.which("yq") is None, reason="yq reads the rule file and is not installed here")
 
@@ -85,7 +86,10 @@ def test_a_young_streak_does_not_page(oldest):
 
 def test_one_success_inside_the_window_stops_the_page():
     assert _stale(_red(9, 5) + [(2, "success")]) == 0
-    # A success older than the window is not in the query's answer, so it does not stop it.
+
+
+def test_a_success_older_than_the_window_does_not_stop_the_page():
+    """The query answers only the runs inside its 12h window, so an older success is not in the answer."""
     assert _stale(_red(9, 5) + [(20, "success")]) == 1
 
 
@@ -117,11 +121,16 @@ def test_the_expression_answers_one_row():
 
 def test_a_failure_with_no_date_is_not_a_silent_normal():
     """Grafana refuses an alerting condition that answers more than one row, so a run with no
-    created_at date shows Error and pages, instead of reading 0 and hiding the red."""
-    assert _stale([(None, "failure")] * 5) == 0
-    assert _stale_rows([(None, "failure")] * 5) == [0, 0]
-    # A dated failure keeps the answer at one row, because MAX skips the row with no date.
+    created_at date and no dated failure shows Error and pages, instead of reading 0 and hiding
+    the red: MAX skips the undated row, so the copies join sees oldest IS NULL."""
+    assert _stale([(None, "failure")] * 5) == 1
+    assert _stale_rows([(None, "failure")] * 5) == [1, 1]
+
+
+def test_one_undated_failure_pages_with_dated_young_failures():
+    """The undated failure could be the oldest red, so a mix with young dated failures pages."""
     assert _stale_rows([(None, "failure")] * 4 + [(9, "failure")]) == [1]
+    assert _stale(_red(1, 3) + [(None, "failure")]) == 1
 
 
 def test_the_rule_reads_the_agent_workflow_of_fleet_ops():

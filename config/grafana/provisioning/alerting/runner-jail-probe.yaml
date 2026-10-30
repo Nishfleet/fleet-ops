@@ -28,10 +28,16 @@
 # already calls UNIX_TIMESTAMP(MIN(created_at)) and UNIX_TIMESTAMP() - streak_start over the same
 # query's fields, so the functions are in production, not new here.
 #
-# A failure whose run carries no created_at date leaves oldest NULL, which would read 0 and hide
-# the red. The copies join then returns two rows, which Grafana refuses for alerting, so the rule
-# shows Error and pages instead of a silent Normal: the deploy-failed-24h group holds the same
-# guard for the same reason (deploy-failed.yaml names it).
+# Age runs from created_at, the run's start: the shared query returns no completion stamp, so a
+# run that failed after running long reads younger than it failed, and the 6h threshold can fire
+# at the failure of a long run, never wait longer than the measured 6h.
+#
+# A failure whose run carries no created_at date is red of an unknown age, so the SQL tracks those
+# failures in `undated` and a mix of undated failures with young dated ones pages like any other
+# red streak. When no failure is dated, oldest reads NULL, which would read 0 and hide the red;
+# the copies join then returns two rows, which Grafana refuses for alerting, so the rule shows
+# Error and pages instead of a silent Normal: the deploy-failed-24h group holds the same guard
+# for the same reason (deploy-failed.yaml names it).
 #
 # GitHub's run data has no per-step split, so the rule cannot tell a probe failure from a
 # broken change: it pages on a red main and on a GitHub outage too, and the annotation is what
@@ -74,10 +80,11 @@ groups:
               format: alerting
               refId: C
               expression: |-
-                SELECT CASE WHEN f >= 3 AND s = 0 AND oldest >= 21600 THEN 1 ELSE 0 END AS stale
+                SELECT CASE WHEN f >= 3 AND s = 0 AND (oldest >= 21600 OR undated > 0) THEN 1 ELSE 0 END AS stale
                 FROM (
                   SELECT SUM(CASE WHEN conclusion = 'success' THEN 1 ELSE 0 END) AS s,
                          SUM(CASE WHEN conclusion <> 'success' THEN 1 ELSE 0 END) AS f,
+                         SUM(CASE WHEN conclusion <> 'success' AND created_at IS NULL THEN 1 ELSE 0 END) AS undated,
                          MAX(CASE WHEN conclusion <> 'success' THEN UNIX_TIMESTAMP() - UNIX_TIMESTAMP(created_at) END) AS oldest
                   FROM A
                   WHERE conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')
@@ -87,7 +94,7 @@ groups:
         execErrState: Error
         for: 10m
         annotations:
-          summary: '{{ if $values }}No agent run succeeded in the last 6 hours, and at least three failed, so no job passed its runner jail check.{{ else }}The fleet cannot read GitHub runs for the runner jail probe rule, so it is blind until the read is fixed.{{ end }}'
+          summary: '{{ if $values }}No agent run succeeded in the last 6 hours, and at least three failed: the runner-probe step of the newest failed run says whether the jail or a change is the fault.{{ else }}The fleet cannot read GitHub runs for the runner jail probe rule, so it is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}Read the runner-probe step of the newest failed run (https://github.com/Nishfleet/fleet-ops/actions/workflows/agent.yml). A red probe is a stale jail: the runner has not re-read its drop-in, so restart the pools that show it, one pool and one green job at a time. A green probe means a change broke the work job, not the jail. Dashboard: Fleet scorecard.{{ else }}Check the GitHub data source in Grafana.{{ end }}'
         labels: {severity: critical, signal: runner-jail-probe}
         isPaused: false
