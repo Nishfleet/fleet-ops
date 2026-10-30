@@ -159,8 +159,11 @@ jobs:
           stub=$!
           trap 'kill $stub 2>/dev/null || true; sudo systemctl stop fleet-token-ci.service 2>/dev/null || true; sudo rm -f /etc/systemd/system/fleet-token-ci.service; sudo systemctl daemon-reload; sudo systemctl reset-failed fleet-token-ci.service 2>/dev/null || true' EXIT
           for _ in $(seq 1 20); do (echo > /dev/tcp/127.0.0.1/18795) 2>/dev/null && break; sleep 0.5; done
+          # The mint is tested on its own, so the unit's own follow-up keys are
+          # dropped. `[ -]*` covers ExecStartPost=- too: systemd ignores that failure, so
+          # this sed is belt-and-braces rather than what keeps the step green.
           sed -e "s|%h/.config/fleet-worker/nishfleet-worker.private-key.pem|$d/app.pem|" \
-              -e '/^OnFailure=/d' -e '/^ExecStartPost=/d' \
+              -e '/^OnFailure=/d' -e '/^ExecStartPost=[ -]*/d' \
               -e 's|^Environment=GITHUB_API_URL=.*|Environment=GITHUB_API_URL=http://127.0.0.1:18795|' \
               -e "s|^\[Service\]|[Service]\nUser=$(id -un)|" "$u" | sudo tee /etc/systemd/system/fleet-token-ci.service >/dev/null
           sudo systemctl daemon-reload
@@ -1373,8 +1376,8 @@ jobs:
         # A run is live only while its `work` job is queued or running, not
         # while the run as a whole reads queued. Runs the RUN_LIVE_JQ filter
         # out of agent-dispatch.yml against the cases in
-        # config/sweep-liveness-events.json, and checks that all five sweep
-        # reads (conflicts, stalled, orphans, red PRs, stuck rework) use it and none still reads the
+        # config/sweep-liveness-events.json, and checks that all four sweep
+        # reads (stalled, orphans, red PRs, stuck rework) use it and none still reads the
         # run status alone.
         if: always()
         run: |
@@ -1382,9 +1385,9 @@ jobs:
           f=.github/workflows/agent-dispatch.yml
           filter=$(yq '.env.RUN_LIVE_JQ' "$f")
           [ -n "$filter" ] && [ "$filter" != null ] || { echo "RUN_LIVE_JQ missing from $f"; exit 1; }
-          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 5 ] || { echo "expected 5 sweep reads of status,jobs"; exit 1; }
+          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 4 ] || { echo "expected 4 sweep reads of status,jobs"; exit 1; }
           # shellcheck disable=SC2016 # the literal text "$RUN_LIVE_JQ" is the needle
-          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 5 ] || { echo "expected 5 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
+          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 4 ] || { echo "expected 4 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
           ! grep -n -- '--json status --jq' "$f" || { echo "a sweep read still judges the run status alone"; exit 1; }
           bad=0
           while IFS= read -r c; do

@@ -32,7 +32,7 @@
 Description=Start the agent-dispatch sweep in Nishfleet/%i
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=1h
+StartLimitIntervalSec=15min
 StartLimitBurst=3
 OnFailure=fleet-unit-failed@%N.service
 Requires=fleet-worker-github-token@actions:%i.service

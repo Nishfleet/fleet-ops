@@ -64,7 +64,7 @@ URGENT = {
 PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")
 CRITICAL_REPEAT = 3600
-ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch", "prometheus-alert-dispatch"}
+ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch", "router-dead-key-dispatch", "prometheus-alert-dispatch"}
 GENERIC_SINK = "fleet-alert-dispatch"
 # A paid plan out of credit keeps its rule firing until Nish acts, and the
 # remedy is his, so its issue is filed weekly instead of daily: fleet-ops#9845,
@@ -282,6 +282,34 @@ def dead_row_shape(rules, points, bad):
         bad.append("router-dead-row-dispatch: the issue title must name a proxy-level series by its requested_model instead of filing an empty row name")
     if re.search(r"(?<!\$)\$[A-Za-z_{]", template):
         bad.append("router-dead-row-dispatch: a template variable needs $$ in a contact point, or Grafana expands it to empty and the template fails to parse")
+
+
+def dead_key_shape(rules, points, bad):
+    rule = next((r for r in rules if r.get("uid") == "router-dead-key"), None)
+    if rule is None:
+        bad.append("router-dead-key: no rule reads a 401 park, so a dead provider key reaches the fleet only as a dead-row page that never fires (fleet-ops#11081)")
+        return
+    expr = " ".join(next((d for d in rule.get("data") or [] if d.get("refId") == "A"), {}).get("model", {}).get("expr", "").split())
+    for part, why in (
+        ('increase(litellm_deployment_cooled_down_total{exception_status="401"}[6h])', "a 6-hour count of 401 parks"),
+        ('increase(litellm_deployment_cooled_down_total{exception_status="401"}[30m])) > bool 0)', "a 30-minute recency gate multiplied in, not `and`"),
+    ):
+        if part not in expr:
+            bad.append(f"router-dead-key: A must carry {why} (fleet-ops#11081)")
+    if rule.get("for") != "15m":
+        bad.append(f"router-dead-key: the rule holds for {rule.get('for')!r}, not 15m, so one park pages on the first evaluation")
+    steps = [d for d in rule.get("data") or [] if d.get("refId") == rule.get("condition")]
+    params = steps[0]["model"]["conditions"][0]["evaluator"].get("params") if steps else None
+    if params != [2]:
+        bad.append(f"router-dead-key: thresholds at {params}, not [2], so its bar disagrees with the text the issue quotes and a key dead for hours still reads quiet (fleet-ops#11081)")
+    threshold = (rule.get("annotations") or {}).get("threshold", "")
+    if "more than 2 parks in 6 hours" not in threshold:
+        bad.append("router-dead-key: the threshold text must state the bar the rule uses, so a responder reads the same number the rule does")
+    template = (points.get("router-dead-key-dispatch", {}).get("receivers") or [{}])[0].get("settings", {}).get("payload", {}).get("template", "")
+    filed = re.findall(r'"labels" \(coll\.Slice ([^)]*)\)', template)
+    names = set(re.findall(r'"([^"]+)"', filed[0])) if filed else set()
+    if "needs-nish-decision" not in names or "agent-ready" in names:
+        bad.append("router-dead-key-dispatch: a rejected provider key is Nish's to renew, so its issue is filed needs-nish-decision and never agent-ready, or a worker run and a hand-off are spent on a decision only Nish can take (fleet-ops#11081)")
 
 
 ACTION = re.compile(r"\{\{(.*?)\}\}", re.S)
@@ -503,6 +531,7 @@ def main(root):
             bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
                        f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
     dead_row_shape(rules, points, bad)
+    dead_key_shape(rules, points, bad)
     annotation_guards(rules, bad)
     bad += alertmanager_auth(Path(__file__).resolve().parents[1])
     # fleet-ops#10327: one host event (20 units failing) must file one issue per

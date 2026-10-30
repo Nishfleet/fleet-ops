@@ -171,17 +171,23 @@ The rules still in force:
   check: their `agent-dispatch.yml` stubs call this shared workflow and their
   rulesets require no `coordinator-approval`.
   The `review` and `arm` jobs run on `[self-hosted, review]`: runners
-  `netcup-agent-9` (seat a) and `netcup-agent-10` (seat b) carry the labels
-  `self-hosted, review` and not `agent`, so no build can take them and a review
-  never waits behind a multi-hour build (fleet-ops#10587). With `agent` kept,
-  GitHub hands a queued build to any idle runner that matches, so builds would
-  starve reviews again. The labels live at GitHub, not in ansible:
+  `netcup-agent-9` and `-10` carry the labels `self-hosted, review` and not `agent`, so no
+  build can take them and a review never waits behind a multi-hour build (fleet-ops#10587).
+  With `agent` kept, GitHub hands a queued build to any idle runner that matches, so builds
+  would starve reviews again. Runners `netcup-agent-11` and `-12` lost `agent` and
+  `fleet-ops` and gained `review` on 2026-10-29, before this change merged, so the deploy
+  may hand them the reviewer key. install-config.yml still reads the org runner list as nish
+  and holds the two new drop-ins back until GitHub reports both runners with `review` and
+  neither worker label: a runner that still takes a worker job keeps `User=nish` on the nish
+  runner directory, which takes no review job, so no worker job meets the reviewer key, and
+  a read that cannot run holds them back as well (fleet-ops#11069). The labels live at GitHub, not in ansible:
   `gh api -X PUT orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=self-hosted' -f 'labels[]=review'`.
-  To switch it off, give those two runners `agent` back and set both `runs-on`
+  To switch it off, give those four runners `agent` back and set both `runs-on`
   lines back to `[self-hosted, agent]`.
-  Those two runners run as the no-sudo service user `fleet-reviewer`, in their own HOME,
+  Those four runners run as the no-sudo service user `fleet-reviewer`, in their own HOME,
   and the reviewer App key reaches them by bare `LoadCredential=` from `/etc/credstore`,
-  so no unit other than these two and no job on another runner can read it (fleet-ops#10950).
+  so no unit other than these four and no job on another runner can read it (fleet-ops#10950).
+  All four read the review lane's seat b from `claude-seat-b.env`; seat a serves worker jobs only.
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the review user's own

@@ -15,10 +15,10 @@
 # is the upstream status and model_id is the router row id. 429 is never counted: a quota
 # wall is a resting row, not a dead one (Nish 2026-10-02).
 #
-# 401 is counted from a different counter (fleet-ops#11063). One dead provider key answers
-# 401 on every row it backs and only a person can renew it, but a 401 never reaches
-# litellm_deployment_failure_responses_total: that metric has no 401 series at all on
-# v1.105.0, so a regex change here would read nothing. A 401 row is parked by
+# 401 is a second rule, router-dead-key, on a second signal (fleet-ops#11063). One dead
+# provider key answers 401 on every row it backs and only a person can renew it, but a 401
+# never reaches litellm_deployment_failure_responses_total: that metric has no 401 series at
+# all on v1.105.0, so a regex change here would read nothing. A 401 row is parked by
 # AuthenticationErrorAllowedFails 0, and every park increments
 # litellm_deployment_cooled_down_total{exception_status="401"} with the row id, which is the
 # only surface that carries it. The bar is lower than 5 in an hour because a parked row
@@ -27,7 +27,9 @@
 # last 30 minutes, held for 15 minutes. On 2026-10-29 two rows backed by one dead
 # CommandCode key sat parked all day (34 401 parks in total) while every alert that reads
 # 402/403/404 or the group-level state gauge stayed silent, and 11 worker-capable calls
-# died on those rows in 24 hours.
+# died on those rows in 24 hours. It is a rule of its own rather than a branch, because its
+# bar differs and its issue is a different kind: no worker can renew a key, so its route
+# files the issue needs-nish-decision instead of agent-ready (fleet-ops#11081).
 #
 # Persistence (fleet-ops#9562). The plain 1-hour count paged for a one-minute burst and
 # stayed true for the rest of the hour, so a row that answered 402/403/404 for about a
@@ -50,10 +52,11 @@
 # fleet-ops#10069). The or-branch fires them per requested_model, so such a page names
 # the model it probed; tests/alert_routes_check.py holds the naming shape.
 #
-# Route: severity warning, so it does not page; label signal=router-dead-row, and the
-# series label model_id names the row, files a fleet-ops issue (agent-ready + priority-now) through
-# the policy tree in cloudflare-spend-contact.yaml.
-# The issue asks Nish whether to remove the row; a worker never removes it by itself.
+# Route: severity warning, so neither rule pages. signal=router-dead-row files a fleet-ops
+# issue (agent-ready + priority-now) through the policy tree in cloudflare-spend-contact.yaml,
+# and signal=router-dead-key files one labelled needs-nish-decision, because a rejected key
+# is Nish's to renew. Both issues ask Nish whether to remove the row; a worker never removes
+# it by itself.
 # Provisioned alert rules do not expand $VAR, so every dollar here is a single one.
 #
 # Switch it off: set isPaused: true on the rule (the same idiom as
@@ -83,10 +86,6 @@ groups:
                 or sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id=""}[1h])))
                 * on(model_id,requested_model)
                 (sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404"}[10m])) > bool 0)
-                or
-                (sum by (model_id) (increase(litellm_deployment_cooled_down_total{exception_status="401"}[6h])) > 2)
-                * on(model_id)
-                (sum by (model_id) (increase(litellm_deployment_cooled_down_total{exception_status="401"}[30m])) > bool 0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -104,9 +103,46 @@ groups:
         execErrState: Error
         for: 15m
         annotations:
-          summary: 'Router row {{ with $labels.model_id }}{{ . }}{{ else }}{{ with $labels.requested_model }}{{ . }} (proxy-level){{ else }}unknown row{{ end }}{{ end }} answered 402, 403 or 404, or was parked on a 401, {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} times'
-          description: 'A 402 is spent credit, a 403 is a model the provider ended, a 404 is a model or endpoint that no longer exists, and a 401 is a key the provider rejects. LiteLLM v1.98.0 cannot cool the first two, so every caller routed to this row fails. The retry-side fix is tracked in #9050 (retry a 403/404 onto a live seat) and #9417 (re-probe a resting row); this rule is the detector until they land, so a one-minute flap that healed needs no action. Check the row in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy | grep {{ with $labels.model_id }}{{ printf "%q" . }}{{ else }}{{ with $labels.requested_model }}{{ printf "%q" . }}{{ else }}MODEL_ID{{ end }}{{ end }}). Do NOT remove or bench it without Nish''s explicit yes (2026-10-02 rule): open or update a needs-nish-decision issue with the evidence.'
+          summary: 'Router row {{ with $labels.model_id }}{{ . }}{{ else }}{{ with $labels.requested_model }}{{ . }} (proxy-level){{ else }}unknown row{{ end }}{{ end }} answered 402, 403 or 404 {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} times'
+          description: 'A 402 is spent credit, a 403 is a model the provider ended, and a 404 is a model or endpoint that no longer exists. LiteLLM v1.98.0 cannot cool the first two, so every caller routed to this row fails. The retry-side fix is tracked in #9050 (retry a 403/404 onto a live seat) and #9417 (re-probe a resting row); this rule is the detector until they land, so a one-minute flap that healed needs no action. A 401 (a rejected provider key) has its own rule, router-dead-key. Check the row in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy | grep {{ with $labels.model_id }}{{ printf "%q" . }}{{ else }}{{ with $labels.requested_model }}{{ printf "%q" . }}{{ else }}MODEL_ID{{ end }}{{ end }}). Do NOT remove or bench it without Nish''s explicit yes (2026-10-02 rule): open or update a needs-nish-decision issue with the evidence.'
           value: '{{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} failures in the last hour'
-          threshold: 'more than 5 in 1 hour or more than 2 401 parks in 6 hours, still failing 15 minutes later'
+          threshold: 'more than 5 in 1 hour, still failing 15 minutes later'
         labels: {severity: warning, signal: router-dead-row}
+        isPaused: false
+      - uid: router-dead-key
+        title: Router row parked on a 401, provider key rejected
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 21600, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: >-
+                sum by (model_id) (increase(litellm_deployment_cooled_down_total{exception_status="401"}[6h]))
+                * on(model_id)
+                (sum by (model_id) (increase(litellm_deployment_cooled_down_total{exception_status="401"}[30m])) > bool 0)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: C
+              expression: A
+              conditions: [{evaluator: {params: [2], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: OK
+        execErrState: Error
+        for: 15m
+        annotations:
+          summary: 'Router row {{ with $labels.model_id }}{{ . }}{{ else }}unknown row{{ end }} was parked on a 401, a provider key it rejects'
+          description: 'A 401 is a key the provider rejects, not a model that ended, so the row parks again on every re-probe until the key is renewed and every caller routed to it fails. Check which key backs the row in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy | grep {{ with $labels.model_id }}{{ printf "%q" . }}{{ else }}MODEL_ID{{ end }}). No worker can renew a key, so this issue waits on Nish: renew the key, or approve taking its rows out of the router. Do NOT remove or bench the row without Nish''s explicit yes (2026-10-02 rule). The retry-side fix is tracked in #9050 and #9417.'
+          value: '{{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} 401 parks in the last 6 hours'
+          threshold: 'more than 2 parks in 6 hours, still parking in the last 30 minutes, held for 15 minutes'
+        labels: {severity: warning, signal: router-dead-key}
         isPaused: false

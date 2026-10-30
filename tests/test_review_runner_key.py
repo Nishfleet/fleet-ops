@@ -1,17 +1,25 @@
 """Review runners run as fleet-reviewer and take the reviewer App key from the credential store (fleet-ops#10950).
 
-Runners 9 and 10 are the only units the review job and the arm job run on, so they are the
-only units that may hold the reviewer App key. It arrives by bare name, which systemd reads
+Runners 9 to 12 run as fleet-reviewer, and no other unit may hold the reviewer App key: which
+runner answers a job is a GitHub label this repo cannot read, and runners 20 to 30 keep
+`review` too, so the check here is the set of units that hold the key, not the set a job lands
+on. It arrives by bare name, which systemd reads
 from /etc/credstore (root-owned 0600): a source path would be a readable copy under a home
 directory, and a second unit that loaded it would be a second identity that can post an
 approval (fleet-ops#9521). nish's home is mode 0700, so a bind of a 0600 file under it hands
 the review user a path it cannot open, and every credential is loaded instead.
 """
 
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
+from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[1]
 UNITS = ROOT / "rootfs/etc/systemd/system"
@@ -19,9 +27,14 @@ WORKFLOWS = sorted((ROOT / ".github/workflows").glob("*.yml"))
 REVIEW_KEY = "nishfleet-reviewer.private-key.pem"
 WORKER_KEY = "nishfleet-worker.private-key.pem"
 SEATS = "${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}"
+LABEL_READ = "Read the labels GitHub holds for the two new review runners"
+LABEL_HOLD = "Hold the two new review runner drop-ins back until both are review-only"
+NEW_RUNNERS = ["netcup-agent-11", "netcup-agent-12"]
 REVIEW_USERS = {
     "actions.runner.Nishfleet.netcup-agent-9.service.d/30-review-user.conf",
     "actions.runner.Nishfleet.netcup-agent-10.service.d/30-review-user.conf",
+    "actions.runner.Nishfleet.netcup-agent-11.service.d/30-review-user.conf",
+    "actions.runner.Nishfleet.netcup-agent-12.service.d/30-review-user.conf",
 }
 
 
@@ -42,6 +55,21 @@ def review_dropins() -> dict[Path, str]:
 def test_only_the_review_runners_run_as_the_review_user() -> None:
     found = review_dropins()
     assert {str(p.relative_to(UNITS)) for p in found} == REVIEW_USERS
+
+
+def test_the_review_dropins_differ_only_in_their_runner_number() -> None:
+    """Each new drop-in is a copy, so a line that is not its own runner number is drift."""
+
+    def own_number(name: str) -> str:
+        return name.split("netcup-agent-")[1].split(".")[0]
+
+    for name in sorted(REVIEW_USERS):
+        text = (UNITS / name).read_text()
+        assert text.count(f"/var/lib/fleet-reviewer/{own_number(name)}") >= 2, (
+            "the drop-in must name its own runner directory in WorkingDirectory= and ExecStart=: " + name
+        )
+    shapes = {(UNITS / name).read_text().replace(f"/var/lib/fleet-reviewer/{own_number(name)}", "/N") for name in REVIEW_USERS}
+    assert len(shapes) == 1, "the four review drop-ins differ in something other than their runner number"
 
 
 @pytest.mark.parametrize("name", sorted(REVIEW_USERS))
@@ -119,3 +147,82 @@ def test_the_review_jobs_read_the_router_key_from_the_credential_first() -> None
             reads += 1
             assert f"{SEATS}/typesafe-jev.env" in line, f"{workflow}:{job_id}: " + line
     assert reads, "no review-runner job reads the router key"
+
+
+def install_config() -> list[dict]:
+    """The tasks that install host config, in play order."""
+    return [t for t in yaml.safe_load((ROOT / "ansible/tasks/install-config.yml").read_text()) if isinstance(t, dict)]
+
+
+def guard_tasks() -> dict[str, dict]:
+    """The two tasks that hold the new review drop-ins back until GitHub labels their runners."""
+    tasks = {t["name"]: t for t in install_config() if t.get("name") in (LABEL_READ, LABEL_HOLD)}
+    assert set(tasks) == {LABEL_READ, LABEL_HOLD}, "the review runner label guard is missing: " + ", ".join(sorted(tasks))
+    names = [t["name"] for t in install_config()]
+    assert len(names) == len(set(names)), "yaml keeps the last task of a repeated name, so a guard task could be shadowed"
+    return tasks
+
+
+def test_the_label_read_is_the_org_runner_list_read_as_nish() -> None:
+    """GitHub routes a job by label, so the labels are the check, and they live at GitHub, not in this repo."""
+    task = guard_tasks()[LABEL_READ]
+    argv = task["ansible.builtin.command"]["argv"]
+    assert argv[:3] == ["gh", "api", "orgs/Nishfleet/actions/runners"], argv
+    assert "--paginate" in argv, "the box holds more runners than one page, so an unpaged read misses a runner"
+    assert task["become"] is True and task["become_user"] == "nish", "the read runs as the login the box's other GitHub reads use"
+    assert task["environment"] == "{{ nish_env }}"
+    assert task["ignore_errors"] is True, "a read that cannot run must hold the drop-in back, not fail the deploy"
+    assert task["until"] == "new_review_runner_labels.rc == 0", "one API blip must not hold a rollout back for a whole deploy cycle"
+    assert task["retries"] == 3 and task["delay"] == 20, "the count in update.yml retries this same endpoint for the same reason"
+    names = [t.get("name") for t in install_config()]
+    assert names.index("Install systemd units, slices and drop-ins") < names.index(LABEL_READ) < names.index(LABEL_HOLD)
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq is not installed, so the filter cannot run")
+def test_the_label_filter_names_a_runner_once_it_takes_only_review_jobs() -> None:
+    """The filter decides the rollout, so it runs for real against the shape GitHub answers with."""
+    jq = shutil.which("jq")
+    assert jq is not None
+    argv = guard_tasks()[LABEL_READ]["ansible.builtin.command"]["argv"]
+    filt = argv[argv.index("--jq") + 1]
+
+    def runners(*named: tuple[str, list[str]]) -> dict:
+        return {"runners": [{"name": name, "labels": [{"name": label} for label in labels]} for name, labels in named]}
+
+    def answer(payload: dict) -> list[str]:
+        done = subprocess.run([jq, "-r", filt], input=json.dumps(payload), capture_output=True, text=True, check=True)
+        return done.stdout.split()
+
+    review_only = ["self-hosted", "review"]
+    worker = ["self-hosted", "agent", "fleet-ops"]
+    assert answer(runners(("netcup-agent-9", worker), *[(name, review_only) for name in NEW_RUNNERS])) == NEW_RUNNERS
+    for kept in ("agent", "fleet-ops"):
+        named = [(name, review_only) for name in NEW_RUNNERS]
+        named[0] = (NEW_RUNNERS[0], review_only + [kept])
+        assert answer(runners(*named)) == [NEW_RUNNERS[1]], f"{kept} still routes worker jobs to a runner that holds the reviewer key"
+    assert answer(runners((NEW_RUNNERS[0], review_only))) == [NEW_RUNNERS[0]], "a runner GitHub does not list is not named, so the when cannot see both"
+    assert answer(runners(*[(name, ["self-hosted"]) for name in NEW_RUNNERS])) == [], "no review label, no review job"
+
+
+def test_a_dropin_stays_held_until_the_labels_say_the_runner_is_review_only() -> None:
+    """The when decides the rollout, so it runs for real against what the read can answer."""
+    when = guard_tasks()[LABEL_HOLD]["when"]
+
+    def holds(read: dict) -> bool:
+        return Environment().from_string("{{ (" + when + ") }}").render(new_review_runner_labels=read) == "True"
+
+    both = {"rc": 0, "stdout_lines": NEW_RUNNERS}
+    assert holds(both) is False, "both runners take only review jobs, so the drop-in must install"
+    assert holds({"rc": 0, "stdout_lines": list(reversed(NEW_RUNNERS))}) is False, "page order is not a fact about the labels"
+    for partial in ([], NEW_RUNNERS[:1], [NEW_RUNNERS[0], "netcup-agent-9"]):
+        assert holds({"rc": 0, "stdout_lines": partial}) is True, f"one unlabelled runner still takes worker jobs: {partial}"
+    assert holds({"rc": 1, "stdout_lines": NEW_RUNNERS}) is True, "a read that failed is not a read that says yes"
+    assert holds({"rc": 1}) is True, "a read with no output at all still holds"
+
+
+def test_the_hold_takes_back_only_the_two_new_review_dropins() -> None:
+    task = guard_tasks()[LABEL_HOLD]
+    assert task["ansible.builtin.file"]["state"] == "absent"
+    assert task["loop"] == [11, 12], "runners 9 and 10 have been review-only since they were labelled"
+    assert task["ansible.builtin.file"]["path"] == "/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-{{ item }}.service.d/30-review-user.conf", "a path that names no runner number can hold any runner's drop-in back"
+    assert task["notify"] == "Reload systemd", "systemd forgets a drop-in only on a daemon-reload, and the copy reports ok once the file is on the box"

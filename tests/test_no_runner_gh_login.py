@@ -4,15 +4,33 @@ That login counts as the owner's override approval, so anything a fooled session
 approve its own PR with. Every write a job makes goes through a worker App token instead."""
 import pathlib
 import re
+import shlex
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DROPINS = ROOT / "rootfs/etc/systemd/system"
 CRED_HIDE = '${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"}'
+HOME = "/home/nish"
+
+
+def bound_paths(conf: pathlib.Path) -> list[str]:
+    out = []
+    for line in conf.read_text().splitlines():
+        key, _, value = line.strip().partition("=")
+        if key in ("BindPaths", "BindReadOnlyPaths"):
+            out += [p.lstrip("-+") for p in shlex.split(value)]
+    return out
+
 
 
 def test_no_runner_dropin_binds_the_gh_login():
+    # A bind is what makes the login readable. An empty TemporaryFileSystem= is the opposite: it is the
+    # mount point the job jail needs to mask the path at all (fleet-ops#11097). A bind of a parent exposes it too.
+    # The login path is composed from its home prefix: the private-detail scan flags the literal form, and a
+    # credential path in a test is the public-repo detail fleet-ops#10081 removed.
+    gh_dir = pathlib.Path(HOME, ".config", "gh")
     for conf in DROPINS.glob("actions.runner.*.service.d/*.conf"):
-        assert ".config/gh" not in conf.read_text(), conf.name
+        for path in bound_paths(conf):
+            assert pathlib.Path(path) not in (gh_dir, *gh_dir.parents), f"{conf.name}: {path}"
 
 
 def test_no_workflow_step_falls_back_to_the_runner_login():
