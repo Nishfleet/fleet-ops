@@ -439,6 +439,17 @@ jobs:
             gh issue list -R "$GITHUB_REPOSITORY" -S no:label -L 5 --json number --jq '.[].number' | xargs -rI{} gh issue edit {} -R "$GITHUB_REPOSITORY" --add-label needs-triage || echo "::warning::triage labelling failed"
             # agent-in-progress left by a run that died with its runner and no claim PR goes back to agent-ready (fleet-ops#9063). A draft claim PR counts as none: a dead run leaves one (fleet-ops#10367).
             for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '.[].number'); do
+              # A claim PR that merged without closing its issue (a body GitHub did not parse as Closes) leaves agent-in-progress up and re-runs workers on a branch already in main (fleet-ops#9118). A run started after the merge is a new claim: skip. The issue is never closed here.
+              merged=$(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state merged --json number,mergedAt --jq 'sort_by(.mergedAt) | last // empty | "\(.number) \(.mergedAt)"')
+              if [ -n "$merged" ]; then
+                started=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | select(.body | startswith("agent run started:")) | .createdAt] | last // ""')
+                if [[ -z $started || $started < ${merged#* } ]]; then
+                  gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator: claim PR #${merged%% *} merged without closing this issue; removing agent-in-progress. The issue stays open."
+                  gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress
+                  echo "released #$n: claim PR #${merged%% *} already merged"
+                  continue
+                fi
+              fi
               gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json isDraft --jq '[.[] | select(.isDraft | not)] | length' | grep -qx 0 || continue
               body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
               [[ $body =~ actions/runs/([0-9]+) ]] || continue
