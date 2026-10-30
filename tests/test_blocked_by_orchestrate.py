@@ -22,7 +22,7 @@ LIST_STEP = '.jobs.list.steps[] | select(.id == "list")'
 FAKE_GH = r"""#!/usr/bin/env bash
 q=.; for ((i = 1; i <= $#; i++)); do [ "${!i}" = --jq ] && { j=$((i + 1)); q=${!j}; }; done
 case "$*" in
-  "issue edit"*) echo "$*|token=${GH_TOKEN:-none}" >> "$FAKE_DIR/writes.log" ;;
+  "issue edit"*) if [ -n "$FAIL_EDIT" ] && [[ "$*" == *"$FAIL_EDIT"* ]]; then exit 1; else echo "$*|token=${GH_TOKEN:-none}" >> "$FAKE_DIR/writes.log"; fi ;;
   "label create"*) echo "label create $3|token=${GH_TOKEN:-none}" >> "$FAKE_DIR/writes.log" ;;
   "issue view"*) jq -r "$q" "$FAKE_DIR/issue.json" ;;
   *"/dependencies/blocking"*) jq -r "$q" "$FAKE_DIR/blocking.json" ;;
@@ -164,3 +164,19 @@ def test_the_dep_label_create_runs_at_most_once_a_sweep(tmp_path):
     creates = [l.split("|")[0] for l in w if l.startswith("label create")]
     assert creates == ["label create agent-blocked-dep"], \
         "one create a sweep, not one per changed issue"
+
+
+def test_a_refused_dep_edit_surfaces_the_warning(tmp_path):
+    (tmp_path / "list.json").write_text(json.dumps([{"number": 2}]))
+    (tmp_path / "issue-2.json").write_text(json.dumps({
+        "number": 2, "state": "open", "created_at": "2026-10-27T00:00:00Z",
+        "labels": [{"name": "agent-ready"}, {"name": "agent-blocked-dep"}],
+        "issue_dependencies_summary": {"blocked_by": 0}}))
+    (tmp_path / "out").write_text("")
+    env = {**_fake(tmp_path), "GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "x", "CLOSED": "", "ISSUE": "",
+           "GITHUB_OUTPUT": str(tmp_path / "out"), "CHECK_DEFS": "", "RUN_LIVE_JQ": "", "FAIL_EDIT": "agent-blocked-dep"}
+    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{LIST_STEP} | .run")],
+                       env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "::warning::#2: agent-blocked-dep remove refused" in r.stdout, \
+        "a refused sync write must surface on the ::warning, not vanish into a swallowed exit"
