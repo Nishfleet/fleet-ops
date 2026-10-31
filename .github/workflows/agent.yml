@@ -371,11 +371,14 @@ jobs:
           gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
           echo wall=true >> "$GITHUB_OUTPUT"
-      # Close the issue through a keyword, then arm unless the diff leaves the safe allowlist (fleet-ops#9315); a red required check disarms and fails this step, feeding the strike below.
+      # Close the issue through a keyword, then arm; a red required check disarms and fails this
+      # step, which is what feeds the strike below (fleet-ops#9315).
       - name: Arm auto-merge as the App
         if: steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
+          RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
+          RISKY_RULES_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/workflows/agent-dispatch.yml
         run: |
           if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
             i=${REF#claim/issue-}; i=${i%%-*}
@@ -383,34 +386,25 @@ jobs:
             grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
               gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
             n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
-            changed=$(gh pr view "$REF" -R "$REPO" --json changedFiles --jq .changedFiles)
-            files=$(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)')
-            safe='^(app/(routes|components)/|app/lib/(competitor|feeds|hiring|mentions|site|onboarding)/|tests/.*\.test\.tsx?$|e2e/[^/]+\.spec\.ts$|docs/)'; case "${REPO,,}" in nishfleet/drive) safe="$safe"'|^(src/|test/.*\.(test|spec)\.m?[jt]sx?$)' ;; esac
-            policy='^docs/(REBUILD-|engines/|quality-bar\.md)'
-            if [ "$changed" -ge 3000 ] || [ -z "$files" ] || grep -qvE "$safe" <<<"$files" || grep -qE "$policy" <<<"$files"; then
-              gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a path outside the arm allowlist: the coordinator reviews and arms it"
-              gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
-            else
-              # Pending required checks still arm: nothing re-arms a head that later goes green, and the required checks hold the merge (fleet-ops#9315).
-              q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
-              red=$(gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
-                8) ;; # gh's pending exit: --jq still printed any red names, empty if none
-                *) case ${red,,} in
-                     *"no required checks reported"*)
-                       red=$(gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] ||
-                         case ${red,,} in *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;;
-                     *"no checks reported"*) red= ;;
-                     *) red="unreadable ($red)" ;;
-                   esac ;;
-              esac
-              if [ -n "$red" ]; then
-                gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true  # errors when it was not armed
-                echo "::error::claim PR #$n not armed, red required checks on its head: $red"
-                exit 1
-              else
-                gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
-              fi
+            # Classify before arming, against the one list and the one program that hold-risky and the merge-queue gate
+            # run; both are read the way hold-risky reads them, from fleet-ops main by URL, so the check cannot drift
+            # from the hold (fleet-ops#9278 item 1, #11164). A claim PR the classifier calls risky is not armed here:
+            # the label (created first, because hold-risky adds it through the labels API, which fails in a repo that
+            # does not have it yet) fires hold-risky, whose review arms the head once an approval lands on it.
+            hold() { echo "::notice::claim PR #$n not armed here: $*"; gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "a path config/risky-paths.json marks risky: the coordinator approves and arms it"; gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator; gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true; exit 0; }  # the disarm drops an arm a previous head of this PR still holds
+            if ! curl -fsSL --max-time 20 --retry 2 "$RISKY_RULES_URL" > "$RUNNER_TEMP/arm-rules.yml" || ! classify=$(yq '.env.CLASSIFY' "$RUNNER_TEMP/arm-rules.yml") || ! cfg=$(curl -fsSL --max-time 20 --retry 2 "$RISKY_PATHS_URL" | jq -c .) || ! gh pr view "$n" -R "$REPO" --json labels,changedFiles > "$RUNNER_TEMP/arm-pr.json" || ! gh api --paginate "repos/$REPO/pulls/$n/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/arm-files.txt"; then hold 'a read of the rules, the list, the PR or its diff failed'
+            elif ! verdict=$(jq -sc --arg repo "$REPO" '{repo: $repo, labels: [.[0].labels[].name], files: [.[1:][] | .f, (.p // empty)] | unique, patches: [.[1:][] | {file: .f, patch}], changed_files: (.[0].changedFiles // 0)}' "$RUNNER_TEMP/arm-pr.json" "$RUNNER_TEMP/arm-files.txt" | jq -c --argjson cfg "$cfg" --arg label needs-coordinator "$classify") || [ "$(jq -e .risky <<<"$verdict" 2>/dev/null)" != false ]; then hold "why $verdict (a read that fails, an unread verdict or a risky verdict holds, so an outage cannot arm a risky head, and neither can hold-risky's absence on a repo without a merge queue)"
             fi
+            # Pending required checks still arm: nothing re-arms a head that later goes green, and the required checks hold the merge (fleet-ops#9315).
+            q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
+            # gh's pending exit (8) means only pending checks: --jq still printed any red names, empty if none
+            red=$(gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in 8) ;; *) case ${red,,} in *"no required checks reported"*) red=$(gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] || case ${red,,} in *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;; *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;; esac
+            if [ -n "$red" ]; then
+              gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true  # errors when it was not armed
+              echo "::error::claim PR #$n not armed, red required checks on its head: $red"
+              exit 1
+            fi
+            gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
           fi
       - name: Deliverable
         if: steps.gate.outputs.go == 'true'
@@ -565,8 +559,12 @@ jobs:
             else $regular_free || continue
             fi
             if grep -qxF -- "$(jq -r .title <<<"$issue")" <<<"$waiting"; then echo "skip #$n: its dispatch run already waits"; continue; fi
-            gh issue edit "$n" -R "$REPO" --remove-label agent-ready
-            gh issue edit "$n" -R "$REPO" --add-label agent-ready
+            # Removing and re-adding agent-ready fires two issues events, and the
+            # run the second one starts displaces the run the first one started in
+            # the agent-<repo>-<ref> group: the step cancelled what it meant to
+            # start (fleet-ops#9278 item 3). Dispatch the issue by number instead,
+            # so a pick leaves no label event behind and one run carries one target.
+            GH_TOKEN=$SWEEP_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" -f "issue=$n" || echo "::warning::dispatch of #$n failed"
             echo "next: #$n"
             exit 0
           done
