@@ -34,9 +34,12 @@ mount point per masked path: `.config/cloudflare`, `.config/gh` and
 `.config/fleet-worker`, each `:ro`.
 
 systemd creates `.config` and each mount point under it as root, at unit start (each
-point with its default 0755, whatever the parent tmpfs's `mode=0700`).
+point with the tmpfs default mode 0755, per mount(8)'s `mode=`, whatever the parent
+tmpfs's `mode=0700`; systemd.exec(5)'s `TemporaryFileSystem=` creates the named path if
+it is missing).
 The runner's namespace maps one uid, so the namespace's root is unmapped and every file it
-creates reads as uid 65534:
+creates reads as uid 65534 (user_namespaces(7): a file whose owner is unmapped in the
+reader's namespace shows as `nobody`):
 
     $ cat /proc/self/uid_map
     1000       1000          1
@@ -51,13 +54,17 @@ restarted at 16:48:14 IST on 2026-10-30 and `.config` and `.config/gh` carry mti
 that second (16:48:14.674 and 16:48:14.671, both `nobody:nogroup 755`), while
 `.config/fleet-worker` carries a job jail's start instead (22:50:50, `nish:nish 755`).
 `ActiveEnterTimestamp` has one-second resolution, so the second is the finest match the
-pair supports:
+pair supports. In the re-check below the two points share one timestamp to the
+nanosecond: the kernel stamps with a coarse per-jiffy clock, and PID 1 created both in
+the same tick.
 
     $ systemctl show actions.runner.Nishfleet.netcup-agent-4.service -p ActiveEnterTimestamp --value
     Fri 2026-10-30 16:48:14 IST
 
 A re-check on 2026-10-31, on netcup-agent-13 after that night's update, repeats the pair
-and adds the journal line the ask wanted. The unit's own journal puts the listener start
+and adds the journal line the ask wanted. The `uid_map` line above was read inside this
+session's job jail on that host; the unit's namespace maps the same single uid. The
+unit's own journal puts the listener start
 of that restart at 03:53:34.917 (its `.path` line at 03:53:34.886 precedes it), just
 after the directory's 03:53:34.849 mtime: the mount point is in place before the runner
 service starts.
@@ -102,7 +109,9 @@ directory, which the host's own owner had. The ownership was never the thing the
 The jail needs a mount point it can mount over, and the unit has to create that point. That
 is the fix in `78c5bdea9` (fleet-ops#11097, PR #11109), which added the missing gh
 `TemporaryFileSystem=` line to the lockdown drop-in (the fleet-worker line came later,
-`a41aa761d`, PR #11057; the drop-in's own comment names fleet-ops#11097).
+`a41aa761d`, PR #11057; the drop-in's own comment names fleet-ops#11097). The fix landed
+later the same day, after the 04:36 restart that exposed the gap, so the two runs died
+with the gap and the next restart after the fix starts.
 
 With the mount point present, bwrap mounts over it instead of creating it, so the job starts.
 `tests/test_runner_jail_start_state.py` holds the gate:
@@ -131,7 +140,8 @@ actually exists.
 ## How to tell the jail starts
 
 The mount points exist when the unit does, so the jail starts when the paths do. A direct
-probe with the workflow's own jail arguments (`agent.yml`'s `jail_base`):
+probe with the workflow's own jail arguments (`agent.yml`'s `jail_base`), run on
+netcup-agent-13 on 2026-10-31:
 
     $ bwrap --dev-bind / / --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare \
         --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker \
