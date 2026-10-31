@@ -957,9 +957,16 @@ def test_non_alert_title_skips_the_lookup(tmp_path):
 @pytest.mark.parametrize("prefix", ["alert: ", "cost alarm: ", "grafana alert: ", "router dead row: ", "router dead key: "])
 def test_every_issue_filing_prefix_reaches_the_twin_lookup(tmp_path, prefix):
     """Each prefix a contact point writes, not just "alert: " (fleet-ops#11086):
-    the other four filed one issue per firing and closed nothing."""
+    the other four filed one issue per firing and closed nothing.
+    A cost alarm's re-file stays open instead of closing as its older
+    twin's duplicate (fleet-ops#9859), so its case only needs the twin
+    lookup to not close it."""
     title = prefix + "SystemUnitFailed restic-r2-size-guard.service"
     out, log = _dup_gate(tmp_path, title, [{"number": 50, "title": title}, {"number": 41, "title": title}])
+    if prefix == "cost alarm: ":
+        assert out == "PROCEED"
+        assert "issue close" not in log
+        return
     assert out == "SKIP duplicate-alert"
     assert "gh issue close 50 -R o/r --duplicate-of 41" in log
 
