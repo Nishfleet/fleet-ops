@@ -65,6 +65,7 @@ def _setup(tmp_path, comments, prs=(), fail_comments=False):
         "REPO": "Nishfleet/fleet-ops",
         "ISSUE": "10275",
         "GO": "true",
+        "SESSION_OUTCOME": "success",
         "GH_TOKEN": "x",
         "GITHUB_SERVER_URL": "https://github.test",
         "GITHUB_RUN_ID": "1",
