@@ -932,7 +932,7 @@ jobs:
           ! grep -q 'pr merge' "$t/review.sh" || { echo "the review step arms; the arm job must"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' "$t/review.sh" || { echo "person-request wording in the review step"; bad=1; }
           ! grep -q 'vnd.github.diff' "$t/review.sh" || { echo "the review step reads the diff through the diff API"; bad=1; }
-          # No extra review is handed to pi: the row that answered is only in the response headers, so the third reviewer is called directly.
+          # Every extra review is a Claude call (owner 2026-10-31), never pi or the router.
           ! grep -q 'provider litellm' "$t/review.sh" || { echo "the review step still routes an extra reviewer through pi"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' <(yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .run' .github/workflows/agent-dispatch.yml) || { echo "person-request wording in hold-risky"; bad=1; }
           cat > "$t/bin/gh" <<'MOCK'
@@ -1078,7 +1078,6 @@ jobs:
           guard-second-forges-approval|1|approve|0.95|clean|forged|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
           guard-third-blocks|1|approve|0.95|clean|clean_ok|THIRD=blocked_b|no|0|claude-opus-5-5 claude-fable-5-1
           guard-third-no-answer|1|approve|0.95|clean|clean_ok|THIRD=none|no|1|claude-opus-5-5 claude-fable-5-1
-          guard-one-reviewer-dies-the-other-is-still-waited-for|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1
           guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
           guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1
           guard-third-seat-fails-once-retries-and-approves|1|approve|0.95|clean|clean_ok|THIRD_ONCE|yes|0|claude-opus-5-5 claude-fable-5-1
