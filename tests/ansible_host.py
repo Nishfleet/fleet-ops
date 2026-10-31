@@ -17,11 +17,13 @@ def text(rev: str = "", play_file: str = "ansible/host.yml") -> str:
     def show(path: str) -> str:
         if not rev:
             return (ROOT / path).read_text()
-        return subprocess.run(["git", "show", f"{rev}:{path}"], cwd=ROOT, check=True,
-                              capture_output=True, text=True).stdout
+        run = subprocess.run(["git", "show", f"{rev}:{path}"], cwd=ROOT,
+                             capture_output=True, text=True)
+        return "" if run.returncode else run.stdout
 
     def inline(m: re.Match) -> str:
-        body = show(f"ansible/{m.group(1)}")
+        body = subprocess.run(["git", "show", f"{rev}:ansible/{m.group(1)}"],
+                              cwd=ROOT, check=True, capture_output=True, text=True).stdout
         return "".join("    " + line if line.strip() else line for line in body.splitlines(True))
 
     return re.sub(r"^    - ansible\.builtin\.import_tasks: (\S+)\n", inline, show(play_file), flags=re.M)

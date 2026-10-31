@@ -1,0 +1,52 @@
+# The plan for one fleet-ops head: the same apply play as fleet-host-config.service,
+# rehearsed with ansible-pull's --check --diff instead of applied (fleet-ops#10931).
+# .github/workflows/ci.yml's host-plan job starts fleet-plan@<40-hex sha>.service for
+# a merge-queue entry whose diff touches ansible/, rootfs/, systemd/ or containers/;
+# the predicted changes (the --diff output) are posted to the entry's PR as a comment,
+# and a plan failure drops the entry from the queue (the ci gate depends on this job).
+#
+# Every head it can start is an approved revision: the merge queue admits a head only
+# after the required reviews have approved its PR (config/risky-paths.json lists
+# ansible/, rootfs/ and containers/ as risky on this repo, and a gate head review),
+# polkit lets user nish start ONLY a 40-hex instance (rootfs/etc/polkit-1/rules.d/
+# 50-fleet-plan.rules), and --verify-commit refuses a head GitHub did not sign.
+#
+# --check and --diff make ansible predict and report, not write; the play's forced
+# tasks (check_mode: false) are read-only probes already (the promtool,
+# nft -c, stat, find, and git reads tests/test_ansible_check_mode.py pins), and
+# every module without check-mode
+# support (systemctl, gpg --import, git) is skipped by --check itself. A failed plan
+# never leaves a broken unit behind: nothing was applied.
+#
+# The run logs to /var/lib/fleet-plan/plan.log (root:root 0644 through UMask=0022),
+# which the job reads back to the PR without touching the journal. append: keeps the
+# log across restarts and the ExecStartPre truncates it, so one log holds one run.
+#
+# No OnFailure handler: a failed plan is a red CI run on the PR the job names, not a
+# broken box state (nothing was applied), and healthchecks.io pages for a box error
+# (#10457), not for a rejected plan. The apply unit keeps its own handler.
+#
+# Bootstrap, once per box, the same pattern as fleet-host-config.service: the unit
+# lands when the PR that ships it merges and the next ansible-pull run copies
+# rootfs/etc/systemd/system/ onto the box. Until then, entries whose diff needs a
+# plan run without one: the host-plan job exits 0 with a reason line, so the first
+# merge after this file's own merge cannot be blocked by the gate it introduces.
+
+[Unit]
+Description=Plan the host-config change of one fleet-ops head (ansible --check --diff)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+StateDirectory=fleet-plan
+UMask=0022
+StandardOutput=append:/var/lib/fleet-plan/plan-%i.log
+# A per-instance log is also what stops a refused start posting the previous
+# head's plan under its own name (instances never share one file), and the
+# find keeps the old heads' logs from growing without bound. truncate creates
+# its target when the entry is this instance's first.
+ExecStartPre=/usr/bin/find /var/lib/fleet-plan -name 'plan-*.log' -mtime +14 -delete
+ExecStartPre=/usr/bin/truncate -s 0 /var/lib/fleet-plan/plan-%i.log
+ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout %i --directory /var/lib/fleet-plan/repo --clean --verify-commit --diff --check --inventory localhost, ansible/host.yml
+TimeoutStartSec=600

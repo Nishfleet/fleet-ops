@@ -131,7 +131,11 @@ def _sections(base: str) -> list[str]:
     for rel in changed:
         lines.append(f"  {_git('diff', '--no-color', f'{base}..HEAD', '--', rel).rstrip()}")
     for rel in plays:
-        if ansible_host.text(base, rel) == ansible_host.text("", rel):
+        before_text, after_text = ansible_host.text(base, rel), ansible_host.text("", rel)
+        if not (before_text and after_text):
+            # an added or removed play's file diff is already listed above
+            continue
+        if before_text == after_text:
             continue
         lines.append(f"{rel}: the play the PR puts on the box")
         before, after = _play(base, rel), _play("", rel)

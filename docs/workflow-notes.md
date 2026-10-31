@@ -369,6 +369,32 @@ over 15 minutes (STUCK)" step pins the wiring (`stuck-review:review_pr
 stuck-arm:arm_pr stuck-rework:ref stuck-file:stuck_pr`) and fails when the job
 is gone.
 
+### ci.yml: the three unit-job checks and the token-wiring check are pytest now
+
+The unit job's play syntax checks (host.yml, update.yml), the report
+replay (fleet-ops#9340) and the Grafana token wiring check moved to
+`tests/test_ansible_syntax.py`, `tests/test_ansible_report_skip.py`
+and `tests/test_grafana_token_wiring.py`. Same checks, run twice maybe; the
+workflow files do not grow (the ratchet). Nothing else refers to the step names
+the grep-able tests pin, so a change there reads this note first.
+
+### ci.yml: host-plan, the plan-before-apply gate (fleet-ops#10931)
+
+The merge queue treats `host-plan` like any test: the job starts
+`fleet-plan@<head sha>.service` on a fleet-ci runner for entries whose diff
+touches ansible/, rootfs/, systemd/ or containers/, and the unit's --check
+--diff run of the apply play is the comment. The comment under-reports what an
+apply would do on purpose: --check skips the modules it cannot simulate, so
+the apply plays' forced sites stay read-only by rule
+(tests/test_ansible_check_mode.py), and the unit's --verify-commit keeps the
+head invariant (the same web-flow key fleet-host-config.service already
+requires root to trust). The unit template and the polkit grant ship in
+rootfs (the bootstrap notes are in the unit's header comment), so
+the FIRST entry after the unit's own merge plans nothing (the job exits 0 with
+a reason line) and every later entry plans. The plan log is per instance
+(plan-<sha>.log, root:root 0644), so a refused start never posts the previous
+head's run under its own name: the job tails only its own instance log.
+
 ### agent.yml: the comment diet (fleet-ops#10946)
 
 The issue's comment bullet — comments one short line or none — collapsed 37 of
