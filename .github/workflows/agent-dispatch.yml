@@ -402,10 +402,8 @@ jobs:
           # runs this program in CI, with CHECK_DEFS.
           RED_REWORK: |
             (.pr.statusCheckRollup // []) as $checks
-            | ([$checks[] | select(failed) | (.completedAt // .startedAt // empty) | fromdateiso8601] | max) as $failed_at
-            | (.issue.labels | map(.name)) as $labels
-            | [.comments[] | select(.body | startswith("agent run infra-failed: ")) | .body | ltrimstr("agent run infra-failed: ")] as $infra
-            | [.comments[] | select(.body | startswith("agent run started: ")) | select(.body | ltrimstr("agent run started: ") | . as $u | $infra | index($u) | not)] as $started
+            | ([$checks[] | select(failed) | (.completedAt // .startedAt // empty) | fromdateiso8601] | max) as $failed_at | (.issue.labels | map(.name)) as $labels
+            | [.comments[] | select(.body | startswith("agent run infra-failed: ")) | .body | ltrimstr("agent run infra-failed: ")] as $infra | [.comments[] | select(.body | startswith("agent run started: ")) | select(.body | ltrimstr("agent run started: ") | . as $u | $infra | index($u) | not)] as $started
             | (if $failed_at == null then "not-red"
                elif ($checks | any(pending)) then "pending"
                elif .pr.mergeStateStatus == "DIRTY" then "conflicting"
@@ -551,6 +549,12 @@ jobs:
             rc=0; i=$(issue_json "$n") || rc=$?
             case $rc in 0) ;; 3) echo "#$n: issue gone, skipping" >&2; continue ;; *) exit 1 ;; esac
             pages="$pages$i"$'\n'
+            # Grafana's ready-work search reads labels and GitHub's issue search has no dependency
+            # qualifier (fleet-ops#11296), so the label below carries the issue read's own
+            # blocked-by summary: added on a blocked agent-ready issue, cleared when the last
+            # blocker closes (that close event reaches this same loop).
+            jq -e 'any(.labels[].name; . == "agent-ready") and (.issue_dependencies_summary.blocked_by // 0) != 0 and (any(.labels[].name; . == "dependency-blocked") | not)' <<<"$i" >/dev/null && { gh label create dependency-blocked -R "$GITHUB_REPOSITORY" --color D4C5F9 --description "blocked by an open issue; Grafana reads this label because the issue search cannot" >/dev/null 2>&1 || true; gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label dependency-blocked || echo "::warning::#$n: dependency-blocked label write refused"; }
+            jq -e 'any(.labels[].name; . == "dependency-blocked") and (.issue_dependencies_summary.blocked_by // 0) == 0' <<<"$i" >/dev/null && { gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label dependency-blocked || echo "::warning::#$n: dependency-blocked label clear refused"; }
             # A closed blocker releases a parked hand-off: re-label it as the worker App so the label event starts it (fleet-ops#10489, #10949); at most 12 a sweep (fleet-ops#11010).
             if [ -n "$CLOSED" ] && [ "${released:-0}" -lt 12 ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "needs-orchestrator")' <<<"$i" >/dev/null; then
               released=$((${released:-0} + 1)); for op in remove add; do GH_TOKEN="${LABEL_TOKEN:-}" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --$op-label needs-orchestrator || echo "::warning::#$n: re-fire refused"; done
