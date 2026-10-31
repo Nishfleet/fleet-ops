@@ -569,6 +569,7 @@ jobs:
       # Ten infra endings (the provider's 429s and walls, fleet-ops#11166) escalate too, so a real fault reaches the owner.
       # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran
       # for an hour). The sweep runs hourly, so a quiet priority item re-fires within the hour.
+      # Strikes count from the sweep's last escalation comment: clearing needs-nish-decision resets them.
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -580,7 +581,7 @@ jobs:
           REQUEUE: |
             [.[] | (.labels | map(.name)) as $l
               | select((any($l[]; IN("needs-nish-decision", "agent-blocked")) | not) and (.updatedAt | fromdateiso8601) < $now - (if ($l | index("priority-now")) != null then 1800 else 21600 end)
-                and (($l | index("handoff-ended") != null) != ($l | index("needs-orchestrator") != null)) and ("orch/issue-\(.number)" | IN($prs[]) | not))
+                and (($l | index("handoff-ended") != null) != ($l | index("needs-orchestrator") != null)) and ("orch/issue-\(.number)" | IN($prs[]) | not)) | .comments |= .[([to_entries[] | select((.value.author.login | IN("github-actions", "github-actions[bot]")) and (.value.body | test("^orchestrator: needs Nish\\."))) | .key] | max // -1) + 1:]
               | {number, ended: ($l | index("handoff-ended") != null), prio: (($l | index("priority-now")) != null), runs: [.comments[]
                 | select((((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login == "nishfleet-worker")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
                   or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body],
