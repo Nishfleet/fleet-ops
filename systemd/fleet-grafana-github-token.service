@@ -30,16 +30,18 @@ Description=Mint the short-lived GitHub App token Grafana's alert webhook sends 
 # both observed collisions (the telegram one in #11426, the webhook one filed
 # by this issue #11442) were pinned to it by PR #11431's analysis, and the
 # delivery rule's 1h window fires on every lost send, so apply frequency is
-# the lever. The gate skips a mint while the token file is
-# younger than 35 min (exit 1) and mints when it is older, missing or
-# unreadable (exit 0) — systemd.service: an ExecCondition exit of 1-254 skips
+# the lever. The gate skips a mint while the token file is non-empty and
+# younger than 35 min (exit 1) and mints when it is missing or zero bytes (the
+# placeholder ExecStartPre leaves before a mint, or a first run that failed
+# before the mv), or when it is older (exit 0) — systemd.service: an
+# ExecCondition exit of 1-254 skips
 # the remaining commands and does not fail the unit, so nothing is lost, the
 # next timer tick passes the gate, and the file keeps its mtime. Cadence:
 # about every 40 min (one skipped tick, one passing tick at the 20-min timer),
 # so the reload runs 36 times a day instead of 72. A failed mint re-runs at the
 # next tick with the gate passing, so recovery lags the timer by at most one
-# tick. The token is then always refreshed more than 20 min before its own
-# one-hour expiry, keeping a >= 25 min buffer over the loaded copy.
+# tick, and the token is always refreshed at least 20 min before its own
+# one-hour expiry (40-min cadence against a 60-min token).
 #
 # Switch off: `systemctl --user disable --now fleet-grafana-github-token.timer`
 # and `systemctl --user mask fleet-grafana-github-token.service` (fleet-grafana
@@ -65,12 +67,13 @@ Environment=APP_KEY=%h/.config/fleet-worker/nishfleet-worker.private-key.pem
 ExecStartPre=/bin/sh -c 'rm -f "$$RUNTIME_DIRECTORY/token.new"; test -e "$$RUNTIME_DIRECTORY/token" || { umask 077; : > "$$RUNTIME_DIRECTORY/token"; }'
 # 35 min: pass on one of the pair of ticks after a mint (the 40-min one), i.e.
 # every second timer tick. stat is coreutils (present on the host and the CI
-# runner; this block also runs verbatim in tests). A nonexistent token bypasses
-# the age test through the left branch: on first boot the mint must still
-# happen before Grafana reads the file. stat failing on an existing file lands
+# runner; this block also runs verbatim in tests). A missing or zero-byte
+# token bypasses the age test through the left branch, so the gate's order
+# against ExecStartPre= does not matter: the placeholder mints instead of
+# skipping either way. stat failing on an existing file lands
 # in the sh arithmetic error exit (2), which systemd treats like any other
 # 1-254 skip: the mint waits one tick with the file untouched.
-ExecCondition=/bin/sh -c 'test ! -e "$$RUNTIME_DIRECTORY/token" || test $$(($$(date +%%s) - $$(stat -c %Y "$$RUNTIME_DIRECTORY/token"))) -ge 2100'
+ExecCondition=/bin/sh -c 'test ! -s "$$RUNTIME_DIRECTORY/token" || test $$(($$(date +%%s) - $$(stat -c %Y "$$RUNTIME_DIRECTORY/token"))) -ge 2100'
 # RS256 App JWT (docs: "Generating a JSON Web Token (JWT) for a GitHub App";
 # iat 60 s back for clock drift, exp inside the 10 min cap), then the
 # installation id of this repo, then a token limited to this repo and

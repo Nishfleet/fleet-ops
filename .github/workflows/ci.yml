@@ -164,11 +164,12 @@ jobs:
           # The mint is tested on its own, so the unit's own follow-up keys are
           # dropped. `[ -]*` covers ExecStartPost=- too: systemd ignores that
           # failure, so this sed is belt-and-braces rather than what keeps the
-          # step green. ExecCondition= is dropped with them: the gate would
-          # skip the second mint (its token is seconds old), and it gets its
-          # own seams below.
+          # step green. ExecCondition= stays for the integrated mint seams (a
+          # fresh token skips, a backdated one refreshes) and is dropped in
+          # place before the 401 seams, where a skip would mask a failure that
+          # must fail; the gate's own seams run on its real line below.
           sed -e "s|%h/.config/fleet-worker/nishfleet-worker.private-key.pem|$d/app.pem|" \
-              -e '/^OnFailure=/d' -e '/^ExecStartPost=[ -]*/d' -e '/^ExecCondition=/d' \
+              -e '/^OnFailure=/d' -e '/^ExecStartPost=[ -]*/d' \
               -e 's|^Environment=GITHUB_API_URL=.*|Environment=GITHUB_API_URL=http://127.0.0.1:18795|' \
               -e "s|^\[Service\]|[Service]\nUser=$(id -un)|" "$u" | sudo tee /etc/systemd/system/fleet-token-ci.service >/dev/null
           sudo systemctl daemon-reload
@@ -176,22 +177,33 @@ jobs:
           sudo systemctl start fleet-token-ci.service
           [ "$(sudo cat $t)" = ghs_stub_1 ] || { echo "::error::first mint did not write the token"; exit 1; }
           [ "$(sudo stat -c %a $t)" = 600 ] && [ "$(sudo stat -c %a /run/fleet-grafana-github-token)" = 700 ] || { echo "::error::token file/dir not 0600/0700"; exit 1; }
+          # Integrated gate skip: a second start against a seconds-old token is
+          # a success (systemd.service: a 1-254 ExecCondition exit does not
+          # fail the unit) that leaves the first token in place.
           sudo systemctl start fleet-token-ci.service
-          [ "$(sudo cat $t)" = ghs_stub_2 ] || { echo "::error::second run did not refresh the token"; exit 1; }
+          [ "$(sudo cat $t)" = ghs_stub_1 ] || { echo "::error::gate was skipped minting on a fresh token"; exit 1; }
+          sudo touch -d "40 minutes ago" $t
+          sudo systemctl start fleet-token-ci.service
+          [ "$(sudo cat $t)" = ghs_stub_2 ] || { echo "::error::backdated token did not refresh the token"; exit 1; }
           # The mint gate (fleet-ops#11442): the unit file's ExecCondition= line
           # after the manager's $$ -> $ and %% -> % substitutions, proving the
-          # three seams: missing and old tokens pass (mint), a fresh one skips
-          # (exit 1: systemd.service "the remaining commands are skipped and the
-          # unit is not marked as failed").
+          # seams the integrated runs above cannot isolate: missing and
+          # zero-byte tokens pass (mint), a fresh one skips (exit 1).
           cond=$(sed -n 's/^ExecCondition=//p' "$u" | sed -e 's/\$\$/$/g' -e 's/%%/%/g')
           test -n "$cond" || { echo "::error::ExecCondition missing from $u"; exit 1; }
           g=$RUNNER_TEMP/gh-gate
           rm -rf "$g"; mkdir -p "$g"
           if ! RUNTIME_DIRECTORY=$g sh -c "$cond"; then echo "::error::gate blocked the mint on a missing token"; exit 1; fi
+          : > "$g/token"
+          if ! RUNTIME_DIRECTORY=$g sh -c "$cond"; then echo "::error::gate blocked the mint on a placeholder token"; exit 1; fi
           date > "$g/token"
           if RUNTIME_DIRECTORY=$g sh -c "$cond"; then echo "::error::gate minted on a fresh token"; exit 1; fi
           touch -d "40 minutes ago" "$g/token"
           if ! RUNTIME_DIRECTORY=$g sh -c "$cond"; then echo "::error::gate blocked an old token"; exit 1; fi
+          # The 401 seams need the gate gone: a skip is a success, and these
+          # must fail.
+          sudo sed -i '/^ExecCondition=/d' /etc/systemd/system/fleet-token-ci.service
+          sudo systemctl daemon-reload
           echo fail > "$d/mode"
           if sudo systemctl start fleet-token-ci.service; then echo "::error::unit succeeded while GitHub answered 401"; exit 1; fi
           [ "$(sudo cat $t)" = ghs_stub_2 ] || { echo "::error::a failed mint replaced the previous token"; exit 1; }
