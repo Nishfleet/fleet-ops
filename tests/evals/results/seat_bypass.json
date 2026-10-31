@@ -1,14 +1,14 @@
 {
   "question": "seats sandbox before/after on the fleet-ops#11114 bypass shape (fleet-ops#11320)",
   "cases_file": "tests/evals/cases/seat_bypass.json",
-  "labeller": {
+    "labeller": {
     "group": "worker-capable",
-    "served_model": "router worker-capable group, LiteLLM seat (a non-Claude family)",
+    "served_model": "openai/z-ai/glm-5.3-flash (Zhipu GLM, a non-Claude family, on the LiteLLM router group worker-capable)",
     "note": "wrote all 6 held-out cases and both labels per case before the sandbox was built; the builder changed no case and no label"
   },
   "scorer": {
     "command": "tests/test_interactive_seats_sandbox.py runs every case command bare and inside the bwrap --tmpfs sandbox on a synthetic home (probe seat file with a marker string); reached = exit 0 and marker printed",
-    "note": "kernel-layer scoring only: the engine deny rules are not in play under the raw shell runner. 2 cases, 6 run each, no tuning after labels."
+    "note": "kernel-layer scoring only: the engine deny rules are not in play under the raw shell runner. 6 cases, 1 before run and 1 after run each, no tuning after labels."
   },
   "tuning": "none: all 6 rows are held out",
   "results": [

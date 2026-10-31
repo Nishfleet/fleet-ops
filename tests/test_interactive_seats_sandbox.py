@@ -61,7 +61,8 @@ def launch_line(home: Path) -> list[str]:
             tokens = [token.replace("~/", str(home) + "/") for token in shlex.split(line)]
             for flag in ("--dev-bind", "--tmpfs", "--proc", "--unshare-pid", "--die-with-parent"):
                 assert flag in tokens, flag
-            return tokens
+            assert tokens[-1] != "--die-with-parent", "the sandbox must launch a session program"
+            return tokens[:-1]
     pytest.fail("no sandbox launch line under docs/managed-settings-defaults.md")
 
 
@@ -76,15 +77,17 @@ def reached(result: subprocess.CompletedProcess) -> bool:
     return result.returncode == 0 and PROBE in result.stdout
 
 
-@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is not installed")
 def test_bare_shell_reaches_the_probe_seat(fake_home: Path) -> None:
     for case in json.loads(CASES.read_text()):
+        assert case["expected_before"] == "reached"
         result = run_case(case["command"], fake_home, jailed=False)
         assert reached(result), f"{case['id']}: {result.stdout!r} {result.stderr!r}"
 
 
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is not installed")
 def test_sandbox_blocks_every_held_out_bypass(fake_home: Path) -> None:
+    control = run_case("cat /etc/os-release", fake_home, jailed=True)
+    assert control.returncode == 0 and control.stdout != "", "the sandbox harness must execute inside the sandbox"
     for case in json.loads(CASES.read_text()):
         assert case["expected_after"] == "blocked"
         result = run_case(case["command"], fake_home, jailed=True)
