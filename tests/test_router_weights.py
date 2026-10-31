@@ -7,7 +7,8 @@ group's picks to them, with no row removed or benched.
 Runs the real Router of the pinned proxy image's LiteLLM v1.105.0 on the shipped
 worker rows (litellm/router_strategy/simple_shuffle.py:43-59 weights the pick
 only when the first healthy row has a weight, and reads a missing weight as 0)
-and counts 2000 picks per group. Share = k*w / (k*w + n - k).
+and counts 2000 picks per group. The Router picks only among the rows with the
+lowest order, so n counts those rows. Share = k*w / (k*w + n - k).
 """
 import asyncio
 import random
@@ -72,6 +73,8 @@ def test_preferred_rows_take_about_a_third_of_each_group():
     random.seed(20261013)
     for group in GROUPS:
         rows = _rows(group)
+        first = min(r["litellm_params"]["order"] for r in rows)
+        rows = [r for r in rows if r["litellm_params"]["order"] == first]
         n = len(rows)
         heavy = [r["litellm_params"]["weight"] for r in rows if r["litellm_params"]["weight"] > 1]
         k, w = len(heavy), heavy[0]

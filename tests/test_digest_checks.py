@@ -36,6 +36,11 @@ canonical prompts under config/hermes/ honest:
   run that reads nothing leaves every stored wait and broken item alone, and it
   reports STORED-SAVE-FAILED instead of claiming the row was saved
   (fleet-ops#9862),
+- the stored-item command prints STORED-UNREADABLE and saves nothing when the
+  store read itself exits non-zero, so a failed read can never read as a fresh
+  store and wipe every stored wait and broken item (fleet-ops#10761),
+- and a genuinely empty notepad still bootstraps the store, which then fills
+  with what the sweep finds (fleet-ops#10761),
 - ansible/host.yml applies the prompts to the live jobs,
 - and it deletes the named retired jobs from the same cron store, so a proof job
   whose issue has closed stops existing, while a fresh one is left alone
@@ -157,6 +162,9 @@ FAKE_HERMES = """#!/usr/bin/env python3
 import os, sys
 a = sys.argv[1:]
 if a[:3] == ["cron", "notepad", "3acce3a945cb"] and a[3] == "get":
+    if os.environ.get("FAKE_GET_FAIL"):
+        print("the store could not be read", file=sys.stderr)
+        sys.exit(1)
     sys.stdout.write(open(os.environ["FAKE_STORE"]).read())
 elif a[:3] == ["cron", "notepad", "3acce3a945cb"] and a[3] == "set":
     if os.environ.get("FAKE_SET_FAIL"):
@@ -609,6 +617,29 @@ def test_stored_item_command_writes_nothing_when_the_store_is_unreadable(prompt,
     lines, saved = _run_2a(prompt, tmp_path, {"repos": [], "issues": {}, "runs": {}}, "not json")
     assert "STORED-UNREADABLE" in lines
     assert saved is None
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_stored_item_command_prints_stored_unreadable_when_the_store_read_fails(prompt, tmp_path):
+    gh = {"repos": ["alpha"], "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")}, "runs": {"Nishfleet/alpha": []}}
+    env = _fake_box(tmp_path, gh, json.dumps({"wait:alpha#6": "open|needs-nish-decision", "broken:alpha:ci": "failure"}))
+    env["FAKE_GET_FAIL"] = "1"
+    store = pathlib.Path(env["FAKE_STORE"])
+    before = store.read_text()
+    r = subprocess.run(["bash", "-c", _command(prompt, "R=$(hermes cron notepad")], env=env, capture_output=True, text=True, timeout=60)
+    assert r.stdout.splitlines() == ["STORED-UNREADABLE"], r.stdout
+    assert not pathlib.Path(env["FAKE_SAVED"]).exists()
+    assert store.read_text() == before
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_stored_item_command_bootstraps_a_genuinely_empty_notepad(prompt, tmp_path):
+    gh = {"repos": ["alpha"], "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")}, "runs": {"Nishfleet/alpha": []}}
+    lines, saved = _run_2a(prompt, tmp_path, gh, "")
+    assert "WAITING_TOTAL 1" in lines, lines
+    assert "ROW wait:alpha#7 NEW https://example.com/i" in lines, lines
+    assert lines[-1] == "STORED-SAVED", lines
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
 
 
 @pytest.mark.parametrize("prompt", [MORNING, EVENING])

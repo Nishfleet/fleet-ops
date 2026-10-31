@@ -121,6 +121,33 @@ ExecStart=-/bin/rm -rf %h/.config/systemd/user/executor.service.d
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/helper.md %h/.claude/agents/helper.md
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/scout.md %h/.claude/agents/scout.md
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/claude-max-agents.conf %h/.config/user-tmpfiles.d/claude-max-agents.conf
+# 2d'. The worktree age-out (fleet-ops#10945): agent-worktrees.conf has held
+#      the 3-day rule for the run worktrees beside the two x lines (the
+#      .orch-mirror and the parked orch-damaged-*.git save-dirs) since Nish
+#      2026-09-19, but no task installed it, so old worktree dirs never aged
+#      out. Install it beside the claude-max one (COPY class, same as
+#      2c/2d/2f/6/7); step 5 below (`systemd-tmpfiles --user --create`)
+#      installs it on every sync, and the pass that ages anything out is the
+#      user systemd-tmpfiles-clean.timer's --clean: tmpfiles.d(5) ages every
+#      entry, a file or a whole directory, on its own b/ctime/mtime (age-by
+#      bcmBCM), so a worktree whose top level saw no write for 3 days is
+#      removed whole there. The timer is on by the user preset
+#      /usr/lib/systemd/user-preset/90-systemd.preset line 15 enables it, and
+#      its systemd-tmpfiles-clean.service ran on this host 2026-10-30 18:27
+#      IST, journal systemd[1664]). Fleet
+#      sessions live minutes to about one day under the dispatch walls, so
+#      nothing valid is 3 days old. The first pass's reach on this host was
+#      scanned before push: 54 entries older than 3 days out of 740, and every
+#      git tree among them is delivered, archived to
+#      `orch-issue-10183-flock-archive` (its flock rework went another way on
+#      main), declared scrap (a deleted remote, broken checkouts), or
+#      uncommitted work the standing rule calls not-happened; the PR body
+#      names one for each class.
+#      Off switch: delete this step first, then the conf line in the clone
+#      (`config/user-tmpfiles.d/agent-worktrees.conf`) with it, or a later
+#      deploy reinstalls the file; then
+#      `rm %h/.config/user-tmpfiles.d/agent-worktrees.conf` by hand.
+ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/agent-worktrees.conf %h/.config/user-tmpfiles.d/agent-worktrees.conf
 # 2f. The overdue-issue sweep (later-sweep.timer, fleet-ops#9758): install the
 #     repo list the unit reads, then link the unit pair, so every deploy carries
 #     edits to it. The install is a user-scope COPY, same class as 2c/6/7:
@@ -160,22 +187,19 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     Delete this step once a deploy has run it.
 ExecStart=-/usr/bin/systemctl --user stop beacon-hermes-poll.service
 ExecStart=-/bin/rm -f %h/.config/systemd/user/beacon-hermes-poll.service %h/.config/systemd/user/default.target.wants/beacon-hermes-poll.service
-# 2j. The Tincan wake services (fleet-ops#10133) were hand-placed regular files
-#     under ~/.config/systemd/user with no repo copy, so a git pull carried no
-#     edit to them and the unit-key test could not read them. The two left after
-#     the CLI lanes retired (#44 item 9) are linked here the way 2h links its
-#     pair: a regular file, or a link to anywhere else, blocks `link`, so it is
-#     removed first. The default.target.wants links already point at these
-#     paths, so no `enable` runs here and a hand `systemctl --user disable --now`
-#     stays off. Off switch: delete this step and the two names in it, then
-#     `systemctl --user disable --now` each unit and `systemctl --user unlink` it
-#     by hand. The four retired listeners' links are deleted by `retired` in
-#     ansible/host.yml. A unit edit applies at that unit's next restart, so no
-#     restart line runs here: these listeners are woken by work and a restart
-#     drops whatever wake is in flight. The Cua desk daemon is not here: it lives
-#     in rootfs/etc/systemd/user/ and step 2k retires its hand-placed copy.
-ExecStart=/bin/sh -c 'for f in tincan-listen-fleet-worker.service tincan-listen-pi.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
-ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-fleet-worker.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-pi.service
+# 2j. The two Tincan wake listeners run as system units only (rootfs/etc/systemd/
+#     system/, the agent lock), and their unlocked user forms are gone from the
+#     repo (#10912), so the link lines this step carried would fail every deploy
+#     on `link: No such file or directory`. This is step 2.1's shape: stop the
+#     units first, while the manager still has the loaded copies, then rm the
+#     unit links and the default.target.wants links. The wants links are named
+#     outright because systemd expands no glob in ExecStart (step 2i), and both
+#     lines carry `-`, so a host that already dropped the user forms stays
+#     quiet. The daemon-reload below then drops the loaded copies, and
+#     LINK-GUARD (step 9) never sees a dangling link. Off switch: delete this
+#     step.
+ExecStart=-/usr/bin/systemctl --user stop tincan-listen-pi.service tincan-listen-fleet-worker.service
+ExecStart=-/bin/rm -f %h/.config/systemd/user/tincan-listen-pi.service %h/.config/systemd/user/tincan-listen-fleet-worker.service %h/.config/systemd/user/default.target.wants/tincan-listen-pi.service %h/.config/systemd/user/default.target.wants/tincan-listen-fleet-worker.service
 # 2k. One file fleet-host-config.service installs as root into /etc/systemd/user
 #     (fleet-ops#10140): the Cua desk daemon unit. The gpg-agent OOM drop-in that
 #     used to be retired here is #10138's own delivery: ansible/host.yml lists it
@@ -249,7 +273,7 @@ ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-d1-restore-drill.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-clone-lag.timer
-ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer
+ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer fleet-pr-sweep@seo-fix-kit.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
 #    (rootfs/etc/systemd/system/, Ansible's ansible-pull of ansible/host.yml)
@@ -306,7 +330,9 @@ ExecStart=/usr/bin/find %h/.pi/agent/skills -xtype l -printf "[fleet-sync] skill
 #    call then exited 0 with no output and nothing paged. Fail LOUD on any listed
 #    launch path (symlinks followed) whose bytes equal /bin/true. A failed unit is
 #    the page (OnFailure=). It runs on every deploy. Off switch: delete this step.
-ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/tincan /usr/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
+#    The runners' runsvc.sh too: on 2026-10-31 a hand-off's stub loop overwrote all
+#    thirty (fleet-ops#10537 session), and each runner died on its next restart.
+ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/tincan /usr/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes %h/.local/share/agent-runner/*/runsvc.sh %h/.local/share/fleet-ci-runner/*/runsvc.sh; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
 # 11. The deploy result as a metric (fleet-ops#9437). Nothing paged for a failed
 #    fleet-sync: its OnFailure= healthchecks.io ping is inert on a host without
 #    ~/.config/fleet-ops/keystone-hc.env, and node_exporter's systemd collector

@@ -29,7 +29,18 @@
 # dropped by the HAVING floor: a 2-hourly probe lane would otherwise read 0
 # calls one hour and 1 hop the next, and 100% would page. Fire above 45%.
 #
-# SELECT only hop_pct (fleet-ops#9475 acceptance). A threshold expression over
+# The window orders by ("startTime", model_id), not "startTime" alone
+# (fleet-ops#10819): LiteLLM_SpendLogs can hold more than one row per request
+# (attempt, retry, fallback) at equal or near-equal startTime, and a window
+# with no tiebreaker leaves the lag order to the engine's scan order, so the
+# same data reads a different hop count between evaluations and the rate flaps
+# across the 45% bar. model_id is the tiebreaker the view already exposes;
+# request_id would need a view change on the host, outside this repo. Rows
+# identical in both order keys are interchangeable (same key, same timestamp,
+# same prev), so the per-hour hop count is the same whatever order the engine
+# reads them in: tests/test_session_hop_rule.py runs the rule's own window over
+# a tie case in both scan orders and fails unless both read the same hops.
+## SELECT only hop_pct (fleet-ops#9475 acceptance). A threshold expression over
 # the frame evaluates every numeric column the frame carries, so diagnostic
 # counts (hops, nonfirst) must not ride in the same SELECT as the alarm value.
 # The session ids sit one replay away, not in the frame:
@@ -42,7 +53,7 @@
 #       FROM session_hop_logs
 #       WHERE call_type = 'acompletion' AND status = 'success'
 #         AND "startTime" > (NOW() AT TIME ZONE 'UTC') - INTERVAL '6 hours'
-#       WINDOW w AS (PARTITION BY session_id ORDER BY "startTime")
+#       WINDOW w AS (PARTITION BY session_id ORDER BY "startTime", model_id)
 #     )
 #     SELECT session_id, count(*) AS calls,
 #            count(*) FILTER (
@@ -118,7 +129,9 @@
 # (a quiet 6 hours) is NoData, which stays OK on purpose — silence means no
 # ≥50-call hour, and a proxy that stopped taking traffic entirely is caught by
 # the router and cost alarms. No notification_settings here: the policy tree
-# is the only router.
+# is the only router. session-hop-volume (below) routes the same way: a supply
+# the rate rule cannot see is the leak returning unobserved, so its title sits
+# in URGENT with a money reason too.
 apiVersion: 1
 
 groups:
@@ -156,7 +169,7 @@ groups:
                   WHERE call_type = 'acompletion'
                     AND status = 'success'
                     AND "startTime" > (NOW() AT TIME ZONE 'UTC') - INTERVAL '6 hours'
-                  WINDOW w AS (PARTITION BY session_id ORDER BY "startTime")
+                  WINDOW w AS (PARTITION BY session_id ORDER BY "startTime", model_id)
                 ) calls
                 WHERE prev_key IS NOT NULL
                 GROUP BY 1
@@ -202,5 +215,72 @@ groups:
           description: 'A router session is answering on a different row key than its previous call. A session pin is first-writer-wins and is refreshed only when the row it names is chosen again, so a pin held by a row in cooldown scatters every later call in that session across the group and throws away the prompt cache the previous call built. This is the fleet-ops#9361 leak: 17.1% of non-first calls, 90.4M cached tokens re-read in 5.6 days. Replay the diagnostic SQL in config/grafana/provisioning/alerting/session-hop.yaml for the session ids, and check the live pins with `redis-cli --scan --pattern "deployment_affinity:*" | head` (read-only). Do NOT remove or bench a router row without Nish''s explicit yes (2026-10-02 rule). Re-ordering rows needs Nish.'
           value: '{{ with index $values "B" }}{{ if .Value }}{{ .Value | printf "%.1f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}% of non-first calls'
           threshold: 'more than 45% in any hour with 50 or more non-first calls'
+        labels: {severity: critical, signal: session-hop}
+        isPaused: false
+      # The silent-death detector (fleet-ops#10819). The rate rule reads NoData
+      # as OK on purpose, so it cannot notice its own supply dying: if LiteLLM
+      # renames a call_type or status enum value, or stops writing session_id
+      # (the view already drops the 123k of 618k rows that have none), traffic
+      # continues while every window falls under the 50-call floor and the rate
+      # rule reads NoData as OK forever. This rule counts the rate rule's own
+      # supply — same view, same filters — over a 24-hour lookback and fires
+      # when it reads zero for a day. A day of genuine quiet reads zero too,
+      # but a proxy that stopped taking traffic is already caught by the router
+      # and cost alarms; this page is the a-day-later second net, so the
+      # acompletion-success traffic that stops reaching the view is what it
+      # measures and nothing else. noDataState Alerting: a bare count reads one
+      # row even over no data, so an empty frame here means the detector itself
+      # is broken. The query stays index-bounded on
+      # LiteLLM_SpendLogs_startTime_idx like the rate query (four times the
+      # rows, still milliseconds).
+      - uid: session-hop-volume
+        title: Session-hop alarm reads zero calls for a day
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: fleet-litellm-postgres
+            relativeTimeRange: {from: 86400, to: 0}
+            model:
+              datasource: {type: postgres, uid: fleet-litellm-postgres}
+              editorMode: code
+              format: table
+              rawSql: |-
+                SELECT count(*) AS calls
+                FROM session_hop_logs
+                WHERE call_type = 'acompletion'
+                  AND status = 'success'
+                  AND "startTime" > (NOW() AT TIME ZONE 'UTC') - INTERVAL '24 hours'
+              refId: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              hide: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: reduce
+              refId: B
+              expression: A
+              reducer: max
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: C
+              expression: B
+              conditions:
+                - evaluator: {params: [1], type: lt}
+                  operator: {type: and}
+                  query: {params: [C]}
+                  reducer: {params: [], type: lt}
+                  type: query
+        noDataState: Alerting
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'No qualifying session-hop traffic for a day: the rate alarm is blind, and its NoData reads OK'
+          description: 'The session-hop volume detector counts the rate alarm''s own supply (acompletion, success, session_id and model_id present) over 24 h and it reads 0: LiteLLM stopped writing rows the alarm can see (a renamed call_type or status enum value, a dropped or renamed session_id) or the view emptied. The rate rule reads NoData as OK, so it cannot page for this. Check the supply with the diagnostic SQL in config/grafana/provisioning/alerting/session-hop.yaml as grafana_ro, and the raw table as the litellm role. A proxy that stopped taking traffic entirely lands here a day later too; the router and cost alarms page for that in parallel.'
         labels: {severity: critical, signal: session-hop}
         isPaused: false

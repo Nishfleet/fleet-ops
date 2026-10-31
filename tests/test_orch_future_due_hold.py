@@ -55,6 +55,7 @@ def run(tmp_path, body):
         "REPO": "Nishfleet/fleet-ops",
         "ISSUE": "11011",
         "GO": "true",
+        "SESSION_OUTCOME": "success",
         "GITHUB_SERVER_URL": "https://example.invalid",
         "GITHUB_RUN_ID": "7",
     }

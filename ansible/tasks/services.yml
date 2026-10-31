@@ -40,6 +40,19 @@
     daemon_reload: true
   ignore_errors: "{{ ansible_check_mode }}"
 
+# The runner sandbox apply unit (fleet-ops#11248) restarts the runner units whose
+# drop-in is newer than their start and that hold no Runner.Worker process: the
+# handler covers the deploy and this timer catches a runner that was busy then,
+# within 5 min of its job ending. Starting the timer schedules the first pass;
+# it never runs the service now.
+- name: Enable the runner sandbox apply timer
+  ansible.builtin.systemd_service:
+    name: fleet-runner-sandbox-apply.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
 # The Beacon Hermes poll watcher (fleet-ops#11089) is a system unit now. It parses
 # Telegram text, so it needs a mount sandbox that holds, and a unit the user
 # manager starts gets none on this box (docs/user-unit-sandboxing.md). Its file is
