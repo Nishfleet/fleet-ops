@@ -48,11 +48,13 @@ DEPLOY_DIR = "/var/lib/fleet-deploy"
 
 
 def _deploy_box_run_block() -> str:
-    """The apply job's shell, from the workflow's last (and only) run: block."""
+    """The apply job's shell, from the workflow's only run: block."""
     text = DEPLOY_BOX.read_text()
     marker = "        run: |\n"
     assert text.count(marker) == 1, "one run block in deploy-box.yml"
-    return text.split(marker, 1)[1]
+    body = text.split(marker, 1)[1]
+    stop = body.find("\n      - ")
+    return body[:stop] if stop != -1 else body
 
 
 def _run_deploy_box(tmp_path: Path, result: str, log: str, systemctl_exit: int) -> subprocess.CompletedProcess:
@@ -77,12 +79,15 @@ def _run_deploy_box(tmp_path: Path, result: str, log: str, systemctl_exit: int) 
     return subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, check=False)
 
 
-def test_deploy_box_job_probes_the_runner_then_writes_the_request() -> None:
+def test_deploy_box_requests_the_deploy_then_probes_the_runner() -> None:
     text = DEPLOY_BOX.read_text()
     assert "runs-on: [self-hosted, fleet-ci]" in text
     probe = text.index("runner-probe")
     run_block = text.index("        run: |")
-    assert probe < run_block, "the runner-probe step must come first"
+    assert run_block < probe, (
+        "the deploy request comes first and the probe runs last, so a red probe "
+        "can no longer skip the deploy (fleet-ops#10046)"
+    )
     body = _deploy_box_run_block()
     assert "systemctl is-active --quiet fleet-deploy.path" in body, "an inactive path unit must fail the job at once"
     assert 'grep "^$stamp "' in body, "the poll must match only this run's own request line"
