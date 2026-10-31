@@ -78,6 +78,104 @@
     fail_msg: "Grafana secrets not refreshed, source or key missing or empty: {{ grafana_secrets_missing | join('; ') }}."
     quiet: true
 
+# The grafana_ro probe (fleet-ops#10818): the data source's role, view and grant are
+# created by hand on the host (the DDL comment in
+# config/grafana/provisioning/datasources/litellm-postgres.yaml), so a rebuilt host, a
+# dropped role or a re-granted ACL leaves the session-hop rule in DatasourceError with no
+# machine path back. This logs in as grafana_ro over loopback with the grafana-postgres-password
+# value the secrets tasks minted into the Podman secret from
+# ~/.config/fleet-ops/grafana-postgres-password.env, and fails the play when the login fails,
+# the view is missing or unreadable, or any other relation in public carries a table- or
+# column-level SELECT for the role. The grants query reads pg_attribute.attacl
+# (has_column_privilege), not only relacl: a column-level SELECT on LiteLLM_SpendLogs
+# survived a table-level probe on 2026-10-29 until it was revoked. The password rides a
+# one-use pgpass file (0600, libpq refuses a looser one) named by PGPASSFILE, never argv,
+# and is removed in the always block; --no-password makes a wrong or missing password fail
+# the login instead of prompting.
+- name: Probe the grafana_ro login, view and grant surface
+  block:
+    - name: Make the probe's one-use password file
+      become: true
+      become_user: nish
+      check_mode: false
+      changed_when: false
+      ansible.builtin.tempfile:
+        state: file
+        prefix: fleet-grafana-probe-pgpass-
+      register: grafana_ro_probe_pgpass
+
+    - name: Write the probe's pgpass line
+      become: true
+      become_user: nish
+      check_mode: false
+      no_log: true
+      ansible.builtin.copy:
+        dest: "{{ grafana_ro_probe_pgpass.path }}"
+        mode: "0600"
+        content: >-
+          127.0.0.1:5432:litellm:grafana_ro:{{
+          grafana_ro_probe_password.replace('\\', '\\\\').replace(':', '\\:') }}
+      vars:
+        grafana_ro_probe_password: >-
+          {{ (grafana_secret_values.results
+              | selectattr('item.name', 'equalto', 'grafana-postgres-password')
+              | map(attribute='stdout') | first) | trim }}
+
+    - name: Log in as grafana_ro and read the grant surface
+      become: true
+      become_user: nish
+      check_mode: false
+      changed_when: false
+      failed_when: false
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/psql
+          - --host=127.0.0.1
+          - --username=grafana_ro
+          - --dbname=litellm
+          - --no-psqlrc
+          - --no-password
+          - --tuples-only
+          - --no-align
+          - --set=ON_ERROR_STOP=1
+          - --command=SELECT 1 FROM public.session_hop_logs LIMIT 1
+          - >-
+            --command=DO $probe$ DECLARE n int; offenders text; BEGIN WITH o AS
+            (SELECT c.relname, COALESCE(a.attname, '-') AS attname FROM pg_class c
+            JOIN pg_namespace nn ON nn.oid = c.relnamespace LEFT JOIN pg_attribute a
+            ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+            WHERE nn.nspname = 'public' AND c.relkind IN ('r', 'p', 'f', 'v')
+            AND c.relname <> 'session_hop_logs'
+            AND (has_table_privilege(c.oid, 'SELECT')
+            OR (a.attnum IS NOT NULL AND has_column_privilege(c.oid, a.attnum, 'SELECT'))))
+            SELECT count(*), COALESCE(string_agg(relname || ':' || attname, ', '), '')
+            INTO n, offenders FROM o;
+            IF n > 0 THEN RAISE EXCEPTION 'grafana_ro holds SELECT it must not: % grant(s) on
+            %, the view is the whole grant, revoke them', n, offenders; END IF; END $probe$;
+      environment:
+        PGPASSFILE: "{{ grafana_ro_probe_pgpass.path }}"
+      register: grafana_ro_probe
+
+    - name: Fail when the grafana_ro probe failed
+      ansible.builtin.assert:
+        that: grafana_ro_probe.rc == 0
+        fail_msg: >-
+          The grafana_ro data source probe failed (rc {{ grafana_ro_probe.rc }}).
+          stderr: {{ grafana_ro_probe.stderr | trim }}
+          query output: {{ grafana_ro_probe.stdout | trim }}
+          The role, password and view are created by hand; the DDL and the password step are in
+          config/grafana/provisioning/datasources/litellm-postgres.yaml, and the exception in the
+          stderr names the relation or column whose SELECT the role holds and that must be revoked.
+        quiet: true
+  always:
+    - name: Remove the probe's password file
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ grafana_ro_probe_pgpass.path }}"
+        state: absent
+      when: grafana_ro_probe_pgpass.path is defined
+
 # A Cua Space that did not come up fails the run here, before the last two
 # tasks; force_handlers still runs the pending handlers.
 - name: Fail when tether's Cua Space could not be readied
