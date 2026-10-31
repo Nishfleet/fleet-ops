@@ -327,6 +327,67 @@ groups:
         labels: {severity: warning, signal: fleet-scorecard}
         isPaused: false
 
+      # Dependency-blocked ready work sat without a signal for 48h (fleet-ops#11135). The idle
+      # rule above drops dependency-blocked ready issues (-is:blocked since #11277; the mirror
+      # labels agent-blocked-dep and dependency-blocked arrive with #11228/#11301), so a blocker
+      # stuck forever would silence the class instead of being seen. This rule keeps counting
+      # them, one frame per spelling: frame A reads GitHub's built-in is:blocked qualifier
+      # (GitHub Docs, Filtering and searching issues; the seven live hits listed in #11277 are
+      # the proof), frame B reads both mirror labels in one token, the label comma being
+      # GitHub's OR (docs guide searching-issues-and-pull-requests.md,
+      # label:documentation,reliability). The frames union in SQL, not in the search, because
+      # the search endpoint silently reads a parenthesised OR as zero (probed 2026-11-01:
+      # (label:agent-blocked OR label:needs-orchestrator), a union of 61, read 0), so a
+      # search-side OR would be a detector that never fires. An issue enters the count only
+      # when its own updated_at is at least 48h old, the queue-stuck pattern, so the age is
+      # per issue and not a property of the set. Until a mirror label lands, frame B is empty
+      # and reads a true zero, not a broken read. Known gap (as in queue-stuck.yaml): an issue
+      # untouched for over 30 days leaves the read window and the count falls to 0, so a
+      # firing alert resolves instead of staying.
+      - uid: scorecard-blocked-stale
+        title: Dependency-blocked ready work with no update for 48h
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 2592000, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Issues
+              owner: Nishfleet
+              repository: ''
+              options: {query: "org:Nishfleet is:issue is:open label:agent-ready is:blocked NOT \"grafana alert:\" in:title archived:false", timeField: 2}
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 2592000, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Issues
+              owner: Nishfleet
+              repository: ''
+              options: {query: "org:Nishfleet is:issue is:open label:agent-ready label:agent-blocked-dep,dependency-blocked NOT \"grafana alert:\" in:title archived:false", timeField: 2}
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT COUNT(*) AS blocked
+                FROM (SELECT updated_at FROM A UNION ALL SELECT updated_at FROM B) AS found
+                WHERE UNIX_TIMESTAMP() - UNIX_TIMESTAMP(updated_at) >= 172800
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}Dependency-blocked agent-ready work has had no update for 48 hours.{{ else }}The fleet cannot read GitHub issues for the Fleet scorecard blocked-stale rule, so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}A dependency-blocked agent-ready issue has had no update for two days while its blocker gives no sign of life (fleet-ops#11135). Open the blocker, or unlink the dependency so the issue returns to the queue. Dashboard: Fleet scorecard.{{ else }}Check the GitHub data source in Grafana.{{ end }} Open the lists: https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aagent-ready+is%3Ablocked+NOT+%22grafana+alert%3A%22+in%3Atitle+archived%3Afalse+sort%3Aupdated-asc and https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aagent-ready+label%3Aagent-blocked-dep%2Cdependency-blocked+NOT+%22grafana+alert%3A%22+in%3Atitle+archived%3Afalse+sort%3Aupdated-asc'
+        labels: {severity: warning, signal: fleet-scorecard}
+        isPaused: false
+
       - uid: scorecard-verdict-slow
         title: Head to review verdict over 20 min p50 or 60 min p90, two days running
         condition: C
