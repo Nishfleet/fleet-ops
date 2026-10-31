@@ -77,11 +77,11 @@ that could leave an agent with no unit running:
 
 ## Rollback
 
-One command per agent, no data moves. The old user unit file is disabled but
-still on disk:
+One command per agent, no data moves. The unlocked user forms are gone
+(the last two went with fleet-ops#10912), so rolling one back is
+re-enabling its system unit:
 
-    sudo systemctl disable --now tincan-listen-pi.service
-    systemctl --user --machine=nish@.host enable --now tincan-listen-pi.service
+    sudo systemctl enable --now tincan-listen-<agent>.service
 
 ## Off switch
 

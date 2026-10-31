@@ -161,14 +161,15 @@
   agent runs on, with `CUA_MESH=prefer` and the seat b env file; it is
   root-owned, installed from `rootfs/etc/systemd/user/` by
   `fleet-host-config.service`, because `systemd-analyze verify` cannot stub the
-  bundled `cua` binary. Run one by hand with `systemctl --user start <unit>`: all
-  three are enabled already, and a unit edit applies at that unit's next restart.
+  bundled `cua` binary. Run one by hand with `sudo systemctl start <unit>`
+  (the desk daemon takes `systemctl --user start`): all three are enabled
+  already, and a unit edit applies at that unit's next restart.
   Off switch, one unit at a time:
-  `systemctl --user disable --now tincan-listen-fleet-worker.service`
-  `systemctl --user disable --now tincan-listen-pi.service`
+  `sudo systemctl disable --now tincan-listen-fleet-worker.service`
+  `sudo systemctl disable --now tincan-listen-pi.service`
   `systemctl --user disable --now cua-desk-daemon.service`
   Delete a wake service by deleting its file here and the installed copy, then
-  `systemctl --user daemon-reload`. Delete the desk daemon with
+  `sudo systemctl daemon-reload`. Delete the desk daemon with
   `systemctl --user disable --now cua-desk-daemon.service` (it removes the wants
   link), then remove its file under `rootfs/etc/systemd/user/` and step 2k, then
   `systemctl --user daemon-reload`.

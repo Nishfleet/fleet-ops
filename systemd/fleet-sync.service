@@ -187,22 +187,19 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     Delete this step once a deploy has run it.
 ExecStart=-/usr/bin/systemctl --user stop beacon-hermes-poll.service
 ExecStart=-/bin/rm -f %h/.config/systemd/user/beacon-hermes-poll.service %h/.config/systemd/user/default.target.wants/beacon-hermes-poll.service
-# 2j. The Tincan wake services (fleet-ops#10133) were hand-placed regular files
-#     under ~/.config/systemd/user with no repo copy, so a git pull carried no
-#     edit to them and the unit-key test could not read them. The two left after
-#     the CLI lanes retired (#44 item 9) are linked here the way 2h links its
-#     pair: a regular file, or a link to anywhere else, blocks `link`, so it is
-#     removed first. The default.target.wants links already point at these
-#     paths, so no `enable` runs here and a hand `systemctl --user disable --now`
-#     stays off. Off switch: delete this step and the two names in it, then
-#     `systemctl --user disable --now` each unit and `systemctl --user unlink` it
-#     by hand. The four retired listeners' links are deleted by `retired` in
-#     ansible/host.yml. A unit edit applies at that unit's next restart, so no
-#     restart line runs here: these listeners are woken by work and a restart
-#     drops whatever wake is in flight. The Cua desk daemon is not here: it lives
-#     in rootfs/etc/systemd/user/ and step 2k retires its hand-placed copy.
-ExecStart=/bin/sh -c 'for f in tincan-listen-fleet-worker.service tincan-listen-pi.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
-ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-fleet-worker.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-pi.service
+# 2j. The two Tincan wake listeners run as system units only (rootfs/etc/systemd/
+#     system/, the agent lock), and their unlocked user forms are gone from the
+#     repo (#10912), so the link lines this step carried would fail every deploy
+#     on `link: No such file or directory`. This is step 2.1's shape: stop the
+#     units first, while the manager still has the loaded copies, then rm the
+#     unit links and the default.target.wants links. The wants links are named
+#     outright because systemd expands no glob in ExecStart (step 2i), and both
+#     lines carry `-`, so a host that already dropped the user forms stays
+#     quiet. The daemon-reload below then drops the loaded copies, and
+#     LINK-GUARD (step 9) never sees a dangling link. Off switch: delete this
+#     step.
+ExecStart=-/usr/bin/systemctl --user stop tincan-listen-pi.service tincan-listen-fleet-worker.service
+ExecStart=-/bin/rm -f %h/.config/systemd/user/tincan-listen-pi.service %h/.config/systemd/user/tincan-listen-fleet-worker.service %h/.config/systemd/user/default.target.wants/tincan-listen-pi.service %h/.config/systemd/user/default.target.wants/tincan-listen-fleet-worker.service
 # 2k. One file fleet-host-config.service installs as root into /etc/systemd/user
 #     (fleet-ops#10140): the Cua desk daemon unit. The gpg-agent OOM drop-in that
 #     used to be retired here is #10138's own delivery: ansible/host.yml lists it
