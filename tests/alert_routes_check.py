@@ -6,9 +6,13 @@ rule carries a severity label: critical for the rules in URGENT (they page again
 at least hourly until they resolve), warning for every other rule (never pages).
 Every firing alert, whatever its severity, also reaches a webhook that files a
 fleet-ops issue. No rule may set its own notification_settings, which would
-bypass the policy tree. This reads the provisioning files, walks the policy tree
-for each rule (also for the DatasourceError and DatasourceNoData alerts the rule
-can turn into), and fails when any of that does not hold. Adding a paging rule
+bypass the policy tree. A cost rule's firing alert files its issue at least as
+often as it pages, so every page is counted on the rule's open issue: the dispatch
+gate closes each re-file as that issue's duplicate and comments the page on it
+(a read error on the rule still files on the catch-all's daily cadence). This reads the
+provisioning files, walks the policy tree for each rule (also for the
+DatasourceError and DatasourceNoData alerts the rule can turn into), and fails
+when any of that does not hold. Adding a paging rule
 means adding it to URGENT here, with its reason, and labelling it critical.
 It also fails when a rule or a dashboard panel reads a data source this repo does
 not provision, or an owner this repo's GitHub App has no installation for: that
@@ -79,6 +83,7 @@ SEVERITIES = ("critical", "warning")
 CRITICAL_REPEAT = 3600
 ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch", "router-dead-key-dispatch", "prometheus-alert-dispatch", "nish-ask-dispatch"}
 GENERIC_SINK = "fleet-alert-dispatch"
+COST_SIGNAL = "cloudflare-spend"
 ISSUE_URL = "https://api.github.com/repos/Nishfleet/fleet-ops/issues"
 TOKEN_FILE = "$__file{/run/secrets/github-token/token}"
 AUDIENCE_SINKS = {"nish": "nish-ask-dispatch"}
@@ -209,6 +214,13 @@ def selftest():
     assert seconds("1h") == 3600 and seconds("1h30m") == 5400 and seconds("24h") == 86400
     assert re.search(r"\$[A-Za-z_{]", "{{ $labels.a }}".replace("$$", ""))
     assert not re.search(r"\$[A-Za-z_{]", "{{ $$labels.a }}".replace("$$", ""))
+    cost = {"receiver": "root", "repeat_interval": "24h", "routes": [
+        {"receiver": PAGE, "object_matchers": [["severity", "=", "critical"]], "continue": True,
+         "repeat_interval": "1h"},
+        {"receiver": "cloudflare-spend-dispatch", "object_matchers": [["signal", "=", COST_SIGNAL]],
+         "repeat_interval": "1h"}]}
+    assert route(cost, {"severity": "critical", "signal": COST_SIGNAL}) == {(PAGE, 3600), ("cloudflare-spend-dispatch", 3600)}
+    assert route(cost, {"signal": COST_SIGNAL}) == {("cloudflare-spend-dispatch", 3600)}
     repo = Path(__file__).resolve().parents[1]
     findings = alertmanager_auth(repo)
     assert findings == [], findings
@@ -819,6 +831,12 @@ def main(root):
         if got is not None and got != want:
             bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
                        f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
+        if labels.get("signal") == COST_SIGNAL and pages:
+            for rc, rep in sinks.items():
+                if rc in ISSUE_SINKS and (rep is None or rep > min(pages)):
+                    got = "no repeat of its own" if rep is None else f"every {rep}s"
+                    bad.append(f"{title}: {rc} files its issue {got} but the rule pages every "
+                               f"{min(pages)}s, so a page lands with no tracked record")
     dead_row_shape(rules, points, bad)
     dead_key_shape(rules, points, bad)
     sink_shape(points, bad)
@@ -857,7 +875,7 @@ def main(root):
         for b in bad:
             print(f"::error::{b}")
         return 1
-    print(f"{len(paging)} of {len(rules)} rules can page (critical, every <=1h); the other {len(rules) - len(paging)} are warning and reach the fleet only; every rule files a fleet-ops issue")
+    print(f"{len(paging)} of {len(rules)} rules can page (critical, every <=1h); the other {len(rules) - len(paging)} are warning and reach the fleet only; every rule files a fleet-ops issue, a cost rule at least as often as it pages")
     print(f"alertmanager: the options require {AM_WEB_CONFIG}, and both Prometheus paths read {AM_AUTH_FILE} from a host-only file")
     return 0
 

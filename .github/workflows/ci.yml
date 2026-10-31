@@ -1489,8 +1489,11 @@ jobs:
           # container runs as that owner (on the host UserNS=keep-id maps the file
           # owner to the image's grafana uid), so a mode the reader cannot use fails here.
           chmod 0700 "$d/tok"; chmod 0600 "$d/tok/token"
+          # The drill copy rewrites every repeat_interval, whatever its value, to
+          # 1m — including the plan route's 7d and the 24h routes — so every
+          # still-firing group re-sends in minutes; only the drill copy sees this.
           sed -e 's|https://api.github.com/repos/Nishfleet/fleet-ops/issues|http://127.0.0.1:18796/|' \
-              -e 's|group_interval: 5m|group_interval: 10s|' -e 's|repeat_interval: 12h|repeat_interval: 1m|' -e 's|repeat_interval: 24h|repeat_interval: 1m|' \
+              -e 's|group_interval: 5m|group_interval: 10s|' -e 's|repeat_interval: [0-9][0-9smhdw]*|repeat_interval: 1m|' \
               config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml > "$d/prov/contact.yaml"
           cat > "$d/prov/fixture.yaml" <<'YAML'
           apiVersion: 1
@@ -1511,13 +1514,7 @@ jobs:
                 - uid: drill-dead-row
                   title: drill dead row
                   condition: B
-                  data:
-                    - refId: A
-                      datasourceUid: __expr__
-                      model: {datasource: {type: __expr__, uid: __expr__}, type: math, expression: "1", refId: A}
-                    - refId: B
-                      datasourceUid: __expr__
-                      model: {datasource: {type: __expr__, uid: __expr__}, type: threshold, expression: A, refId: B, conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]}
+                  data: [{refId: A, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, expression: "1", refId: A}}, {refId: B, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: threshold, expression: A, refId: B, conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]}}]
                   for: 0s
                   noDataState: OK
                   execErrState: Error
@@ -1526,18 +1523,21 @@ jobs:
                 - uid: drill-generic
                   title: drill generic
                   condition: B
-                  data:
-                    - refId: A
-                      datasourceUid: __expr__
-                      model: {datasource: {type: __expr__, uid: __expr__}, type: math, expression: "1", refId: A}
-                    - refId: B
-                      datasourceUid: __expr__
-                      model: {datasource: {type: __expr__, uid: __expr__}, type: threshold, expression: A, refId: B, conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]}
+                  data: [{refId: A, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, expression: "1", refId: A}}, {refId: B, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: threshold, expression: A, refId: B, conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]}}]
                   for: 0s
                   noDataState: OK
                   execErrState: Error
                   annotations: {summary: drill, value: "1", threshold: "0", description: drill}
                   labels: {signal: drill-generic}
+                - uid: drill-spend
+                  title: drill spend
+                  condition: B
+                  data: [{refId: A, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, expression: "1", refId: A}}, {refId: B, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: threshold, expression: A, refId: B, conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]}}]
+                  for: 0s
+                  noDataState: OK
+                  execErrState: Error
+                  annotations: {summary: drill, value: "1", threshold: "0", top: drill-db, description: drill}
+                  labels: {signal: cloudflare-spend, product: drill, resource: drill-db}
           YAML
           echo drill-admin-pw > "$d/admin-pw"
           : > "$d/sink.log"
@@ -1573,13 +1573,18 @@ jobs:
           grep -q '^AUTH Bearer tokenB$' "$d/sink.log" || { echo "::error::a provisioning reload did not make the webhook send the replaced token"; sort "$d/sink.log" | uniq -c; exit 1; }
           sort "$d/sink.log" | uniq -c
           # A rule with no route of its own lands on the policy root,
-          # fleet-alert-dispatch: its payload must be a labelled fleet issue.
-          for _ in $(seq 1 30); do grep -q '"title":"grafana alert: drill generic"' "$d/sink.log" && break; sleep 3; done
+          # fleet-alert-dispatch: its payload must be a labelled fleet issue. The
+          # spend rule (fleet-ops#9859) must deliver twice, one POST per repeat:
+          # design-coverage of the cap is tests/test_claude_lanes.py (the gate
+          # closes each re-file as the open issue's duplicate and counts the
+          # page on it); the drill proves only that the repeat delivers.
+          for _ in $(seq 1 80); do grep -q '"title":"grafana alert: drill generic"' "$d/sink.log" && [ "$(grep -c '"title":"cost alarm: drill spend drill-db"' "$d/sink.log")" -ge 2 ] && break; sleep 3; done
           g=$(grep '"title":"grafana alert: drill generic"' "$d/sink.log" | head -n 1 || true)
           [ -n "$g" ] || { echo "::error::a rule with no route of its own did not reach fleet-alert-dispatch"; cat "$d/sink.log"; exit 1; }
+          [ "$(grep -c '"title":"cost alarm: drill spend drill-db"' "$d/sink.log")" -ge 2 ] || { echo "::error::a still-firing cost rule filed one issue, not one per repeat"; sort "$d/sink.log" | uniq -c; exit 1; }
           jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic")) and (.body | contains("drill-generic"))' <<<"${g#BODY * }" >/dev/null \
             || { echo "::error::fleet-alert-dispatch rendered an unexpected issue"; echo "$g"; exit 1; }
-          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue"
+          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue and a still-firing cost rule delivered one POST per repeat"
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
