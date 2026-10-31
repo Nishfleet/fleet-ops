@@ -949,10 +949,12 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
-    input_cost_per_token: 3e-07
-    output_cost_per_token: 1.2e-06
-    cache_read_input_token_cost: 6e-08
-    cache_creation_input_token_cost: 3.75e-07
+    # Flat prepaid plan: real marginal cost is zero, so its list price must never
+    # meter against the real-money Jev key (fleet-ops#11272). Worker groups keep list prices.
+    input_cost_per_token: 0
+    output_cost_per_token: 0
+    cache_read_input_token_cost: 0
+    cache_creation_input_token_cost: 0
     tags:
     - prepaid
     - minimax
