@@ -1,5 +1,10 @@
-# Tether: no group may fall into tether (the Claude credit is Tether's alone, and assistant -> tether with tether -> assistant is a cycle).
-# Built from the live config's judge, synthetic-glm53flashe-worker-capable and tether rows and its router_settings, which pass the schema alone, so this file breaks only the rule named above.
+# Tether: no group may fall into tether (the Claude credit is Tether's alone, and
+# assistant -> tether with tether -> assistant is a cycle).
+# The rows and router_settings are the live config's judge fallback, judge paid,
+# Synthetic worker-capable, Straitly worker-public and tether rows plus its own
+# router_settings, which pass the schema alone, so the change above is the only
+# one in this file.
+# undo: router_settings.fallbacks.3 = {"assistant": ["worker-capable"]}
 model_list:
 - model_name: judge
   litellm_params:
@@ -23,24 +28,6 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
-- model_name: worker-capable
-  litellm_params:
-    model: openai/hf:zai-org/GLM-5.3-Flash
-    api_base: https://api.synthetic.new/openai/v1
-    api_key: os.environ/SYNTHETIC_API_KEY
-    tags:
-    - prepaid
-    order: 1
-    weight: 1
-    max_parallel_requests: 1
-    cooldown_time: 60
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
-    id: synthetic-glm53flashe-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
 - model_name: judge
   litellm_params:
     model: openai/qwen3.8-max
@@ -52,16 +39,59 @@ model_list:
     rpm: 3
     order: 1
     max_parallel_requests: 3
-    cooldown_time: 900
+    cooldown_time: 21600
     extra_body:
       enable_thinking: true
       thinking_budget: 2048
+    additional_drop_params:
+    - reasoning_effort
   model_info:
     mode: chat
     supports_prompt_caching: true
-    cache_proof: 'Caches: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%); the endpoint reports prompt_tokens_details.cached_tokens. Judge group: one-shot calls only,
-      order unchanged.'
+    cache_proof: 'Caches: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%); the endpoint reports prompt_tokens_details.cached_tokens. Judge group: one-shot calls only, order unchanged.'
     id: alibaba-qwen38max-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
+- model_name: worker-capable
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    order: 2
+    weight: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic.'
+    id: synthetic-glm53flashe-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-public
+  litellm_params:
+    model: openai/deepseek/deepseek-v4-1-flash
+    api_base: https://api.straitly.ai/v1
+    api_key: os.environ/STRAITLY_API_KEY
+    tags:
+    - straitly
+    - free-credit
+    order: 1
+    weight: 1
+    input_cost_per_token: 3.82e-08
+    cache_read_input_token_cost: 3.8e-09
+    output_cost_per_token: 1.529e-07
+    max_budget: 9.5
+    budget_duration: 30d
+    max_parallel_requests: 16
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: 'Caches: direct probe 2026-10-15 on api.straitly.ai deepseek/deepseek-v4-1-flash, 6 calls on a 9040-token prefix, cached_tokens 0/0/0/0/0/8832 (fleet-ops#9788).'
+    id: straitly-ds41flasha-worker-public
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: tether
@@ -89,8 +119,7 @@ model_list:
   model_info:
     mode: chat
     supports_prompt_caching: true
-    cache_proof: 'Caches: direct probe 2026-10-23 on api.anthropic.com/v1/messages with a 23403-token system block marked cache_control, call 1 cache_creation_input_tokens 23403, call 2 cache_read_input_tokens
-      23403 of 23414 (99.9%).'
+    cache_proof: 'Caches: direct probe 2026-10-23 on api.anthropic.com/v1/messages with a 23403-token system block marked cache_control, call 1 cache_creation_input_tokens 23403, call 2 cache_read_input_tokens 23403 of 23414 (99.9%).'
     id: anthropic-sonnet55-tether
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
@@ -103,13 +132,17 @@ router_settings:
   redis_port: 6379
   redis_password: os.environ/REDIS_PASSWORD
   deployment_affinity_ttl_seconds: 600
+  model_group_alias:
+    worker-capable-desk: worker-capable
+    worker-public-desk: worker-public
   fallbacks:
   - worker-cheap:
     - worker-capable
   - worker-public:
     - worker-capable
-  - assistant:
+  - worker-public-desk:
     - worker-capable
+  - assistant:
     - tether
   - tether:
     - assistant
@@ -119,12 +152,14 @@ router_settings:
   timeout: 1800
   enable_tag_filtering: false
   retry_policy:
-    AuthenticationErrorRetries: 0
-    RateLimitErrorRetries: 1
+    AuthenticationErrorRetries: 1
+    RateLimitErrorRetries: 2
     TimeoutErrorRetries: 1
     InternalServerErrorRetries: 1
     BadRequestErrorRetries: 1
     ContentPolicyViolationErrorRetries: 0
+    NotFoundErrorRetries: 1
+    DefaultRetries: 1
   allowed_fails_policy:
     AuthenticationErrorAllowedFails: 0
     RateLimitErrorAllowedFails: 1
