@@ -15,6 +15,7 @@
 # The `grafana_ro` role and the one view it can read (created on the host,
 # outside this repo, where a dashboard's reach must end):
 #   CREATE ROLE grafana_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
+#   ALTER ROLE grafana_ro PASSWORD '<GRAFANA_POSTGRES_PASSWORD>';
 #   GRANT CONNECT ON DATABASE litellm TO grafana_ro;
 #   GRANT USAGE ON SCHEMA public TO grafana_ro;
 #   SET ROLE litellm;
@@ -24,6 +25,23 @@
 #     WHERE session_id IS NOT NULL AND model_id IS NOT NULL AND model_id <> '';
 #   RESET ROLE;
 #   GRANT SELECT ON public.session_hop_logs TO grafana_ro;
+#
+# The password step: CREATE ROLE alone cannot log in, so set the password from
+# GRAFANA_POSTGRES_PASSWORD in the 0600 file
+# ~/.config/fleet-ops/grafana-postgres-password.env (the same value the play
+# mints into the Podman secret grafana-postgres-password, see the last
+# paragraph). Run the ALTER ROLE as a superuser (the nish role) from a psql
+# prompt or a stdin heredoc, never with the value in argv:
+# /proc/<pid>/cmdline is world-readable.
+#
+# The play probes all of this on every run: ansible/tasks/final-checks.yml
+# logs in as grafana_ro over loopback with that value and fails the play when
+# the login fails, the view is missing or unreadable, or any other relation in
+# public carries a table- or column-level SELECT for the role. The probe reads
+# the column ACLs in pg_attribute.attacl (via has_column_privilege), not only
+# relacl: a column-level SELECT on LiteLLM_SpendLogs (call_type, "startTime",
+# model_id, session_id, status) survived a table-level probe on 2026-10-29
+# until it was revoked.
 #
 # The view is the whole grant. A Grafana OSS viewer can run SQL on every data
 # source it can reach, and this Grafana serves anonymous Viewer access on the

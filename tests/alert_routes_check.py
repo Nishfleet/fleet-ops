@@ -70,6 +70,7 @@ URGENT = {
     "OpenCode Go idle": "money",
     "Alibaba token-plan SG idle": "money",
     "Session hop rate above 45%": "money",
+    "Session-hop alarm reads zero calls for a day": "money: the hop-rate alarm above it went blind",
     "Queue down for 2h agent-dispatch startup_failure": "outage: the queue cannot fix itself",
     "Agent runs red for 6h in fleet-ops": "outage: no agent run has succeeded in 6h and the runner-probe step says whether the jail or a change is the fault",
     **{f"Production deploy red for 24h {r}": "outage: the live site has not run main for a day" for r in (

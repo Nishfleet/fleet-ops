@@ -507,9 +507,6 @@
         name: systemd-journald.service
         state: restarted
 
-    - name: Create tmpfiles
-      ansible.builtin.command: /usr/bin/systemd-tmpfiles --create
-
     - name: Load audit rules
       ansible.builtin.command: /usr/sbin/augenrules --load
 
