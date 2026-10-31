@@ -70,7 +70,9 @@ def test_products_behind_fires_only_when_both_days_miss(args, missed):
 
 DASHBOARD = ROOT / "config/grafana/dashboards/fleet-scorecard.json"
 INTAKE = ROOT / "config/intake-repos.json"
-GRAFANA_SQL_FUNCTIONS = {"sum", "count", "round", "substring", "unix_timestamp", "coalesce", "if", "ifnull", "floor", "ceil", "date_format", "from_unixtime", "min", "max", "avg", "abs", "row_number"}
+# The vendor allowlist is pkg/expr/sql/parser_allow.go in grafana/grafana (SQL expressions run on
+# dolthub/go-mysql-server, https://grafana.com/docs/grafana/latest/panels-visualizations/query-transform-data/sql-expressions/).
+GRAFANA_SQL_FUNCTIONS = {"sum", "count", "round", "substring", "unix_timestamp", "coalesce", "if", "ifnull", "floor", "ceil", "date_format", "from_unixtime", "min", "max", "avg", "abs", "row_number", "concat", "lower"}
 
 
 def _dashboard_targets():
