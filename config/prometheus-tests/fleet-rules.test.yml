@@ -530,12 +530,16 @@ tests:
               summary: "Grafana is down, so no alert can file a fleet issue"
               description: "up{job=\"grafana\"} has been 0 or missing for 5 minutes."
 
-  # GrafanaNotificationsFailing: a flat counter is silent, a rise fires at once
-  # and clears once the 15m window holds no rise.
+  # GrafanaNotificationsFailing (fleet-ops#11426): a flat counter is silent, a
+  # rise fires at once and clears once the 15m window holds no rise. The rise
+  # keeps the series' integration label, so the alert names the failing
+  # receiver, and two integrations rising in one window are two alerts.
   - interval: 1m
     input_series:
       - series: 'grafana_alerting_notifications_failed_total{integration="webhook"}'
         values: '0x10 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'grafana_alerting_notifications_failed_total{integration="telegram"}'
+        values: '0x15 1x28'
     alert_rule_test:
       - eval_time: 8m
         alertname: GrafanaNotificationsFailing
@@ -545,9 +549,50 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: nish
+              integration: webhook
             exp_annotations:
-              summary: "Grafana failed to deliver alert notifications in the last 15 minutes"
-              description: "grafana_alerting_notifications_failed_total rose in the last 15 minutes: check the Grafana log and fleet-grafana-github-token.service."
+              summary: "Grafana failed to deliver alert notifications in the last 15 minutes (integration webhook)"
+              description: "grafana_alerting_notifications_failed_total rose for integration webhook in the last 15 minutes: check the Grafana log for the failed send. If grafana_alerting_notification_requests_total rose the same way, the request went out and its error names the cause (a webhook 401 is an expired GitHub App token); if not, the send failed inside Grafana before any request. One one-off rise leaves the 15m window on its own."
+      - eval_time: 20m
+        alertname: GrafanaNotificationsFailing
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              integration: webhook
+            exp_annotations:
+              summary: "Grafana failed to deliver alert notifications in the last 15 minutes (integration webhook)"
+              description: "grafana_alerting_notifications_failed_total rose for integration webhook in the last 15 minutes: check the Grafana log for the failed send. If grafana_alerting_notification_requests_total rose the same way, the request went out and its error names the cause (a webhook 401 is an expired GitHub App token); if not, the send failed inside Grafana before any request. One one-off rise leaves the 15m window on its own."
+          - exp_labels:
+              severity: nish
+              integration: telegram
+            exp_annotations:
+              summary: "Grafana failed to deliver alert notifications in the last 15 minutes (integration telegram)"
+              description: "grafana_alerting_notifications_failed_total rose for integration telegram in the last 15 minutes: check the Grafana log for the failed send. If grafana_alerting_notification_requests_total rose the same way, the request went out and its error names the cause (a webhook 401 is an expired GitHub App token); if not, the send failed inside Grafana before any request. One one-off rise leaves the 15m window on its own."
+
+  # Two integrations rising in one window are two alerts, and both clear with
+  # the window.
+  - interval: 1m
+    input_series:
+      - series: 'grafana_alerting_notifications_failed_total{integration="webhook"}'
+        values: '0x10 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'grafana_alerting_notifications_failed_total{integration="telegram"}'
+        values: '0x10 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: GrafanaNotificationsFailing
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              integration: webhook
+            exp_annotations:
+              summary: "Grafana failed to deliver alert notifications in the last 15 minutes (integration webhook)"
+              description: "grafana_alerting_notifications_failed_total rose for integration webhook in the last 15 minutes: check the Grafana log for the failed send. If grafana_alerting_notification_requests_total rose the same way, the request went out and its error names the cause (a webhook 401 is an expired GitHub App token); if not, the send failed inside Grafana before any request. One one-off rise leaves the 15m window on its own."
+          - exp_labels:
+              severity: nish
+              integration: telegram
+            exp_annotations:
+              summary: "Grafana failed to deliver alert notifications in the last 15 minutes (integration telegram)"
+              description: "grafana_alerting_notifications_failed_total rose for integration telegram in the last 15 minutes: check the Grafana log for the failed send. If grafana_alerting_notification_requests_total rose the same way, the request went out and its error names the cause (a webhook 401 is an expired GitHub App token); if not, the send failed inside Grafana before any request. One one-off rise leaves the 15m window on its own."
       - eval_time: 30m
         alertname: GrafanaNotificationsFailing
         exp_alerts: []

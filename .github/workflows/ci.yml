@@ -898,8 +898,8 @@ jobs:
           test "$bad" -eq 0
       - name: Reviewer approves, blocks and arms without a person (fake gh)
         # Runs the review job's and the arm job's own run blocks from agent.yml against a fake gh, curl and git.
-        # A guard or workflow head is approved only when the judge (>= 0.9, no blocker line) AND two more reviewers
-        # of other families approve. An infrastructure failure retries, and a real block, a low judge or an
+        # A guard or workflow head is approved only when the judge (>= 0.9, no blocker line) AND two more Claude reviewers
+        # (Fable and Sonnet) approve. An infrastructure failure retries, and a real block, a low judge or an
         # unreadable guard list leaves it unapproved. None of them asks a person. The review never arms itself:
         # the arm job does, on the exact head, and refuses a stale one.
         if: always()
@@ -916,13 +916,13 @@ jobs:
           yq '.jobs.review.steps[] | select(.id == "review") | .run' "$f" > "$t/review.sh"
           yq '.jobs.arm.steps[] | select(.name == "Arm the approved head") | .run' "$f" > "$t/arm.sh"
           for s in review arm; do { [ -s "$t/$s.sh" ] && ! grep -qx null "$t/$s.sh"; } || { echo "$s step missing"; exit 1; }; done
-          for v in FLEET_TASK_ID JUDGE_FAMILY SECOND_MODEL SECOND_FAMILY REVIEW_BACKOFF THIRD_SEAT THIRD_FAMILY FIRST_MODEL_OTHER FIRST_MODEL_CLAUDE_BUILT; do
+          for v in FLEET_TASK_ID SECOND_MODEL REVIEW_BACKOFF THIRD_MODEL FIRST_MODEL_OTHER FIRST_MODEL_CLAUDE_BUILT; do
             val=$(yq ".jobs.review.steps[] | select(.id == \"review\") | .env.$v" "$f")
             [ -n "$val" ] && [ "$val" != null ] || { echo "review env $v missing"; exit 1; }
             export "$v=$val"
           done
           RISKY_PATHS_URL=$(yq '.jobs.review.env.RISKY_PATHS_URL' "$f"); export RISKY_PATHS_URL
-          export SECOND_ROW=$SECOND_MODEL THIRD_ROW=alibaba-qwen38max-judge REVIEW_BACKOFF="0 0 0"
+          export SECOND_ROW=$SECOND_MODEL THIRD_ROW=$THIRD_MODEL REVIEW_BACKOFF="0 0 0"
           # Wiring: the approval flows to the arm job in the same run, and the review step never arms or asks.
           bad=0
           [ "$(yq '.jobs.arm.needs' "$f")" = review ] || { echo "arm job must need review"; bad=1; }
@@ -932,7 +932,7 @@ jobs:
           ! grep -q 'pr merge' "$t/review.sh" || { echo "the review step arms; the arm job must"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' "$t/review.sh" || { echo "person-request wording in the review step"; bad=1; }
           ! grep -q 'vnd.github.diff' "$t/review.sh" || { echo "the review step reads the diff through the diff API"; bad=1; }
-          # No extra review is handed to pi: the row that answered is only in the response headers, so the third reviewer is called directly.
+          # Every extra review is a Claude call (owner 2026-10-31), never pi or the router.
           ! grep -q 'provider litellm' "$t/review.sh" || { echo "the review step still routes an extra reviewer through pi"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' <(yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .run' .github/workflows/agent-dispatch.yml) || { echo "person-request wording in hold-risky"; bad=1; }
           cat > "$t/bin/gh" <<'MOCK'
@@ -958,30 +958,22 @@ jobs:
             *gitleaks-private-detail*) while [ $# -gt 0 ]; do [ "$1" = -o ] && echo "[extend]" > "$2"; shift; done ;;
             *raw.githubusercontent.com*) [ -z "${GUARD_LIST_FAILS:-}" ] || exit 22; cat config/risky-paths.json ;;
             *4000/jev*) echo "{\"answers\":{\"verdict\":{\"choice\":\"$JEV_CHOICE\",\"probabilities\":{\"$JEV_CHOICE\":$JEV_P}}}}" ;;
-            *4000/v1/chat/completions*) # the third reviewer: the Qwen row for the judge seat (also the assistant seat, the review fallback), unless the case says otherwise
-              for a in "$@"; do [ "${#a}" -le 131072 ] || { echo "mock curl: one argument over 128 KiB (E2BIG)" >&2; exit 7; }; done
-              [ -z "${JUDGE_SLEEPS:-}" ] || sleep "$JUDGE_SLEEPS"
-              h= b= req= sid=; while [ $# -gt 0 ]; do case $1 in -D) h=$2 ;; -o) b=$2 ;; --data-binary) req=${2#@} ;; -H) case $2 in x-litellm-session-id:*) sid=${2#*: } ;; esac ;; esac; shift; done
-              m=$(jq -r .model "$req"); echo "$m $sid" >> "$STATE/sessions"
-              if [ "$m" = "$THIRD_SEAT" ] || [ "$m" = assistant ]; then [ -z "${JUDGE_FAILS:-}" ] || exit 7; [ -z "${THIRD_ONCE:-}" ] || [ -e "$STATE/third-once" ] || { : > "$STATE/third-once"; exit 7; }; wc -c < "$req" > "$STATE/third-req-size"; noh=${JUDGE_NO_HEADER:-}; mi=${THIRD_MODEL_ID:-$THIRD_ROW}; [ "$m" != assistant ] || mi=${FALLBACK_MODEL_ID:-$mi}; cut=${THIRD_CUT:-}; ans=$THIRD
-              else echo "mock curl: unexpected model $m" >&2; exit 7; fi
-              if [ -n "$noh" ]; then : > "$h"; else printf 'x-litellm-model-id: %s\r\n' "$mi" > "$h"; fi
-              fr=stop; [ -z "$cut" ] || fr=length; printf '{"id":"chatcmpl-mock","model":"judge","choices":[{"index":0,"finish_reason":"%s","message":{"role":"assistant","content":"%s"}}]}' "$fr" "$ans" > "$b" ;;
             *) echo "mock curl: unexpected call: $*" >&2; exit 1 ;;
           esac
           MOCK
-          # The first review and a guard head's second review (Fable) are `claude -p --model <m> --tools ""`:
+          # The first review and a guard head's second (Fable) and third (Sonnet) reviews are `claude -p --model <m> --tools ""`:
           # no tools, a model from the builder rule, and never a permission bypass.
           cat > "$t/bin/claude" <<'MOCK'
           #!/usr/bin/env bash
           model= tools=unset
           while [ $# -gt 0 ]; do case $1 in --model) model=$2 ;; --tools) tools=$2 ;; --permission-mode|--allowedTools|--dangerously-skip-permissions) echo "claude review uses $1" >> "$STATE/claude-bad" ;; esac; shift; done
           [ "$tools" = "" ] || echo "tools not disabled: '$tools'" >> "$STATE/claude-bad"
-          cat > /dev/null; echo "$model" >> "$STATE/models"
+          cat > /dev/null; [ "$model" = "$THIRD_MODEL" ] || echo "$model" >> "$STATE/models" # the third runs beside the second, so it is logged apart to keep the order fixed
           # claude's own usage-limit line, recorded from a 429 on this fleet's seat: it goes to stderr and the call exits
           # non-zero. LIMIT_FORM picks the reached wording, the epoch form of the same wall, or the JSON-wrapped shape the
-          # host logged. CLAUDE_LIMIT and SECOND_LIMIT are the exit code. CLAUDE_WALL is a failure no reset clears.
+          # host logged. CLAUDE_LIMIT, SECOND_LIMIT and THIRD_LIMIT are the exit code. CLAUDE_WALL is a failure no reset clears.
           lim="You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)"; [ "${LIMIT_FORM:-}" != reached ] || lim="You've reached your weekly limit · resets Nov 2"; [ "${LIMIT_FORM:-}" != epoch ] || lim="Claude AI usage limit reached|1793276330"; [ "${LIMIT_FORM:-}" != json ] || lim='{"text":"You have reached your weekly limit · resets Nov 2"}'
+          if [ "$model" = "$THIRD_MODEL" ]; then [ -z "${THIRD_ONCE:-}" ] || [ -e "$STATE/third-once" ] || { : > "$STATE/third-once"; exit 1; }; [ -z "${THIRD_LIMIT:-}" ] || { echo "$lim" >&2; exit "$THIRD_LIMIT"; }; printf '%b\n' "$THIRD"; exit 0; fi
           if [ "$model" = "$SECOND_MODEL" ]; then [ -z "${SECOND_FAILS:-}" ] || exit 1; [ -z "${SECOND_LIMIT:-}" ] || { echo "$lim" >&2; exit "$SECOND_LIMIT"; }; printf '%b\n' "$SECOND"; exit 0; fi
           [ -z "${CLAUDE_FAILS:-}" ] || exit 1; [ -z "${CLAUDE_WALL:-}" ] || { echo "You're out of usage credits" >&2; exit 1; }; [ -z "${CLAUDE_LIMIT:-}" ] || { [ "${LIMIT_FORM:-}" = stdout ] && echo "$lim" || echo "$lim" >&2; exit "$CLAUDE_LIMIT"; }
           printf '%b\n' "$FIRST"
@@ -1020,7 +1012,7 @@ jobs:
           # every “blocker: none” shape a reviewer can write, then the same line with a real blocker after it
           gen_none_rows() { for v in v_none v_found v_nob v_nothing v_na v_dash v_bold v_ident v_expl v_dashexpl v_semi real_none_of real_nothing; do want=yes; case $v in real_none_of|real_nothing) want=no ;; esac; printf -v row 'none-%s|1|approve|0.95|clean|%s|THIRD=clean_ok|%s|0|claude-opus-5-5 claude-fable-5-1\n' "$v" "$v" "$want"; printf '%s' "$row"; done; }
           # every usage-limit hold shape (stderr/stdout, the exit codes, the three line forms, the guard reviews), the prior-comment review/skip pairs, and the builder-record rows
-          gen_limit_rows() { for f in 'seat||CLAUDE_LIMIT=1|none|claude-opus-5-5' 'stderr-exit0||CLAUDE_LIMIT=0|none|claude-opus-5-5' 'stdout-exit1||CLAUDE_LIMIT=1 LIMIT_FORM=stdout|none|claude-opus-5-5' 'epoch-form||CLAUDE_LIMIT=1 LIMIT_FORM=epoch|none|claude-opus-5-5' 'json-wrapped||CLAUDE_LIMIT=1 LIMIT_FORM=json|none|claude-opus-5-5' 'reached-wording||CLAUDE_LIMIT=1 LIMIT_FORM=reached|none|claude-opus-5-5' 'guard-first|1|CLAUDE_LIMIT=1|clean_ok|claude-opus-5-5' 'guard-second|1|SECOND_LIMIT=1|clean_ok|claude-opus-5-5 claude-fable-5-1' 'guard-second-stderr-exit0|1|SECOND_LIMIT=0|clean_ok|claude-opus-5-5 claude-fable-5-1'; do IFS='|' read -r n g e s m <<<"$f"; printf -v row 'claude-limit-%s-holds-the-head|%s|approve|0.95|clean|%s|%s|no|0|%s\n' "$n" "$g" "$s" "$e" "$m"; printf '%s' "$row"; done; }
+          gen_limit_rows() { for f in 'seat||CLAUDE_LIMIT=1|none|claude-opus-5-5' 'stderr-exit0||CLAUDE_LIMIT=0|none|claude-opus-5-5' 'stdout-exit1||CLAUDE_LIMIT=1 LIMIT_FORM=stdout|none|claude-opus-5-5' 'epoch-form||CLAUDE_LIMIT=1 LIMIT_FORM=epoch|none|claude-opus-5-5' 'json-wrapped||CLAUDE_LIMIT=1 LIMIT_FORM=json|none|claude-opus-5-5' 'reached-wording||CLAUDE_LIMIT=1 LIMIT_FORM=reached|none|claude-opus-5-5' 'guard-first|1|CLAUDE_LIMIT=1|clean_ok|claude-opus-5-5' 'guard-second|1|SECOND_LIMIT=1|clean_ok|claude-opus-5-5 claude-fable-5-1' 'guard-second-stderr-exit0|1|SECOND_LIMIT=0|clean_ok|claude-opus-5-5 claude-fable-5-1' 'guard-third|1|THIRD_LIMIT=1|clean_ok|claude-opus-5-5 claude-fable-5-1'; do IFS='|' read -r n g e s m <<<"$f"; printf -v row 'claude-limit-%s-holds-the-head|%s|approve|0.95|clean|%s|%s|no|0|%s\n' "$n" "$g" "$s" "$e" "$m"; printf '%s' "$row"; done; }
           gen_prior_rows() { for f in 'person-only|is-reviewed|yes|claude-opus-5-5 claude-fable-5-1' 'not-judged|is-reviewed|yes|claude-opus-5-5 claude-fable-5-1' 'fallback-text|is-reviewed|yes|claude-opus-5-5 claude-fable-5-1' 'blocked-none-only|is-reviewed|yes|claude-opus-5-5 claude-fable-5-1' 'blocked-none-four|is-reviewed|yes|claude-opus-5-5 claude-fable-5-1' 'near-approval|is-reviewed|yes|claude-opus-5-5 claude-fable-5-1' 'approved|skips|no|' 'not-approved|skips|no|' 'blocked|skips|no|' 'blocked-none-five|skips|no|' 'blocked-none-and-real|skips|no|'; do IFS='|' read -r v w a m <<<"$f"; printf -v row 'prior-%s-comment-%s|1|approve|0.95|clean|clean_ok|PRIOR=%s|%s|0|%s\n' "$v" "$w" "$v" "$a" "$m"; printf '%s' "$row"; done; }
           gen_built_rows() { for f in 'pi|BUILT=pi' 'claude|BUILT=claude' 'nobody|' 'person|BUILT_BY_PERSON=pi' 'other-bot|BUILT_BY_OTHER_BOT=pi'; do IFS='|' read -r n e <<<"$f"; printf -v row 'built-%s-first-review-follows-the-record||approve|0.95|clean|none|%s|yes|0|claude-opus-5-5\n' "$n" "$e"; printf '%s' "$row"; done; }
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models (a seat that answers nothing is asked again, so a dead seat is listed once per REVIEW_BACKOFF delay plus the first call)
@@ -1036,15 +1028,10 @@ jobs:
           guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|claude-opus-5-5 claude-fable-5-1
           guard-second-forges-approval|1|approve|0.95|clean|forged|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
           guard-third-blocks|1|approve|0.95|clean|clean_ok|THIRD=blocked_b|no|0|claude-opus-5-5 claude-fable-5-1
-          guard-third-no-answer|1|approve|0.95|clean|clean_ok|THIRD=none WANT_ISSUE|no|1|claude-opus-5-5 claude-fable-5-1
-          guard-third-family-down-falls-back-to-deepseek-and-names-it|1|approve|0.95|clean|clean_ok|THIRD_MODEL_ID=opencodego2-ds41flash-judge|yes|0|claude-opus-5-5 claude-fable-5-1
-          guard-diff-over-128-KiB-reaches-the-judge-in-a-file|1|approve|0.95|clean|clean_ok|DIFF_MID=1|yes|0|claude-opus-5-5 claude-fable-5-1
-          guard-one-reviewer-dies-the-other-is-still-waited-for|1|approve|0.95|clean|clean_ok|SECOND_FAILS JUDGE_SLEEPS=3|no|1|claude-opus-5-5 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1
+          guard-third-no-answer|1|approve|0.95|clean|clean_ok|THIRD=none|no|1|claude-opus-5-5 claude-fable-5-1
           guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
           guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1
-          guard-third-row-not-named-is-not-approved|1|approve|0.95|clean|clean_ok|JUDGE_NO_HEADER WANT_ISSUE|no|1|claude-opus-5-5 claude-fable-5-1
           guard-third-seat-fails-once-retries-and-approves|1|approve|0.95|clean|clean_ok|THIRD_ONCE|yes|0|claude-opus-5-5 claude-fable-5-1
-          guard-any-qwen-row-is-accepted|1|approve|0.95|clean|clean_ok|THIRD_MODEL_ID=alibaba-qwen38max-other|yes|0|claude-opus-5-5 claude-fable-5-1
           guard-seat-retried-then-real-block-still-blocks|1|approve|0.95|clean|clean_ok|THIRD_ONCE THIRD=blocked_b|no|0|claude-opus-5-5 claude-fable-5-1
           guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-opus-5-5 claude-fable-5-1
           first-header-echo-approves||approve|0.95|header_echo|none||yes|0|claude-opus-5-5
@@ -1059,6 +1046,7 @@ jobs:
           claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-opus-5-5
           claude-call-fails-with-no-answer-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5
           claude-a-failure-that-is-not-a-limit-still-fails||approve|0.95|clean|none|CLAUDE_WALL=1|no|1|claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5
+          diff-too-large-to-review-whole-is-blocked-not-failed||approve|0.95|clean|none|DIFF_BIG=1|no|0|
           diff-read-by-git-fails-and-says-so||approve|0.95|clean|none|GIT_FAILS=1|no|1|
           claude-quoted-limit-line-in-a-review-is-still-a-review|1|approve|0.95|quotes_limit|clean_ok|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
           prior-held-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=held THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
@@ -1066,7 +1054,7 @@ jobs:
           gen_none_rows; gen_limit_rows; gen_prior_rows; gen_built_rows; } > "$t/cases.txt"
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
-              GUARD_LIST_FAILS='' FALLBACK_MODEL_ID='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' CLAUDE_LIMIT='' LIMIT_FORM='' SECOND_LIMIT='' CLAUDE_WALL='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' THIRD_ONCE='' WANT_ISSUE=''
+              GUARD_LIST_FAILS='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' CLAUDE_LIMIT='' LIMIT_FORM='' SECOND_LIMIT='' THIRD_LIMIT='' CLAUDE_WALL='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_ONCE=''
             unset CLAUDE_CONFIG_DIR
             mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"; : > "$STATE/issues"
             e1=${extra%% *} # the first token: PRIOR= and BUILT= carry one value, a case can add more tokens
@@ -1115,15 +1103,12 @@ jobs:
             [ "$m" = "$models" ] || problem="$problem models='$m' (want '$models')"
             if [ "$approved" = yes ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"
             else [ "$forged" = 0 ] || problem="$problem a not-approved run posted an approval line"; fi
-            # An approval names both served rows, so the family in the comment can be checked against the row that answered (fleet-ops#10172).
+            # An approval names both extra reviewers' models (fleet-ops#10172).
             [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "$SECOND_ROW" "$STATE/comments" || problem="$problem the second model was not named on the PR"
-            [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "${THIRD_MODEL_ID:-$THIRD_ROW}" "$STATE/comments" || problem="$problem the third row was not named on the PR"
-            [ -z "${WANT_ISSUE:-}" ] || { [ -s "$STATE/issues" ] && grep -q 'Issue #99 is filed' "$STATE/comments"; } || problem="$problem no loud issue after the retries ran out"
-            [ -n "${WANT_ISSUE:-}" ] || [ ! -s "$STATE/issues" ] || problem="$problem an issue was filed on a review that finished"
-            [ -z "${DIFF_MID:-}" ] || [ "$(cat "$STATE/third-req-size" 2>/dev/null || echo 0)" -gt 131072 ] || problem="$problem the big diff did not reach the third reviewer in a file"
-            [ -z "${JUDGE_SLEEPS:-}" ] || [ -s "$RUNNER_TEMP/third-body.json" ] || problem="$problem the third reviewer was not waited for"; [ ! -s "$STATE/sessions" ] || { [ -z "$(sort -u "$STATE/sessions" | cut -d" " -f2- | sort | uniq -d)" ] && ! grep -v -- "-pr7-" "$STATE/sessions" | grep -q .; } || problem="$problem two extra-reviewer seats shared a router session, or one did not name the PR: $(sort -u "$STATE/sessions" | tr "\n" ";")"
-            [ -z "${CLAUDE_LIMIT:-}${SECOND_LIMIT:-}" ] || grep -qx "review-held: $SHA" "$STATE/comments" || problem="$problem a usage limit did not hold the head"
-            [ -n "${CLAUDE_LIMIT:-}${SECOND_LIMIT:-}" ] || ! grep -q '^review-held:' "$STATE/comments" || problem="$problem a head was held with no usage limit"
+            [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "$THIRD_ROW" "$STATE/comments" || problem="$problem the third row was not named on the PR"
+            [ ! -s "$STATE/issues" ] || problem="$problem an issue was filed on a review that finished"
+            [ -z "${CLAUDE_LIMIT:-}${SECOND_LIMIT:-}${THIRD_LIMIT:-}" ] || grep -qx "review-held: $SHA" "$STATE/comments" || problem="$problem a usage limit did not hold the head"
+            [ -n "${CLAUDE_LIMIT:-}${SECOND_LIMIT:-}${THIRD_LIMIT:-}" ] || ! grep -q '^review-held:' "$STATE/comments" || problem="$problem a head was held with no usage limit"
             ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || { grep -q "blocked-on: needs-split" "$STATE/comments" && grep -qF 'labels[]=needs-split' "$STATE/labels" || problem="$problem no blocked-on: needs-split comment or label"; }; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done < "$t/cases.txt"
