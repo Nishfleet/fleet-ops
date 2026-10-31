@@ -67,7 +67,7 @@ def test_the_count_reads_every_mirror_hit_and_stays_empty_when_none_match():
     assert db.execute(sql).fetchone()[0] == 0
 
 
-def test_the_sql_engine_fits_the_shape_of_the_sibling_rules():
+def test_the_expression_reads_only_the_query_frame():
     sql = next(d for d in _rules()["data"] if d["refId"] == "C")["model"]["expression"]
     assert "GROUP BY" not in sql
-    assert "FROM (SELECT updated_at FROM A) AS found" in sql
+    assert set(re.findall(r"\bFROM ([A-Z]+)\b", sql)) == {"A"}

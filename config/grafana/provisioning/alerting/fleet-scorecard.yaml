@@ -331,8 +331,10 @@ groups:
       # above excludes dependency-blocked ready issues once a mirror label lands (#11228 uses
       # agent-blocked-dep, #11301 dependency-blocked), so a blocker stuck forever would silence
       # the class instead of being seen. This rule keeps counting them: the label token covers
-      # both names with GitHub's label comma (logical OR), so it follows whichever exclusion
-      # lands first, and the pending duration carries the age, so the alert opens only after
+      # both names with GitHub's label comma (logical OR, so it follows whichever exclusion
+      # lands first; that separator's plain-OR reading is GitHub's own, docs guide
+      # searching-issues-and-pull-requests.md, label:documentation,reliability), and the
+      # pending duration carries the age, so the alert opens only after
       # the blocked set has stayed non-empty for 48 hours. Until one of those lands the label
       # is never written, so A is empty and the rule reads a true zero, not a broken read.
       # Known gap (as in queue-stuck.yaml): an issue untouched for over 30 days leaves the
