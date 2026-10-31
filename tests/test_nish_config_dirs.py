@@ -15,7 +15,10 @@ def lines() -> list[list[str]]:
 
 
 def test_dirs_get_owner_only_repairs() -> None:
-    assert lines() == [["d", path, "-", "nish", "nish", "-"] for path in PATHS]
+    assert lines() == [
+        ["d", "/home/nish/.config", "-", "nish", "nish", "-"],
+        ["d", "/home/nish/.config/cloudflare", "0700", "nish", "nish", "-"],
+    ]
 
 
 def test_the_apply_runs_the_lines_before_the_ownership_check() -> None:
@@ -24,7 +27,7 @@ def test_the_apply_runs_the_lines_before_the_ownership_check() -> None:
     command = play.index("/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/nish-config-dirs.conf")
     flush = play.index("Apply pending handlers before the Grafana credential check")
     check = play.index("- name: Fail when nish's config dir is not owned by nish")
-    assert run < command and flush < check
+    assert run < command and flush < check and command < flush
 
 
 def test_the_ownership_check_names_the_owner_and_the_repair() -> None:

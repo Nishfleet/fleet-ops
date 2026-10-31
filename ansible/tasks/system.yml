@@ -56,6 +56,7 @@
 # would chown through it.
 - name: Run the config-dir tmpfiles lines on every apply
   ansible.builtin.command: /usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/nish-config-dirs.conf
+  changed_when: false
 
 # The rootless Docker engine for the drive eval (fleet-ops#9983) reads this
 # config instead of the host's /etc/docker/daemon.json, which sets the runsc
