@@ -244,6 +244,8 @@ def test_every_other_relay_identity_is_hidden(name: str) -> None:
     values = settings(ROOT / AGENTS[name]["unit"])
     missing = [path for path in others if not hidden(values, path)]
     assert missing == [], f"{name} does not hide the relay identities {missing}"
+    unlisted = [path for path in others if path not in AGENTS[name]["must_hide"]]
+    assert unlisted == [], f"{name}'s contract entry does not list the relay identities {unlisted}"
 
 
 def test_the_probe_expands_the_contracts_tilde_before_systemd_sees_it() -> None:

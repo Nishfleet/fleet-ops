@@ -102,9 +102,9 @@ targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = ['''(^|/)rootfs/etc/systemd/system/tincan-listen-claude-vps\.service$''']
 
 [[allowlists]]
-description = "issue-desk's units must name the two vendor binaries, the deploy clone and the agent's identity file in ExecStart= and Environment=, and the system unit's header names the same paths in its lock and off steps; a unit line cannot carry an inline gitleaks:allow comment, and %h is not the idiom the live Tincan units use. Each allowed path is listed, so a new home path in these files still fails the scan"
+description = "issue-desk's user unit must name the two vendor binaries, the deploy clone and the agent's identity file in ExecStart= and Environment=, and its header names the same paths in the install, off and delete steps; a unit line cannot carry an inline gitleaks:allow comment, and %h is not the idiom the live Tincan units use. Each allowed path is listed, so a new home path in this file still fails the scan"
 targetRules = ["private-home-path"]
-paths = ['''(^|/)(systemd|rootfs/etc/systemd/system)/tincan-listen-issue-desk\.service$''']
+paths = ['''(^|/)systemd/tincan-listen-issue-desk\.service$''']
 regexes = [
   '''^home/nish/\.config/tincan/issue-desk\.json$''',
   '''^home/nish/\.local/bin/pi$''',
