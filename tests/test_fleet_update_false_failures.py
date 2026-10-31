@@ -104,6 +104,47 @@ def test_the_other_global_writing_subcommands_are_install_activity():
         assert matches(cmdline), cmdline
 
 
+def npm_cmd_list_path():
+    node = shutil.which("node") or "/usr/local/bin/node"
+    candidates = [pathlib.Path(node).resolve().parents[1] / "lib/node_modules/npm/lib/utils/cmd-list.js"]
+    candidates += sorted(pathlib.Path.home().glob(".nvm/versions/node/*/lib/node_modules/npm/lib/utils/cmd-list.js"))
+    for path in candidates:
+        if path.is_file():
+            return path
+    pytest.fail(f"npm's cmd-list.js not found in {[str(p) for p in candidates]}")
+
+
+def test_the_word_list_is_exactly_npm_documented_global_tree_writers():
+    table = json.loads(subprocess.run(
+        ["node", "-e", f"const m = require({json.dumps(str(npm_cmd_list_path()))}); process.stdout.write(JSON.stringify(m))"],
+        capture_output=True, text=True, check=True).stdout)
+    global_writers = ["install", "update", "dedupe", "link", "uninstall", "rebuild", "prune", "install-test"]
+    expected = set(global_writers) | {alias for alias, target in table["aliases"].items() if target in global_writers}
+    # npm ci refuses global installs (npm/lib/commands/ci.js), so its aliases deref to a command that cannot write the tree.
+    expected.add("ci")
+    words = set(PATTERN.rsplit("+(", 1)[1].removesuffix(")( |$)").split("|"))
+    assert words == expected, f"pattern words only in the pattern: {sorted(words - expected)}, only in npm's table: {sorted(expected - words)}"
+
+
+def test_every_npm_documented_alias_of_the_global_writing_subcommands_stops_the_removal():
+    for cmdline in ("npm uninstall -g tincan", "npm remove -g tincan", "npm rm -g tincan",
+                    "npm un -g tincan", "npm r -g tincan", "npm unlink -g tincan",
+                    "npm link", "npm ln", "npm dedupe -g", "npm ddp -g",
+                    "npm u", "npm up -g", "npm upgrade", "npm udpate",
+                    "npm add -g tincan", "npm in -g tincan", "npm ins -g tincan",
+                    "npm inst -g tincan", "npm insta -g tincan", "npm instal -g tincan",
+                    "npm isnt -g tincan", "npm isnta -g tincan", "npm isntal -g tincan",
+                    "npm isntall -g tincan", "npm rb -g", "npm install-test", "npm it"):
+        assert matches(cmdline), cmdline
+
+
+def test_a_script_or_exec_subcommand_word_is_still_not_install_activity():
+    for cmdline in ("npm run uninstall", "npm run ddp", "npm run rb",
+                    "npm exec @modelcontextprotocol/server-filesystem /srv/notes",
+                    "npm ic -g", "npm cit -g", "npm sit"):
+        assert not matches(cmdline), cmdline
+
+
 def test_a_running_npm_is_recorded_for_the_final_assert_instead_of_aborting_the_run():
     assert "Refuse to remove staging dirs while an npm is running" not in NAMES
     assert "npm_running" in THAT

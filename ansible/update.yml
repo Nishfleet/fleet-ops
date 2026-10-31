@@ -513,7 +513,20 @@
         # matching every npm made this check fail the 2026-10-23 runs and aborted
         # the rest of the block with it.
         # The pattern takes a flag before the subcommand too (`npm -g install`,
-        # `npm --global update`) and names `rebuild` and `prune` (fleet-ops#10082).
+        # `npm --global update`) and names `rebuild` and `prune` (fleet-ops#10082),
+        # and every entry of npm's documented alias table that derefs to a
+        # global-tree-writing subcommand, unconditionally (fleet-ops#10923;
+        # table: the `aliases` object in npm's lib/utils/cmd-list.js): a missed
+        # alias deletes a staging dir under a live npm, while an extra match only
+        # skips the removal and the closing assert fails the run loudly. `link`
+        # needs no -g to write the global tree (npm docs, docs.npmjs.com CLI:
+        # `npm link` with no args creates the symlink in the global folder), so no
+        # word is flag-gated. npm ci and its aliases (`ic`, `cit`, `sit`) are
+        # left out: `npm ci` itself refuses global installs, so their word gains
+        # the false-abort cost with no data-safety gain. npm also resolves any
+        # unambiguous prefix of a command or alias (abbrev in the same file),
+        # which no finite pattern can list, so a full word or documented alias
+        # is the unit this guard counts.
         - name: Find stale npm staging dirs a stopped self-update left behind
           ansible.builtin.find:
             paths: "{{ npm_global_root.stdout }}"
@@ -526,7 +539,7 @@
           become: true
           become_user: nish
           ansible.builtin.command:
-            argv: [pgrep, -u, nish, -f, '((^|/)npm|npm-cli\.js)( +-[^ ]+( +[^ -][^ ]*)?)* +(install|i|ci|update|rebuild|prune)( |$)']
+            argv: [pgrep, -u, nish, -f, '((^|/)npm|npm-cli\.js)( +-[^ ]+( +[^ -][^ ]*)?)* +(install|i|ci|update|rebuild|rb|prune|uninstall|remove|rm|un|r|unlink|link|ln|dedupe|ddp|u|up|upgrade|udpate|add|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|install-test|it)( |$)']
           register: npm_running
           failed_when: npm_running.rc not in [0, 1]
           changed_when: false
