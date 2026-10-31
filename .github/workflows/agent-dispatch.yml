@@ -680,9 +680,7 @@ jobs:
             | [$cs[] | select(.user.login == "github-actions[bot]")] as $bot
             | [$bot[] | select(any(.lines[]; startswith("reviewer: \($sha) blocked.") or startswith("reviewer: \($sha) not approved.")))] as $no
             | [$bot[] | select(any(.lines[]; . == "stuck-review: \($sha)"))] as $asked
-            | [$bot[] | select(any(.lines[]; . == "review-held: \($sha)"))] as $held
-            | [$asked[] | .created_at as $a | ([$asked[] | select(.created_at > $a) | .created_at] | min) as $nx | select(($held | map(select(.created_at > $a and ($nx == null or .created_at < $nx))) | length) == 0)] as $tried
-            | ([$held[] | .created_at] | max) as $h
+            | [$bot[] | select(any(.lines[]; . == "review-held: \($sha)"))] as $held | [$asked[] | .created_at as $a | ([$asked[] | select(.created_at > $a) | .created_at] | min) as $nx | select(($held | map(select(.created_at > $a and ($nx == null or .created_at < $nx))) | length) == 0)] as $tried | ([$held[] | .created_at] | max) as $h
             | if .pr.mergeable == "CONFLICTING" then {class: "stuck", reason: "it conflicts with main", url: ""}
               elif (.red | length) > 0 then {class: "stuck", reason: "required checks failed (\(.red | join(", ")))", url: ""}
               elif ($ok | length) > 0 then {class: "arm", reason: "approved at \($s7) and not armed", url: ($ok[-1].html_url // "")}
@@ -770,8 +768,7 @@ jobs:
                   review=$(add "$review" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')" 4)
                 fi
                 continue ;;
-              wait)
-                continue ;;
+              wait) continue ;;
             esac
             # Stuck. A claim PR whose issue is open goes back to its worker, unless the issue is parked
             # (someone owns it), blocked, or its newest run is live. Every other PR, orch/issue-* too,
