@@ -44,9 +44,8 @@
 - name: Apply pending handlers before the Grafana credential check
   ansible.builtin.meta: flush_handlers
 
-# After the flush, so the Create tmpfiles handler has applied the nish-ownership lines
-# first: a root-owned config dir stops every jailed job at bwrap startup (fleet-ops#11120).
-- name: Look up the jailed-job config dir ownership
+# After the flush, so the tmpfiles lines have applied first (fleet-ops#11120).
+- name: Look up nish's config dir ownership
   ansible.builtin.stat:
     path: "{{ item }}"
   loop:
@@ -54,10 +53,10 @@
     - "{{ nish_home }}/.config/cloudflare"
   register: config_dir_stats
 
-- name: Fail when a jailed-job config dir is not owned by nish
+- name: Fail when nish's config dir is not owned by nish
   ansible.builtin.assert:
     that: item.stat.exists and item.stat.isdir and item.stat.pw_name == 'nish' and item.stat.gr_name == 'nish' and item.stat.wusr and item.stat.xusr
-    fail_msg: "{{ item.item }} is missing, not owned nish:nish or not writable by its owner (stat says {{ item.stat.pw_name | default('none') }}:{{ item.stat.gr_name | default('none') }} mode {{ item.stat.mode | default('none') }}), and a root-owned one stops every jailed job at bwrap startup (fleet-ops#11120). The tmpfiles.d entry and the file task in tasks/system.yml own the repair; rerun host-config once they are in place."
+    fail_msg: "{{ item.item }} is missing, not owned nish:nish or not writable by its owner (stat says {{ item.stat.pw_name | default('none') }}:{{ item.stat.gr_name | default('none') }} mode {{ item.stat.mode | default('none') }}), so nish's own processes cannot create config dirs under it. The d lines in /etc/tmpfiles.d/nish-config-dirs.conf own the repair and tasks/system.yml runs them on every apply; fix the cause, then rerun host-config."
     quiet: true
   loop: "{{ config_dir_stats.results }}"
   loop_control:

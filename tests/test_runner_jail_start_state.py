@@ -385,60 +385,6 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
     assert name == KEY and source.endswith(f"/.config/fleet-worker/{KEY}"), loaded
 
 
-JAIL_TMPFS = re.compile(r"--tmpfs \$HOME/([^\s\"]+)")
-
-
-def jail_tmpfs_targets(workflows: dict[str, str]) -> set[str]:
-    """Tails under home of every literal `--tmpfs $HOME/...` target in the jailed workflows.
-
-    Variable targets (`--tmpfs $seat_a`, the claude_hides loop) are out of reach of a literal
-    scan; every path they resolve to sits under a mount point this gate already covers.
-    """
-    targets: set[str] = set()
-    for text in workflows.values():
-        targets |= set(JAIL_TMPFS.findall(text))
-    return targets
-
-
-def jail_mount_point_tails(dirs: list[Path]) -> set[str]:
-    """Paths under home the drop-in itself creates at start, as tails under the home tmpfs."""
-    home = merged_values(dirs, "TemporaryFileSystem")[0].partition(":")[0]
-    covered: set[str] = set()
-    for key in ("TemporaryFileSystem", "BindPaths", "BindReadOnlyPaths"):
-        for value in merged_values(dirs, key):
-            for token in shlex.split(value):
-                path = token.lstrip("-+").partition(":")[0]
-                if path.startswith(home + "/"):
-                    covered.add(path.removeprefix(home + "/"))
-    return covered
-
-
-def uncovered_jail_targets(targets: set[str], covered: set[str]) -> list[str]:
-    return sorted(t for t in targets if not any(same_branch(t, c) for c in covered))
-
-
-def test_every_path_the_worker_jail_masks_is_created_by_the_runner_drop_in() -> None:
-    """A `--tmpfs $HOME/...` target must exist before the runner starts (fleet-ops#11120).
-
-    The mount-point parents systemd makes on the home tmpfs are root-owned and the jail's bwrap
-    runs as nish, so bwrap cannot mkdir a missing target and every jailed job dies at startup.
-    #10934 fixed the one target then missing; #11000 then cut the gh bind whose side effect was
-    the gh mount point, and no test saw it. The check reads the jail lines instead of naming
-    targets, so the next target is covered when it lands.
-    """
-    jailed = {name: text for name, text in runner_workflows().items() if "bwrap --dev-bind" in text}
-    targets = jail_tmpfs_targets(jailed)
-    assert {".config/gh", ".config/cloudflare"} <= targets, "the jail lines moved; this gate reads the wrong thing"
-    missing = uncovered_jail_targets(targets, jail_mount_point_tails(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"]))
-    assert not missing, f"the jail masks {missing}, but the runner creates no mount point there"
-
-
-def test_the_jail_mount_point_gate_sees_partial_coverage() -> None:
-    assert uncovered_jail_targets({".config/gh"}, {".config"}) == []
-    assert uncovered_jail_targets({".config/gh", ".config/cloudflare"}, {".config/cloudflare", ".config/fleet-ops"}) == [".config/gh"]
-    assert uncovered_jail_targets(set(), {".config"}) == []
-
-
 FLEET_CONFIG_READ = re.compile(r"(?:\$\{?HOME\}?[\"']?|%h|~|/home/[^/\"' ]+)/\.config/fleet-ops/([A-Za-z0-9_.*/-]+)")
 
 

@@ -49,20 +49,13 @@
     mode: preserve
   notify: Create tmpfiles
 
-# The runner drop-ins bind and mask subpaths of ~/.config, and a root-owned one stops
-# every jailed job at bwrap startup (fleet-ops#11120). The tmpfiles entry recreates it
-# nish-owned at boot; this repairs it on every config apply, because the Create tmpfiles
-# handler runs only when a tmpfiles.d file changes.
-- name: Keep the config dir and its Cloudflare dir owned by nish
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    owner: nish
-    group: nish
-    mode: "0755"
-  loop:
-    - "{{ nish_home }}/.config"
-    - "{{ nish_home }}/.config/cloudflare"
+# The config-dir tmpfiles lines only apply on change through the Create tmpfiles handler,
+# so this re-runs them on every apply: nish's own host processes must be able to create
+# config dirs under ~/.config (fleet-ops#11120). systemd-tmpfiles refuses an unsafe path
+# transition, such as a link to a directory another user owns, where a root file task
+# would chown through it.
+- name: Run the config-dir tmpfiles lines on every apply
+  ansible.builtin.command: /usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/nish-config-dirs.conf
 
 # The rootless Docker engine for the drive eval (fleet-ops#9983) reads this
 # config instead of the host's /etc/docker/daemon.json, which sets the runsc
