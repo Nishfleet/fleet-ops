@@ -438,8 +438,11 @@ short line lives here, and the one-liner keeps the issue ref that finds it:
 - The review call: `--tools ""` because a tool could open the runner's key files
   and the review posts publicly (claude honors an empty --tools, checked
   2026-10-10). No fallback to another family, no approval without this review;
-  a call that fails or answers nothing, a usage limit included, did not finish:
-  retry. Fable is not a default reviewer because it burned 44% of a seat's
+  a call that fails or answers nothing did not finish: retry. A Claude usage
+  limit instead holds the head, because the ladder would sleep through a reset
+  window of hours; a seat's limit line still sends the other seat next, so the
+  hold waits until no seat behind it gave a real answer. Fable is not a default
+  reviewer because it burned 44% of a seat's
   weekly limit in about two days when defaulted (Nish 2026-10-28, #10608); it
   is the second reviewer of guard heads only.
 - Guard heads (money, secrets, data, .github/, the review rules) need three

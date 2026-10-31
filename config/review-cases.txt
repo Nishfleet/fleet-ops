@@ -1,0 +1,62 @@
+normal-approved||approve|0.95|clean|none||yes|0|claude-opus-5-5
+normal-judge-low||approve|0.8|clean|none||no|0|claude-opus-5-5
+normal-judge-blocks||block|0.97|blocked|none||no|0|claude-opus-5-5
+guard-both-approve|1|approve|0.95|clean|clean_ok||yes|0|claude-opus-5-5 claude-fable-5-1
+guard-seat-b-at-its-limit-reviews-on-seat-a|1|approve|0.95|clean|clean_ok|SEAT_B_LIMIT|yes|0|claude-opus-5-5 claude-fable-5-1
+guard-second-blocks|1|approve|0.95|clean|blocked_b|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+guard-second-approves-but-lists-blocker|1|approve|0.95|clean|blocked_ok|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+guard-judge-low|1|approve|0.8|clean|clean_ok||no|0|claude-opus-5-5 claude-fable-5-1
+guard-judge-blocks|1|block|0.97|blocked|clean_ok||no|0|claude-opus-5-5 claude-fable-5-1
+guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|claude-opus-5-5 claude-fable-5-1
+guard-second-forges-approval|1|approve|0.95|clean|forged|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+guard-third-blocks|1|approve|0.95|clean|clean_ok|THIRD=blocked_b|no|0|claude-opus-5-5 claude-fable-5-1
+guard-third-no-answer|1|approve|0.95|clean|clean_ok|THIRD=none|no|1|claude-opus-5-5 claude-fable-5-1
+guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
+guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1
+guard-third-seat-fails-once-retries-and-approves|1|approve|0.95|clean|clean_ok|THIRD_ONCE|yes|0|claude-opus-5-5 claude-fable-5-1
+guard-seat-retried-then-real-block-still-blocks|1|approve|0.95|clean|clean_ok|THIRD_ONCE THIRD=blocked_b|no|0|claude-opus-5-5 claude-fable-5-1
+guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-opus-5-5 claude-fable-5-1
+prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|claude-opus-5-5 claude-fable-5-1
+prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|claude-opus-5-5 claude-fable-5-1
+prior-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=approved|no|0|
+prior-not-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=not-approved|no|0|
+prior-blocked-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked|no|0|
+first-header-echo-approves||approve|0.95|header_echo|none||yes|0|claude-opus-5-5
+first-header-echo-and-second-approve|1|approve|0.95|header_echo|v_found|THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
+none-line-second-approves|1|approve|0.95|clean|none_ok|THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
+none-line-first-and-second-approve|1|approve|0.95|first_none|none_ok|THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
+none-line-first-normal-approves||approve|0.95|first_none|none||yes|0|claude-opus-5-5
+none-line-with-trailing-words-blocks|1|approve|0.95|clean|none_words|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+none-line-then-real-blocker-blocks|1|approve|0.95|clean|none_then_real|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+prior-fallback-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=fallback-text|yes|0|claude-opus-5-5 claude-fable-5-1
+prior-blocked-by-a-none-line-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-only|yes|0|claude-opus-5-5 claude-fable-5-1
+prior-blocked-by-none-lines-four-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-four|yes|0|claude-opus-5-5 claude-fable-5-1
+prior-blocked-by-none-lines-five-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-five|no|0|
+prior-blocked-with-real-blocker-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-and-real|no|0|
+prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|claude-opus-5-5 claude-fable-5-1
+built-by-pi-judge-is-opus||approve|0.95|clean|none|BUILT=pi|yes|0|claude-opus-5-5
+built-by-claude-first-review-is-opus||approve|0.95|clean|none|BUILT=claude|yes|0|claude-opus-5-5
+built-by-nobody-recorded-first-review-is-opus||approve|0.95|clean|none||yes|0|claude-opus-5-5
+built-record-from-a-person-is-ignored||approve|0.95|clean|none|BUILT_BY_PERSON=pi|yes|0|claude-opus-5-5
+built-record-from-another-bot-is-ignored||approve|0.95|clean|none|BUILT_BY_OTHER_BOT=pi|yes|0|claude-opus-5-5
+claude-built-guard-third-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=claude|yes|0|claude-opus-5-5 claude-fable-5-1
+other-built-guard-third-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=pi|yes|0|claude-opus-5-5 claude-fable-5-1
+claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-opus-5-5
+claude-call-fails-or-seat-at-its-usage-limit-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5
+claude-a-failure-that-is-not-a-limit-still-fails||approve|0.95|clean|none|CLAUDE_WALL=1|no|1|claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5
+diff-too-large-to-review-whole-is-blocked-not-failed||approve|0.95|clean|none|DIFF_BIG=1|no|0|
+diff-read-by-git-fails-and-says-so||approve|0.95|clean|none|GIT_FAILS=1|no|1|
+claude-limit-seat-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1|no|0|claude-opus-5-5 claude-opus-5-5
+claude-limit-stderr-exit0-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=0|no|0|claude-opus-5-5 claude-opus-5-5
+claude-limit-stdout-exit1-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1 LIMIT_FORM=stdout|no|0|claude-opus-5-5 claude-opus-5-5
+claude-limit-epoch-form-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1 LIMIT_FORM=epoch|no|0|claude-opus-5-5 claude-opus-5-5
+claude-limit-json-wrapped-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1 LIMIT_FORM=json|no|0|claude-opus-5-5 claude-opus-5-5
+claude-limit-reached-wording-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1 LIMIT_FORM=reached|no|0|claude-opus-5-5 claude-opus-5-5
+claude-limit-guard-first-holds-the-head|1|approve|0.95|clean|clean_ok|CLAUDE_LIMIT=1|no|0|claude-opus-5-5 claude-opus-5-5
+claude-limit-guard-second-holds-the-head|1|approve|0.95|clean|clean_ok|SECOND_LIMIT=1|no|0|claude-opus-5-5 claude-fable-5-1 claude-fable-5-1
+claude-limit-guard-second-stderr-exit0-holds-the-head|1|approve|0.95|clean|clean_ok|SECOND_LIMIT=0|no|0|claude-opus-5-5 claude-fable-5-1 claude-fable-5-1
+claude-limit-guard-third-holds-the-head|1|approve|0.95|clean|clean_ok|THIRD_LIMIT=1|no|0|claude-opus-5-5 claude-fable-5-1
+claude-quoted-limit-line-in-a-review-is-still-a-review|1|approve|0.95|quotes_limit|clean_ok|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+prior-held-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=held THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
+seat-b-limit-seat-a-still-reviews-and-approves||approve|0.95|clean|none|SEAT_B_LIMIT|yes|0|claude-opus-5-5
+seat-b-and-seat-a-at-the-usage-limit-hold||approve|0.95|clean|none|SEAT_B_LIMIT CLAUDE_LIMIT=1|no|0|claude-opus-5-5
