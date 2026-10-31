@@ -53,10 +53,10 @@
 #
 # The nish3451 repos moved to Nishfleet on 2026-10-16. seo-fix-kit and
 # fleet-console-worker are covered from fleet-github, whose installation
-# datasources/fleet.yaml records as all Nishfleet repos; its read of these two,
-# and of TinyStudio.io-public when it was added (fleet-ops#10840), was not
-# tested live before they were added, so a repo it cannot read files a
-# "cannot read GitHub runs" issue. seo-fix-kit is in both groups: its deploy
+# datasources/fleet.yaml records as all Nishfleet repos; its read of these two
+# was not tested live before they were added, so a repo it cannot read files a
+# "cannot read GitHub runs" issue. TinyStudio.io-public's read was not tested
+# live either when it was added (fleet-ops#10840). seo-fix-kit is in both groups: its deploy
 # has succeeded since 2026-10-16 (newest 2026-10-23), so its 24h rule is live.
 # fleet-console-worker is in the deploy-failed group only, with no 24h rule: it
 # got its Cloudflare key on 2026-10-20 and its deploy succeeded for the first
@@ -67,7 +67,8 @@
 # fleet-console-worker: its deploy has been red on every run since 2026-10-22
 # because its production database was deleted (fleet-ops#10830), so a 24h rule
 # would page Nish hourly about a failure only he can fix and already knows
-# (fleet-ops#10840). Its 24h rule waits until the deploy is green again.
+# (fleet-ops#10840). Its 24h rule waits until the deploy is green again
+# (fleet-ops#11414 tracks that follow-up).
 #
 # A repo with no production deploy left gets no rule, in either group. Nothing
 # here checks that, so this is the record of an intent and not a gate.
