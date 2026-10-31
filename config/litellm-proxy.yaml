@@ -624,7 +624,7 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
-# MiniMax Yearly Plus: the plan's quota is the cap, so no max_budget; 12 lanes per row; a 4th 429 parks a row 1800 s (fleet-ops#9220).
+# MiniMax token plan (the portal's Yearly Plus flat plan): the plan's quota is the cap, so no max_budget, and no slot count (fleet-ops#10694): the plan's own 429s and the 6 h park hold the key, and the first 429 parks a row 6 h (fleet-ops#11417).
 - model_name: worker-capable
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
@@ -639,8 +639,11 @@ model_list:
     - minimax
     order: 1
     weight: 1
-    max_parallel_requests: 12
-    cooldown_time: 1800
+    # No slot count: v1.105.0 never frees an abandoned stream's slot, and the router's own
+    # concurrency 429 counts into the row park, so a capped row with RateLimitErrorAllowedFails: 0
+    # would park 6 h on one slot spike (fleet-ops#10694, #10762, note 9 of docs/litellm-router-notes.md).
+    # 6 h park on the first 429: the MiniMax token plan is a spent plan, not a burst (fleet-ops#11417).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -648,7 +651,7 @@ model_list:
     id: minimax-m31-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 3
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
@@ -663,8 +666,8 @@ model_list:
     - minimax
     order: 1
     weight: 1
-    max_parallel_requests: 12
-    cooldown_time: 1800
+    # 6 h park on the first 429: the MiniMax token plan is a spent plan, not a burst (fleet-ops#11417).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -672,7 +675,7 @@ model_list:
     id: minimax-m31b-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 3
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
@@ -687,8 +690,8 @@ model_list:
     - minimax
     order: 1
     weight: 1
-    max_parallel_requests: 12
-    cooldown_time: 1800
+    # 6 h park on the first 429: the MiniMax token plan is a spent plan, not a burst (fleet-ops#11417).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -696,7 +699,7 @@ model_list:
     id: minimax-m31-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 3
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
@@ -711,8 +714,8 @@ model_list:
     - minimax
     order: 1
     weight: 1
-    max_parallel_requests: 12
-    cooldown_time: 1800
+    # 6 h park on the first 429: the MiniMax token plan is a spent plan, not a burst (fleet-ops#11417).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -720,7 +723,7 @@ model_list:
     id: minimax-m31b-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 3
+      RateLimitErrorAllowedFails: 0
 # Removed 2026-10-22/10-23 (fleet-ops#10068): Ollama, Poolside, Cline and Pareto rows. Git history holds each row.
 - model_name: worker-capable
   litellm_params:
@@ -993,8 +996,8 @@ model_list:
     - minimax
     order: 2
     weight: 1
-    max_parallel_requests: 12
-    cooldown_time: 1800
+    # 6 h park on the first 429: the MiniMax token plan is a spent plan, not a burst (fleet-ops#11417).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -1002,7 +1005,7 @@ model_list:
     id: minimax-m31-assistant
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 3
+      RateLimitErrorAllowedFails: 0
 - model_name: tether
   litellm_params:
     model: anthropic/claude-sonnet-5-5
