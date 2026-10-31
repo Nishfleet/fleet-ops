@@ -2778,8 +2778,13 @@ def test_grafana_mint_reload_guard_keeps_the_reload_wiring() -> None:
     keys = _unit_keys(GRAFANA_TOKEN)
     line = keys["ExecStartPost"][0]
     assert line.startswith("-"), "a reload that cannot get through pages through the reload unit's own OnFailure=, so it must not fail the mint with it"
-    assert "fleet-grafana-provisioning.service" in line, "the reload is started from the token unit's ExecStartPost"
     assert "/usr/bin/systemctl --user start fleet-grafana-provisioning.service" in line, "the absolute systemctl path keeps the mint start from PATH steering"
+    assert keys["RuntimeDirectoryPreserve"] == ["yes"], "the reload guard's ledger lives in the unit's RuntimeDirectory, so it must survive a finished oneshot"
+    unit_text = (ROOT / "systemd/fleet-grafana-github-token.service").read_text()
+    timer_text = (ROOT / "systemd/fleet-grafana-github-token.timer").read_text()
+    interval = int(re.search(r"OnUnitActiveSec=(\d+)min", timer_text).group(1)) * 60
+    margin = int(re.search(r"now - (\d+)\)", unit_text).group(1))
+    assert margin == 3600 - interval, "the guard reloads while the token loaded into Grafana keeps one mint interval of slack, no token life the mint cannot hold"
 
 
 def test_grafana_provisioning_reload_fails_loud_without_a_password(tmp_path: Path) -> None:

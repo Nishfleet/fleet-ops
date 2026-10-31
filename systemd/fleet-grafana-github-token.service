@@ -69,10 +69,16 @@ ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
 # mint fired the reload three times per token hour, so the guard reloads only
 # when the token loaded into Grafana (`$__file{}` is frozen at load) has run
 # down to one mint interval remaining, which keeps the timer's own failure
-# slack: a healthy cadence reloads at every second mint instead of every mint,
-# and a loaded token never expires under it. The mint time of the loaded token
-# is the mtime of the token file at the reload, so the ledger below holds it;
-# a missing, empty or non-numeric ledger, as after a boot, means reload.
+# slack: a healthy cadence reloads at every second mint instead of every mint.
+# When a mint fails, the next succeeding mint can hold the loaded token until
+# its last minute before the reload lands, so a few sends can still go out on
+# a token that just expired — the same at most one mint interval a failed
+# mint already accepts, which the delivery rule pages through. The mint time
+# of the loaded token is the mtime of the token file at the reload, so the
+# ledger below holds it; a missing, empty or non-numeric ledger, as after a
+# boot, means reload. A reload whose ledger write fails (say, the tmpfs is
+# gone mid-run) reloads again at the next mint: an extra reload costs one
+# more in-flight dispatch, never a lost delivery.
 #
 # The `-` prefix: the token is minted and the file is in place, and a reload
 # that cannot get through pages through the reload unit's own OnFailure=, so
