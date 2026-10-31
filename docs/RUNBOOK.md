@@ -55,7 +55,7 @@ detector, not the leftover. It launches a system unit as nish. node_exporter
 reads only the system bus, so a failed system unit fires `SystemUnitFailed`
 and becomes a fix job. A failed user unit is not scraped: of the 212 unit
 names node_exporter exposes, not one is a user-manager unit, and
-`fleet-sync.service`, `fleet-litellm-proxy.service` and `tincan-listen-pi.service`
+`fleet-sync.service` and `fleet-litellm-proxy.service`
 are all absent from them. A user unit's one other route is
 `OnFailure=fleet-unit-failed@%N.service`, which every user unit in `systemd/`
 carries and which instantiates a system unit node_exporter does scrape. That
