@@ -1,7 +1,7 @@
 # Approved models: one line per router provider (API key variable lowercased, no _API_KEY), holding the row's model without its openai/ or anthropic/ prefix. A row outside this list needs Nish's yes, and tests/test_provider_watch.py fails CI on one; tests/evals/results/ holds the eval a no-row decision rests on (Nish 2026-09-28).
 # A provider in config/provider-watch.json with no row needs a line here: "# No row for <provider>, YYYY-MM-DD: <reason>".
 # Approved opencode: deepseek-v4.1-flash
-# Approved commandcode: z-ai/glm-5.3-flash
+# Approved commandcode: z-ai/glm-5.3-flash, deepseek/deepseek-v4.1-flash
 # Approved minimax: MiniMax-M3.1-Flash-Preview
 # Approved stepfun: step-5-preview
 # Approved synthetic: hf:zai-org/GLM-5.3-Flash
@@ -996,6 +996,54 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "Caches: direct probe 2026-10-23 on api.anthropic.com/v1/messages with a 23403-token system block marked cache_control, call 1 cache_creation_input_tokens 23403, call 2 cache_read_input_tokens 23403 of 23414 (99.9%)."
     id: anthropic-sonnet55-tether
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+# gh-aw pilot (fleet-ops#11311): a slash-free name for the only two models the owner allows it, and no fallback,
+# because gh-aw rejects a / inside the model name. The DeepSeek row is priced as the GLM row, the dearer of the two.
+- model_name: pilot
+  litellm_params:
+    model: openai/z-ai/glm-5.3-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-15 on api.commandcode.ai z-ai/glm-5.3-flash, 3 calls on a 19287-token prefix, cached_tokens 0/19264/19264 (fleet-ops#9744)."
+    id: commandcode-glm53flash-pilot
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: pilot
+  litellm_params:
+    model: openai/deepseek/deepseek-v4.1-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-31 on api.commandcode.ai deepseek/deepseek-v4.1-flash, 3 calls on a 26034-token prefix, cached_tokens 0/25984/25984 (fleet-ops#11311)."
+    id: commandcode-ds41flash-pilot
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 router_settings:
