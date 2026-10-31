@@ -16,7 +16,7 @@ GATE = ROOT / ".github/workflows/agent.yml"
 CASES = ROOT / "config/stuck-pr-cases.json"
 FIND = '.jobs.stuck-prs.steps[] | select(.id == "find")'
 NEEDLES = (
-    '--arg who "$APPROVERS" "$STUCK"',
+    '--arg who "$APPROVERS" --argjson cut "$(( $(date +%s) - 3600 ))" "$STUCK"',
     'echo "review=$review"',
     'echo "arm=$arm"',
     'echo "rework=$rework"',
@@ -52,9 +52,12 @@ def test_stuck_wiring():
 def test_stuck_case_table():
     prog = _yq(f'{FIND} | .env.STUCK').strip()
     who = _yq(f'{FIND} | .env.APPROVERS').strip()
-    for line in _jq(["-c", ".cases[]", str(CASES)]).splitlines():
+    lines = _jq(["-c", ".cases[]", str(CASES)]).splitlines()
+    assert len(lines) > 0, "config/stuck-pr-cases.json gave no cases"
+    for line in lines:
         case = json.loads(line)
         source = _jq(["-c", "--argjson", "c", line, ".base * $c.set | {pr, comments, red}", str(CASES)])
-        got = _jq(["-r", "--arg", "who", who, f"{prog} | .class"], stdin=source)
+        cut = json.dumps(case.get("cut", 1793318400))
+        got = _jq(["-r", "--arg", "who", who, "--argjson", "cut", cut, f"{prog} | .class"], stdin=source)
         want = _jq(["-r", ".want"], stdin=line)
         assert got == want, f"case {case.get('id')}: got {got}, want {want}"

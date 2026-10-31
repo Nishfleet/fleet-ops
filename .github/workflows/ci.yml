@@ -969,9 +969,13 @@ jobs:
           while [ $# -gt 0 ]; do case $1 in --model) model=$2 ;; --tools) tools=$2 ;; --permission-mode|--allowedTools|--dangerously-skip-permissions) echo "claude review uses $1" >> "$STATE/claude-bad" ;; esac; shift; done
           [ "$tools" = "" ] || echo "tools not disabled: '$tools'" >> "$STATE/claude-bad"
           [ -z "${SEAT_B_LIMIT:-}" ] || [ "${CLAUDE_CODE_OAUTH_TOKEN:-}" = tok-a ] || exit 1; cat > /dev/null; [ "$model" = "$THIRD_MODEL" ] || echo "$model" >> "$STATE/models" # the third runs beside the second, so it is logged apart to keep the order fixed
-          if [ "$model" = "$THIRD_MODEL" ]; then [ -z "${THIRD_ONCE:-}" ] || [ -e "$STATE/third-once" ] || { : > "$STATE/third-once"; exit 1; }; printf '%b\n' "$THIRD"; exit 0; fi
-          if [ "$model" = "$SECOND_MODEL" ]; then [ -z "${SECOND_FAILS:-}" ] || exit 1; printf '%b\n' "$SECOND"; exit 0; fi
-          [ -z "${CLAUDE_FAILS:-}" ] || exit 1
+          # claude's own usage-limit line, recorded from a 429 on this fleet's seat: it goes to stderr and the call exits
+          # non-zero. LIMIT_FORM picks the reached wording, the epoch form of the same wall, or the JSON-wrapped shape the
+          # host logged. CLAUDE_LIMIT, SECOND_LIMIT and THIRD_LIMIT are the exit code. CLAUDE_WALL is a failure no reset clears.
+          lim="You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)"; [ "${LIMIT_FORM:-}" != reached ] || lim="You've reached your weekly limit · resets Nov 2"; [ "${LIMIT_FORM:-}" != epoch ] || lim="Claude AI usage limit reached|1793276330"; [ "${LIMIT_FORM:-}" != json ] || lim='{"text":"You have reached your weekly limit · resets Nov 2"}'
+          if [ "$model" = "$THIRD_MODEL" ]; then [ -z "${THIRD_ONCE:-}" ] || [ -e "$STATE/third-once" ] || { : > "$STATE/third-once"; exit 1; }; [ -z "${THIRD_LIMIT:-}" ] || { echo "$lim" >&2; exit "$THIRD_LIMIT"; }; printf '%b\n' "$THIRD"; exit 0; fi
+          if [ "$model" = "$SECOND_MODEL" ]; then [ -z "${SECOND_FAILS:-}" ] || exit 1; [ -z "${SECOND_LIMIT:-}" ] || { echo "$lim" >&2; exit "$SECOND_LIMIT"; }; printf '%b\n' "$SECOND"; exit 0; fi
+          [ -z "${CLAUDE_FAILS:-}" ] || exit 1; [ -z "${CLAUDE_WALL:-}" ] || { echo "You're out of usage credits" >&2; exit 1; }; [ -z "${CLAUDE_LIMIT:-}" ] || { [ "${LIMIT_FORM:-}" = stdout ] && echo "$lim" || echo "$lim" >&2; exit "$CLAUDE_LIMIT"; }
           printf '%b\n' "$FIRST"
           MOCK
           printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *init*) ;; *fetch*) if printenv GIT_FAILS | grep -q .; then exit 1; fi; case "$*" in *"credential.helper=!gh auth git-credential"*) ;; *) echo "mock git: the fetch does not authenticate with gh credential helper" >&2; exit 1 ;; esac; case "$*" in *":refs/base"*":refs/head"*) ;; *) echo "mock git: the fetch must fetch both refs: $*" >&2; exit 1 ;; esac ;; *ls-tree*) echo app/routes/home.tsx ;; *"diff --no-color refs/base...refs/head"*) if printenv DIFF_BIG | grep -q .; then head -c 300000 /dev/zero | tr "\0" x; elif printenv DIFF_MID | grep -q .; then head -c 200000 /dev/zero | tr "\0" x; else printf "diff --git a/app/routes/home.tsx b/app/routes/home.tsx\\n+x\\n"; fi ;; *grep*|*show*) ;; *) echo "mock git: unexpected call: $*" >&2; exit 1 ;; esac' > "$t/bin/git"
@@ -1004,13 +1008,13 @@ jobs:
           none_words='blocker: none found in the lock file, the gate is gone.\nAPPROVE'
           first_none='Blockers: none\nchecked: a, b'
           none_then_real='blocker: none.\nblocker .github/workflows/new.yml: removes a gate\nAPPROVE'
-          : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged" "$none_ok" "$first_none" "$none_then_real"  "$none_words" "$v_none" "$v_found" "$v_nob" "$v_nothing" "$v_na" "$v_dash" "$v_bold" "$v_ident" "$v_expl" "$v_dashexpl" "$v_semi" "$real_none_of" "$real_nothing" "$header_echo"  # read through ${!first} and ${!second}
+          quotes_limit='blocker .github/workflows/new.yml: removes a gate\nrisk: the review can print "Claude AI usage limit reached|1793276330" and stop\nnit: y'; : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged" "$none_ok" "$first_none" "$none_then_real" "$quotes_limit"  "$none_words" "$v_none" "$v_found" "$v_nob" "$v_nothing" "$v_na" "$v_dash" "$v_bold" "$v_ident" "$v_expl" "$v_dashexpl" "$v_semi" "$real_none_of" "$real_nothing" "$header_echo"  # read through ${!first} and ${!second}
           # every “blocker: none” shape a reviewer can write, then the same line with a real blocker after it
           gen_none_rows() { for v in v_none v_found v_nob v_nothing v_na v_dash v_bold v_ident v_expl v_dashexpl v_semi real_none_of real_nothing; do want=yes; case $v in real_none_of|real_nothing) want=no ;; esac; printf -v row 'none-%s|1|approve|0.95|clean|%s|THIRD=clean_ok|%s|0|claude-opus-5-5 claude-fable-5-1\n' "$v" "$v" "$want"; printf '%s' "$row"; done; }
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models (a seat that answers nothing is asked again, so a dead model is listed twice, seat b then seat a, per REVIEW_BACKOFF delay plus the first call)
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export CREDENTIALS_DIRECTORY=$t/cred STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
-              GUARD_LIST_FAILS='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_ONCE='' SEAT_B_LIMIT=''
+              GUARD_LIST_FAILS='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' CLAUDE_LIMIT='' LIMIT_FORM='' SECOND_LIMIT='' THIRD_LIMIT='' CLAUDE_WALL='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_ONCE='' SEAT_B_LIMIT=''
             unset CLAUDE_CONFIG_DIR
             mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"; : > "$STATE/issues"
             e1=${extra%% *} # the first token: PRIOR= and BUILT= carry one value, a case can add more tokens
@@ -1023,6 +1027,7 @@ jobs:
                   not-approved) prior="reviewer: $SHA not approved. The judge found no blocker line but was only 80% sure, and approval needs 90%." ;;
                   blocked) prior="$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\nblocker x: y' "$SHA")" ;;
                   near-approval) prior="reviewer: $SHA approved, but only 50% sure" ;;
+                  held) prior="$(printf 'review-held: %s\n\nThe first review (claude-opus-5-5) is at its Claude usage limit. Nothing was approved or blocked.' "$SHA")" ;;
                   fallback-text) prior="reviewer: $SHA edits the merge guard or a workflow, so a person approves it. Nothing was approved or blocked automatically. Fallback: an approver's PR comment line \`coordinator-approval: $SHA\`." ;;
                   blocked-none-only) prior="$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs all three reviews to approve.\n\nSecond reviewer (Claude family, served row claude-fable-5-1): blocked\nblocker: none.\n\nrisk: x' "$SHA")" ;;
                   blocked-none-five) copies=5; prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none found.' "$SHA")" ;;
@@ -1062,6 +1067,8 @@ jobs:
             [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "$SECOND_ROW" "$STATE/comments" || problem="$problem the second model was not named on the PR"
             [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "$THIRD_ROW" "$STATE/comments" || problem="$problem the third row was not named on the PR"
             [ ! -s "$STATE/issues" ] || problem="$problem an issue was filed on a review that finished"
+            [ -z "${CLAUDE_LIMIT:-}${SECOND_LIMIT:-}${THIRD_LIMIT:-}" ] || grep -qx "review-held: $SHA" "$STATE/comments" || problem="$problem a usage limit did not hold the head"
+            [ -n "${CLAUDE_LIMIT:-}${SECOND_LIMIT:-}${THIRD_LIMIT:-}" ] || ! grep -q '^review-held:' "$STATE/comments" || problem="$problem a head was held with no usage limit"
             ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || { grep -q "blocked-on: needs-split" "$STATE/comments" && grep -qF 'labels[]=needs-split' "$STATE/labels" || problem="$problem no blocked-on: needs-split comment or label"; }; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done < <(cat <<'CASES'
@@ -1110,8 +1117,21 @@ jobs:
           other-built-guard-third-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=pi|yes|0|claude-opus-5-5 claude-fable-5-1
           claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-opus-5-5
           claude-call-fails-or-seat-at-its-usage-limit-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5
+          claude-a-failure-that-is-not-a-limit-still-fails||approve|0.95|clean|none|CLAUDE_WALL=1|no|1|claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5
           diff-too-large-to-review-whole-is-blocked-not-failed||approve|0.95|clean|none|DIFF_BIG=1|no|0|
           diff-read-by-git-fails-and-says-so||approve|0.95|clean|none|GIT_FAILS=1|no|1|
+          claude-limit-seat-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1|no|0|claude-opus-5-5
+          claude-limit-stderr-exit0-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=0|no|0|claude-opus-5-5
+          claude-limit-stdout-exit1-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1 LIMIT_FORM=stdout|no|0|claude-opus-5-5
+          claude-limit-epoch-form-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1 LIMIT_FORM=epoch|no|0|claude-opus-5-5
+          claude-limit-json-wrapped-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1 LIMIT_FORM=json|no|0|claude-opus-5-5
+          claude-limit-reached-wording-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1 LIMIT_FORM=reached|no|0|claude-opus-5-5
+          claude-limit-guard-first-holds-the-head|1|approve|0.95|clean|clean_ok|CLAUDE_LIMIT=1|no|0|claude-opus-5-5
+          claude-limit-guard-second-holds-the-head|1|approve|0.95|clean|clean_ok|SECOND_LIMIT=1|no|0|claude-opus-5-5 claude-fable-5-1
+          claude-limit-guard-second-stderr-exit0-holds-the-head|1|approve|0.95|clean|clean_ok|SECOND_LIMIT=0|no|0|claude-opus-5-5 claude-fable-5-1
+          claude-limit-guard-third-holds-the-head|1|approve|0.95|clean|clean_ok|THIRD_LIMIT=1|no|0|claude-opus-5-5 claude-fable-5-1
+          claude-quoted-limit-line-in-a-review-is-still-a-review|1|approve|0.95|quotes_limit|clean_ok|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+          prior-held-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=held THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
           CASES
           gen_none_rows)
           # The arm job's step: arms the exact approved head, and does nothing for a
