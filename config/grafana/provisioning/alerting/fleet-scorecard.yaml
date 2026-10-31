@@ -327,6 +327,49 @@ groups:
         labels: {severity: warning, signal: fleet-scorecard}
         isPaused: false
 
+      # Dependency-blocked ready work stayed blocked for 48h (fleet-ops#11135). The idle rule
+      # above excludes dependency-blocked ready issues once a mirror label lands (#11228 uses
+      # agent-blocked-dep, #11301 dependency-blocked), so a blocker stuck forever would silence
+      # the class instead of being seen. This rule keeps counting them: the label token covers
+      # both names with GitHub's label comma (logical OR), so it follows whichever exclusion
+      # lands first, and the pending duration carries the age, so the alert opens only after
+      # the blocked set has stayed non-empty for 48 hours. Until one of those lands the label
+      # is never written, so A is empty and the rule reads a true zero, not a broken read.
+      # Known gap (as in queue-stuck.yaml): an issue untouched for over 30 days leaves the
+      # read window and the count falls to 0, so a firing alert resolves instead of staying.
+      - uid: scorecard-blocked-stale
+        title: Dependency-blocked ready work stuck behind its blocker for 48h
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 2592000, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Issues
+              owner: Nishfleet
+              repository: ''
+              options: {query: "org:Nishfleet is:issue is:open label:agent-ready label:agent-blocked-dep,dependency-blocked NOT \"grafana alert:\" in:title archived:false", timeField: 2}
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT COUNT(*) AS blocked
+                FROM (SELECT updated_at FROM A) AS found
+        noDataState: OK
+        execErrState: Error
+        for: 48h
+        annotations:
+          summary: '{{ if $values }}Dependency-blocked agent-ready work has stayed blocked for 48 hours.{{ else }}The fleet cannot read GitHub issues for the Fleet scorecard blocked-stale rule, so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}A dependency-blocked agent-ready issue has been inadmissible for two days and its blocker is giving no sign of life (fleet-ops#11135). Open the blocker, or unlink the dependency so the issue returns to the queue. Dashboard: Fleet scorecard.{{ else }}Check the GitHub data source in Grafana.{{ end }} Open the list: https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aagent-ready+label%3Aagent-blocked-dep%2Cdependency-blocked+archived%3Afalse+sort%3Aupdated-asc'
+        labels: {severity: warning, signal: fleet-scorecard}
+        isPaused: false
+
       - uid: scorecard-verdict-slow
         title: Head to review verdict over 20 min p50 or 60 min p90, two days running
         condition: C
