@@ -152,6 +152,36 @@ def merged_values(dirs: list[Path], key: str) -> list[str]:
     return out
 
 
+def runner_bind_leaks(stem: str, bind_values: list[str]) -> list[str]:
+    """Runner-tree tokens a unit's own .service.d binds wider than its own runner dir.
+
+    systemd.unit(5): %j is the final component of the prefix, so for
+    actions.runner.Nishfleet.netcup-agent-20.service it is 20, and the pooled
+    20-lockdown.conf's agent-runner/%j line resolves to agent-runner/20. A bind of
+    agent-runner itself or of any sibling number lets a job write every runner's
+    start script: the outage of 2026-10-31 overwrote all 30 runsvc.sh files through
+    that one line.
+    """
+    
+    root = Path(HOME) / ".local/share/agent-runner"
+    number = stem.removesuffix(".service.d").removesuffix(".service").rsplit("-", 1)[1]
+    own = root / number if number.isdigit() else root / "%j"
+    leaks = []
+    for value in bind_values:
+        for token in shlex.split(value):
+            path = Path(token.lstrip("-+"))
+            if number.isdigit():
+                path = Path(str(path).replace("%j", number))
+            if path.is_relative_to(root) and path != own:
+                leaks.append(token)
+    return leaks
+
+
+def agent_pool_units() -> dict[str, list[Path]]:
+    """The agent runner's unit dir -> its effective drop-ins, template and numbered instances."""
+    return {name: dirs for name, dirs in runner_units().items() if name.startswith("actions.runner.Nishfleet.netcup-agent-")}
+
+
 def runner_units() -> dict[str, list[Path]]:
     """Unit dir name -> the drop-in dirs that apply to it, for every runner .service.d in the repo."""
     dirs = sorted(SYSTEM.glob("actions.runner.*.service.d"))
@@ -514,3 +544,30 @@ def test_the_agent_pool_binds_no_file_the_repo_ships() -> None:
     bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
     shipped = sorted(name for name in bound if (ROOT / "config" / name).is_file())
     assert not shipped, f"read from the deploy clone instead: {shipped}"
+
+
+def test_the_agent_pool_binds_only_each_runners_own_dir() -> None:
+    """The agent pool resolves %j to the unit's own number: no job reaches a sibling runner dir.
+
+    fleet-ops#11484: the pooled drop-in bound agent-runner whole, so a job on
+    runner N could overwrite runner M's runsvc.sh, and the outage of
+    2026-10-31 took all 30 runners down that way.
+    """
+    units = agent_pool_units()
+    leaks = runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-.service.d",
+                              merged_values(units["actions.runner.Nishfleet.netcup-agent-.service.d"], "BindPaths"))
+    assert not leaks, leaks
+    for name, dirs in units.items():
+        leaks = runner_bind_leaks(name.removesuffix(".service.d"), merged_values(dirs, "BindPaths"))
+        assert not leaks, leaks
+
+
+def test_gate_fails_on_a_wide_agent_runner_bind() -> None:
+    """The bind that let the 2026-10-31 outage reach every runner fails the gate."""
+    wide = [f"{HOME}/.local/share/agent-runner"]
+    own = [f"{HOME}/.local/share/agent-runner/%j"]
+    sibling = [f"-{HOME}/.local/share/agent-runner/25"]
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", wide) == wide
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", own) == []
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", sibling) == sibling
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-.service.d", own) == []
