@@ -36,15 +36,14 @@ encrypted with the same `TF_ENCRYPTION` file
    on `nish.sh`. The mint gate is `docs/cloudflare-credentials.md`.
 2. Export it: `CLOUDFLARE_API_TOKEN` comes from a 0600 env file under
    `~/.config/cloudflare/`, never from the repo or a shell history line.
-3. Set the key: read the header value from the live rule (GET the zone
-   ruleset, phase `http_request_late_transform`) and set
-   `TF_VAR_pilot_router_key` in the same shell. Never print it.
-4. `tofu init && tofu plan` — after the import below, an empty plan means the
-   config matches the live objects.
-5. `tofu apply`.
-
-The objects exist today (made by hand on 2026-10-31), so the first run imports
-them instead of creating replacements:
+3. Set the key: read the header value from the live rule and set
+   `TF_VAR_pilot_router_key` in the same shell. Never print it, and keep the
+   token out of argv — pass the header with curl's config-from-stdin form
+   (`curl -K -`), because `/proc/<pid>/cmdline` is world-readable.
+4. Import the existing objects — they were made by hand on 2026-10-31, and
+   importing first is what stops the apply from creating replacements (a
+   duplicate app would rotate the AUD and break the connector's pinned tag:
+   stop on any plan that destroys and recreates an object):
 
 ```sh
 tofu import cloudflare_zero_trust_access_application.pilot_gateway "$ACCOUNT_ID/<app-id>"
@@ -52,12 +51,15 @@ tofu import cloudflare_zero_trust_access_policy.service_auth "$ACCOUNT_ID/<polic
 tofu import cloudflare_ruleset.pilot_key_transform "$ZONE_ID/<ruleset-id>"
 ```
 
-Find the ids with the same token: list Access apps and pick the one named
-"gh-aw pilot gateway"; list its policies; GET the zone's rulesets by phase
-`http_request_late_transform`. If the plan after import shows drift in app
-settings this config does not set (session duration, custom deny pages), add
-them to `main.tf` so the next reviewer sees the real shape instead of a
-permanent diff.
+   Find the ids with the same token: list Access apps and pick the one named
+   "gh-aw pilot gateway"; list its policies; GET the zone's rulesets by phase
+   `http_request_late_transform`.
+5. `tofu init && tofu plan` — after the import, an empty plan means the
+   config matches the live objects. If the plan shows drift in app settings
+   this config does not set (session duration, custom deny pages), add them
+   to `main.tf` so the next reviewer sees the real shape instead of a
+   permanent diff.
+6. `tofu apply`.
 
 ## Scope
 

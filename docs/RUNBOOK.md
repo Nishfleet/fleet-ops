@@ -762,10 +762,11 @@ ingress config:
   Even before the revoke, a leaked token reaches only the two pilot rows, each
   capped at 10 USD a day, at 30 requests a minute.
 - **Delete:** stop the unit and remove the link and the credentials file. In
-  Cloudflare, delete the tunnel, the `llm` DNS record, then the edge guard with
-  `tofu destroy` in `infra/llm-gateway-edge/` (the Access app, the service
-  token's policy entry and the transform rule). Then delete the router key
-  `gh-aw-pilot-edge`.
+  Cloudflare, delete the tunnel and the `llm` DNS record, then the edge guard
+  with `tofu destroy` in `infra/llm-gateway-edge/` (the Access app, the
+  policy and the transform rule; the stack only reads the service token, so
+  delete the token "gh-aw-pilot" in Zero Trust by hand). Then delete the
+  router key `gh-aw-pilot-edge`.
 
 ## Break-glass access (SSH is Tailscale-only)
 
