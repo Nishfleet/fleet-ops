@@ -1,13 +1,17 @@
-# fleet-ops#11417: a MiniMax row on the burst cool. The MINIMAX_API_KEY plan's 429s are a quota wall with a fixed reset
+# fleet-ops#11417: a MiniMax row on the burst cool and on a slot cap. The MINIMAX_API_KEY plan's 429s are a quota wall with a fixed reset
 # clock (the 'Token Plan usage limit reached (2056)' spent-plan wall), not a burst: with the row's own
 # RateLimitErrorAllowedFails: 3 overriding the router policy the row needed three 429s to park and entered
 # the wall every 1800 s, which landed 179 of its 429s inside the RouterStrongGroupFailing window on 2026-10-31. The row must park on its first 429
-# (model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0) with cooldown_time 21600, so it re-probes about 4x/day.
+# (model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0) with cooldown_time 21600, so it re-probes about 4x/day,
+# and with the 6 h park in force it must carry no max_parallel_requests: the router's own concurrency 429 counts into the
+# cooldown and the row's own cooldown_time names the park length per class (notes 9 and 17), so one slot spike
+# (the v1.105.0 slot leak, fleet-ops#10762) would park a healthy plan row 6 h (fleet-ops#10694).
 # The rows and router_settings are the live config's judge fallback, judge paid and first
 # MiniMax worker-capable rows plus its own router_settings, which pass the schema alone, so the change
-# (the MiniMax row on the burst cool) is the only one in this file.
+# (the MiniMax row on the burst cool and on a slot cap) is the only one in this file.
 # undo: model_list.2.litellm_params.cooldown_time = 21600
 # undo: model_list.2.model_info.allowed_fails_policy.RateLimitErrorAllowedFails = 0
+# undo: model_list.2.litellm_params.max_parallel_requests = drop
 model_list:
 - model_name: judge
   litellm_params:

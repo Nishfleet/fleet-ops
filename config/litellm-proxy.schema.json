@@ -320,7 +320,7 @@
             }
           },
           {
-            "$comment": "fleet-ops#11146: a row on api.z.ai/api/coding/paas/v4, api.stepfun.ai/step_plan/v1, token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1 or api.minimax.io/anthropic sits on a quota wall with a fixed reset clock, not a burst: the z.ai Coding Plan answers 429 code 1310 'Weekly/Monthly Limit Exhausted' naming its reset time, the Step Plan answers 429 'you have no left credit' while the prepaid balance is drained, the Alibaba token plan answers 429 'Your token-plan 1-month quota has been exhausted' naming its reset date, and the MiniMax token plan answers 429 'Token Plan usage limit reached (2056)' while the plan is spent: with the MINIMAX_API_KEY rows riding the burst treatment their plan re-enterings landed 179 of those 429s inside the #11417 alert window on 2026-10-31 (fleet-ops#11417). The 900 s burst cool with allowed_fails 1 re-enters the wall every 15 min and leaks it to the caller: 58.9% of worker-capable chat calls failed at 2026-10-30 02:28Z with 19 of the 29 worker-capable rows walled, and on 2026-10-31 the judge group held the RouterGroupJammed alert on the token-plan row alone, 107 of its 'quota has been exhausted' 429s in the journal from 20:00Z. The row parks on its first 429 for 6 h and re-probes about 4x/day, so a reset is picked up within hours (the #9075/#9122 treatment).",
+            "$comment": "fleet-ops#11146: a row on api.z.ai/api/coding/paas/v4, api.stepfun.ai/step_plan/v1, token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1 or api.minimax.io/anthropic sits on a quota wall with a fixed reset clock, not a burst: the z.ai Coding Plan answers 429 code 1310 'Weekly/Monthly Limit Exhausted' naming its reset time, the Step Plan answers 429 'you have no left credit' while the prepaid balance is drained, the Alibaba token plan answers 429 'Your token-plan 1-month quota has been exhausted' naming its reset date, and the MiniMax token plan answers 429 'Token Plan usage limit reached (2056)' while the plan is spent: with the MINIMAX_API_KEY rows riding the burst treatment their plan re-enterings landed 179 of those 429s inside the #11417 alert window on 2026-10-31 (fleet-ops#11417). The 900 s burst cool with allowed_fails 1 re-enters the wall every 15 min and leaks it to the caller: 58.9% of worker-capable chat calls failed at 2026-10-30 02:28Z with 19 of the 29 worker-capable rows walled, and on 2026-10-31 the judge group held the RouterGroupJammed alert on the token-plan row alone, 107 of its 'quota has been exhausted' 429s in the journal from 20:00Z. The row parks on its first 429 for 6 h and re-probes about 4x/day, so a reset is picked up within hours (the #9075/#9122 treatment). No MiniMax api_base row carries max_parallel_requests (the rule below, #11417): with the row's 6 h park in force, the router's own concurrency 429 (notes 9 and 17: it is raised before any provider call, it counts into the cooldown, and a row's own cooldown_time names the park length per class) would park a healthy plan row 6 h on one slot spike, and the v1.105.0 slot leak (fleet-ops#10762) fills the slots of a freed-never stream; the plan's own 429s hold the key instead (the #10694 treatment).",
             "if": {
               "required": ["litellm_params"],
               "properties": {
@@ -346,6 +346,25 @@
                       "properties": { "RateLimitErrorAllowedFails": { "const": 0 } }
                     }
                   }
+                }
+              }
+            }
+          },
+          {
+            "$comment": "fleet-ops#11417: no MiniMax api_base row holds max_parallel_requests. The row parks 6 h on its first 429 (the #11146 rule above), and LiteLLM 1.105.0 names the park length from the row's own cooldown_time per error class (note 17 in docs/litellm-router-notes.md), so the router's own 'all max_parallel_requests slots in use' 429 (note 9: a slot-count failure counts into the cooldown, and the v1.105.0 slot leak, note 12 and fleet-ops#10762, never frees an abandoned stream's slot) would park a healthy plan row for 6 h with no provider wall behind it. The plan's own 429s and the park hold the key instead, the #10694 treatment the Synthetic and z.ai rows took and #10762 the StepFun rows (their cap entries hold the same no-slot rule for their api_bases). The rule pins the api_base only, so it cannot reach the #9374 judge row, whose own rule pins its 3-lane cap to the plan's stated numbers.",
+            "if": {
+              "required": ["litellm_params"],
+              "properties": {
+                "litellm_params": {
+                  "required": ["api_base"],
+                  "properties": { "api_base": { "const": "https://api.minimax.io/anthropic" } }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "litellm_params": {
+                  "not": { "required": ["max_parallel_requests"] }
                 }
               }
             }

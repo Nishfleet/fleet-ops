@@ -572,6 +572,30 @@ def test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule(
         assert any(p[:1] == ["router_settings"] for p in paths), (path, paths)
 
 
+def test_schema_rejects_the_minimax_quota_wall_fixture_on_its_three_deltas():
+    """fleet-ops#11417: the review of the preview head asked for a gate that runs the
+    minimax reject fixture, not a hand-quoted command. The fixture holds all three
+    deltas on the one MiniMax row (burst cool, third-429 park, slot cap), each one a
+    named rule violation at model_list/2; a one-key revert leaves the other keys'
+    violation, so no single field can pass the gate alone."""
+    with open(SCHEMA_PATH, "rb") as fh:
+        schema = json.load(fh)
+    validator = jsonschema.Draft202012Validator(schema)
+    fixture = "config/litellm-proxy.schema.rejects/quota-wall-minimax-row-on-the-burst-cooldown.yaml"
+    with open(fixture, "rb") as fh:
+        doc = yaml.safe_load(fh)
+    errors = list(validator.iter_errors(doc))
+    paths = [list(e.absolute_path) for e in errors]
+    # The cooldown and allowed-fails deltas fail at their own leaf keys.
+    for key in ("cooldown_time", "RateLimitErrorAllowedFails"):
+        assert any(p[:2] == ["model_list", 2] and p[-1] == key for p in paths), (key, paths)
+    # The no-slot-cap delta is a row-level `not` violation: its path stops at the
+    # row's litellm_params, and the message names the key.
+    assert any(p == ["model_list", 2, "litellm_params"]
+               and any("max_parallel_requests" in e.message for e in errors
+                       if list(e.absolute_path) == p) for p in paths), paths
+
+
 def test_authentication_error_gets_one_retry():
     """fleet-ops#10756: a 401 gets one in-group retry, and the router-level
     AuthenticationErrorAllowedFails 0 parks the row that answered it, so the retry
