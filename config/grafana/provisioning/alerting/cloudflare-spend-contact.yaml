@@ -161,11 +161,12 @@ policies:
         repeat_interval: 12h
         continue: true
       # A cost rule is critical, so the first route above pages it every hour;
-      # this route files its issue on the same cadence. The dispatch gate closes
-      # each re-file as the open issue's duplicate and comments the page on it
-      # (fleet-ops#9859: at 12h an issue-cadence slower than the page left pages
-      # with no tracked record). tests/alert_routes_check.py fails when this
-      # route repeats slower than the page.
+      # this route files its issue on the same cadence (fleet-ops#9859: at 12h
+      # an issue cadence slower than the page left a page with no tracked
+      # record). The dispatch gate closes each re-file as the open issue's
+      # duplicate, so one open issue stands for the still-firing rule and each
+      # closed re-file is the page's record. tests/alert_routes_check.py fails
+      # when this route repeats slower than the page.
       - receiver: cloudflare-spend-dispatch
         object_matchers:
           - [signal, "=", cloudflare-spend]

@@ -7,10 +7,11 @@ at least hourly until they resolve), warning for every other rule (never pages).
 Every firing alert, whatever its severity, also reaches a webhook that files a
 fleet-ops issue. No rule may set its own notification_settings, which would
 bypass the policy tree. A cost rule's firing alert files its issue at least as
-often as it pages, so every page is counted on the rule's open issue: the dispatch
-gate closes each re-file as that issue's duplicate and comments the page on it
-(a read error on the rule still files on the catch-all's daily cadence). This reads the
-provisioning files, walks the policy tree for each rule (also for the
+often as it pages, so every page gets a tracked record: the dispatch gate closes
+each re-file as the rule's one open issue's duplicate, and the closed re-file
+itself is that page's record (a read error on the rule still files on the
+catch-all's daily cadence). This reads the provisioning files, walks the policy
+tree for each rule (also for the
 DatasourceError and DatasourceNoData alerts the rule can turn into), and fails
 when any of that does not hold. Adding a paging rule
 means adding it to URGENT here, with its reason, and labelling it critical.

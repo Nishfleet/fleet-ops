@@ -293,11 +293,11 @@ evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy
 analytics token, from `~/.config/cloudflare/deploy-ci.env`). A firing rule opens a fleet-ops
 issue labelled `agent-ready` and `priority-now` through the webhook contact point
 `cloudflare-spend-dispatch`, and that route repeats every hour, the same cadence as the page
-(fleet-ops#9859: at 12h it was slower, so a rule that stayed firing paged hourly and left an hour
+(fleet-ops#9859: at 12h it was slower, so a rule that stayed firing paged hourly and left a page
 with no tracked record). The webhook cannot comment or close: the dispatch gate in agent.yml
-closes every re-file as the rule's one open issue's duplicate and comments the page on that issue,
-so one open issue carries one entry per page, and nothing opens a second issue for the same
-still-firing rule. A read error on the rule itself still files on the catch-all's
+closes every re-file as the rule's one open issue's duplicate, so one open issue
+stands for the still-firing rule and the closed re-file itself is that page's record.
+A read error on the rule itself still files on the catch-all's
 daily cadence. The webhook
 sends a GitHub App installation token (issues:write on Nishfleet/fleet-ops only), see
 "Grafana's GitHub token" below. `grafana_alerting_notifications_failed_total` rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a rule by typing a past
@@ -316,8 +316,8 @@ a fleet-ops issue labelled `agent-ready` (`fleet-alert-dispatch`, or the cost-al
 router-dead-row variants; `router-dead-key-dispatch` labels its issue `needs-nish-decision`,
 because a rejected provider key is Nish's to renew); the webhook cannot comment or close, so a
 still-firing alert files a new issue per repeat; for a cost alarm the gate closes each re-file as
-the rule's one open issue's duplicate and comments the page on it, so the open issue carries a
-counted entry per page (fleet-ops#9859). CI fails when a rule has no severity, overrides the tree, is critical
+the rule's one open issue's duplicate, so one open issue stands for the rule and the closed
+re-file is the page's record (fleet-ops#9859). CI fails when a rule has no severity, overrides the tree, is critical
 without being on the urgent list (or the reverse), a critical alert would re-send slower than
 hourly, or a cost rule's issue route repeats slower than its page (fleet-ops#9859: the spend route
 repeated every 12h while the cost rules paged hourly, so a page could land with no tracked record).

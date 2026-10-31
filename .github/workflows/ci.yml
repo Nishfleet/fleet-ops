@@ -1576,8 +1576,8 @@ jobs:
           # fleet-alert-dispatch: its payload must be a labelled fleet issue. The
           # spend rule (fleet-ops#9859) must deliver twice, one POST per repeat:
           # design-coverage of the cap is tests/test_claude_lanes.py (the gate
-          # closes each re-file as the open issue's duplicate and counts the
-          # page on it); the drill proves only that the repeat delivers.
+          # closes each re-file as the rule's one open issue's duplicate); the
+          # drill proves only that the repeat delivers.
           for _ in $(seq 1 80); do grep -q '"title":"grafana alert: drill generic"' "$d/sink.log" && [ "$(grep -c '"title":"cost alarm: drill spend drill-db"' "$d/sink.log")" -ge 2 ] && break; sleep 3; done
           g=$(grep '"title":"grafana alert: drill generic"' "$d/sink.log" | head -n 1 || true)
           [ -n "$g" ] || { echo "::error::a rule with no route of its own did not reach fleet-alert-dispatch"; cat "$d/sink.log"; exit 1; }
