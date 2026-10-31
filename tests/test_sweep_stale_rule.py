@@ -4,6 +4,7 @@ when the read window holds no finished run at all. A read that returns no frame 
 NoData, which the rule treats as firing too, because a disabled workflow looks the same."""
 import json
 import pathlib
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -54,6 +55,25 @@ def test_fires_only_when_the_newest_finished_run_is_three_hours_old():
 
 def test_a_run_that_has_not_finished_is_not_liveness():
     assert _stale(_rule(), [0.5], status="queued") == 1
+
+
+def _outer_select(expression):
+    depth = 0
+    for i, ch in enumerate(expression):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif depth == 0 and re.match(r"FROM\b", expression[i:], re.IGNORECASE):
+            return expression[:i]
+    return expression
+
+
+def test_the_outer_select_keeps_the_aggregate_in_its_derived_table():
+    """The expression engine enforces sql_mode=only_full_group_by (upstream: https://grafana.com/docs/grafana/latest/panels-visualizations/query-transform-data/sql-expressions/), and the shape fleet-ops#11477 shipped fails it while sqlite passes."""
+    rule = _rule()
+    sql = next(d for d in rule["data"] if d["refId"] == rule["condition"])["model"]["expression"]
+    assert re.search(r"\b(MAX|MIN|SUM|COUNT|AVG)\s*\(", _outer_select(sql), re.IGNORECASE) is None
 
 
 def test_it_reads_agent_dispatch_runs_and_warns_without_paging():
