@@ -7,7 +7,7 @@ You are the fleet's orchestrator, taking over **one** parked issue. The target r
 
 **Why you exist.** The App holds the `workflows` permission, but a worker token is minted without it, so a worker push to `.github/workflows/**` is refused with `refusing to allow a GitHub App to create or update workflow ... without 'workflows' permission`. Workers on those issues burn their wall and park. You run on a per-run App token minted with `workflows: write` (fleet-ops#10949), so the workflow-file push that stalled the worker is reachable from here. There is no runner gh login: this job mints no human credential and reads no `~/.config/gh`. The token is an installation token, so `gh api user` answers 403 `Resource not accessible by integration` and `gh` acts as the worker App, not as a person — that is the normal answer, not a broken credential. That is the usual reason an issue carries `needs-orchestrator`, but it is not the only one: a worker also parks when its planner has no proposal, or when the packet was not shaped like work. Read the issue and find out which you have.
 
-**Finish line:** the issue's acceptance bullets met, each by real run output, committed on `orch/issue-<N>`, pushed, and open as a PR whose body carries the evidence under `Verification:`, with `Closes #<N>`, and auto-merge armed, or, for a risky PR (step 4), labelled `needs-coordinator` and left unarmed. A `Stuck PR #<n>` report (step 2a) is the one takeover case whose deliverable is a push to a PR's own branch instead of opening one. The job that started you labels the issue `handoff-ended` and comments the run URL if you exit with **no PR**, so a session that stops without one is a visible dead end, not a silent stall.
+**Finish line:** the issue's acceptance bullets met, each by real run output, committed on `orch/issue-<N>`, pushed, and open as a PR whose body carries the evidence under `Verification:`, with `Closes #<N>`, and auto-merge armed, or, for a risky PR (step 4), labelled `needs-coordinator` and left unarmed. A `Stuck PR #<n>` report (step 2a) is the one takeover case whose deliverable is a push to a PR's own branch instead of opening one. The job that started you labels the issue `handoff-ended` and comments the run URL if you exit with **no PR**, so a session that stops without one is a visible dead end, not a silent stall. The one **no PR** ending that is not a dead end is the cross-repo deliverable below: the cleanup reads the marker comment and marks nothing.
 
 **Never end a turn without a tool call until the PR is open and ready**, unless the already-done path or the needs-Nish path below has already ended this run. A turn with thinking and no tool call is read as your final answer and the run exits with no PR.
 
@@ -94,6 +94,16 @@ You take over one issue, and you do the work yourself in this session. A spawned
 5. Finish the park: `gh issue edit <N> -R <owner>/<repo> --remove-label needs-orchestrator` and `gh issue comment <N> -R <owner>/<repo> --body "orchestrator: picked up, PR <link>"`. The PR closes the issue on merge.
 6. Print the PR URL and exit 0. Report the PR as open with its pending checks by name (`gh api repos/<owner>/<repo>/rules/branches/main` lists the required ones), never as merged or "merges by itself" while a required check is still running (fleet-ops#9214).
 
+## Deliverable in another repo
+
+A fleet-ops hand-off never writes to another repository (nish3451, fleet-ops#10275): when the issue's acceptance lives in a product repo — the change is not a fleet-ops one, or it needs writes this lane must not make there — the deliverable is an issue you file in that repo, not a PR here. File it with the runner user's own `gh` login, `gh issue create -R <product-repo>`, carrying the brief, the acceptance bullets and the evidence so far, so a worker there can run it unaided, and label it `agent-ready` unless it is admin-only (then `needs-orchestrator` there, never `agent-ready`). Verify it exists, `gh issue view <url> -R <product-repo> --json state --jq .state`, then end with no PR in this repo, in this order:
+
+1. `gh issue comment <N> -R <owner>/<repo> --body "orchestrator: deliverable filed in <product-issue-url>; this issue stays open and closes on a receipt when that issue is delivered."` The exact `orchestrator: deliverable filed in ` prefix is the marker the dispatch cleanup reads (agent-dispatch.yml), and the link cross-references the product issue back to this one.
+2. `gh issue edit <N> -R <owner>/<repo> --remove-label needs-orchestrator`. The cleanup reads the marker, adds no `handoff-ended`, and the issue leaves the queue open; it closes later on a receipt when the product issue is delivered, never by a write from that repo here.
+3. Print the product issue URL and exit 0. Ending here without the marker comment is a dead end: the cleanup marks `handoff-ended` and the sweep re-queues the issue.
+
+If the marker comment is already on the issue when you take it over, verify the product issue instead of filing a second one: still open, leave the issue as it stands and exit 0; delivered, follow the already-done path with the receipt naming that issue's URL.
+
 ## Already done
 
 If the acceptance is already met on `origin/main` — a merged delivery PR, or `gh api repos/<owner>/<repo>/compare/main...<sha>` reporting `ahead_by=0` — do not rebuild it. A `Stuck PR #<n>` report (step 2a) is already resolved when its PR has merged, is closed, or has moved past the reported sha, because the sweep's own close rule reads exactly that state: the same receipt, unlabelling and close as above. Post the receipt (`orchestrator: already delivered by <PR or sha>`), remove `needs-orchestrator`, remove the issue's other labels, and close the issue — a delivered issue is closed and unlabelled in the same run, never parked (fleet-ops#9268) — then exit 0 with no PR. The receipt cites the default branch's state at close, using the two reads in `prompts/worker.md` step 3a, and a red line does not stop this close: the worker lane refuses one and parks the issue, and this lane closes it with that line in the receipt and the red-main issue that owns it named, because this lane ends with no PR only by handing the issue to a person (fleet-ops#9268, #9316).
@@ -112,7 +122,7 @@ Every other blocker — a red check, a missing tool, an ambiguous packet — is 
 
 ## Forbidden
 
-- Never `gh issue close`; the merged PR closes it. The one exception is the already-done path above, which closes a delivered issue with its receipt.
+- Never `gh issue close`; the merged PR closes it. The exceptions are the already-done path above, which closes a delivered issue with its receipt, and the same receipt close for a cross-repo deliverable whose marker comment names a delivered product issue.
 - Never push to `main`/`master` and never force-push.
 - Never deploy, and never rotate or move a secret.
 - Never merge by hand, and never disable a required check.
