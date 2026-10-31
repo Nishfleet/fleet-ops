@@ -243,7 +243,8 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    cooldown_time: 900
+    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -251,6 +252,7 @@ model_list:
     id: synthetic-glm53flashe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   # z.ai Coding Plan slot (fleet-ops#10566, #10608).
   litellm_params:
@@ -282,8 +284,8 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    # Synthetic: no slot count; the 500-req/5h pool's 429 cools the row and the window refills (fleet-ops#10694).
-    cooldown_time: 900
+    # No slot count (fleet-ops#10694). Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -291,6 +293,7 @@ model_list:
     id: synthetic-glm53flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -300,7 +303,8 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    cooldown_time: 900
+    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -308,6 +312,7 @@ model_list:
     id: synthetic-glm53flashb-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -317,7 +322,8 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    cooldown_time: 900
+    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -325,6 +331,7 @@ model_list:
     id: synthetic-glm53flashc-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -334,7 +341,8 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    cooldown_time: 900
+    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -342,6 +350,7 @@ model_list:
     id: synthetic-glm53flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -351,7 +360,8 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    cooldown_time: 900
+    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -359,6 +369,7 @@ model_list:
     id: synthetic-glm53flashb-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -368,7 +379,8 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    cooldown_time: 900
+    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -376,6 +388,7 @@ model_list:
     id: synthetic-glm53flashc-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -385,7 +398,8 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    cooldown_time: 900
+    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -393,6 +407,7 @@ model_list:
     id: synthetic-glm53flashd-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/glm-5.3-flash

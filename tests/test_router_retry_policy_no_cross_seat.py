@@ -183,7 +183,7 @@ def _counts(paths: List[str]) -> dict:
 
 # --------------------------------------------------------------------------- #
 # HTTP mock: /fail -> 429 wall, /okcapable -> 200, /okcheap -> 200,
-# /gone403 -> 403, /gone404 -> 404
+# /gone403 -> 403, /gone404 -> 404, /synwall -> 429 subscription wall
 # --------------------------------------------------------------------------- #
 class _Handler(http.server.BaseHTTPRequestHandler):
     """Answers the /fail rows with a real 429 JSON body so LiteLLM raises
@@ -246,6 +246,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 "code": "model_not_found",
             }}).encode()
             self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if "/synwall" in path:
+            body = json.dumps({
+                "error": "You've exceeded your subscription rate limits. Upgrade, or try "
+                         "again later. You can view your usage at https://synthetic.new/billing",
+            }).encode()
+            self.send_response(429)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -390,7 +401,7 @@ async def _run(server, retry_policy, sid, park_on_first_429=False, rows=None, ca
         litellm.callbacks = saved_callbacks
 
 
-async def _run_no_fallback(server, retry_policy, sid):
+async def _run_no_fallback(server, retry_policy, sid, seat_a_lane="/fail"):
     server.hits.clear()
     saved_callbacks = litellm.callbacks
     random.seed(10178)
@@ -398,6 +409,7 @@ async def _run_no_fallback(server, retry_policy, sid):
     litellm.callbacks = []
     try:
         rows = _rows(server.port)[:2]
+        rows[0]["litellm_params"]["api_base"] = f"http://127.0.0.1:{server.port}{seat_a_lane}"
         rows[1]["litellm_params"]["api_base"] = f"http://127.0.0.1:{server.port}/okcapable"
         router = Router(
             model_list=rows,
@@ -461,8 +473,11 @@ def test_the_live_config_parks_a_401_row_on_its_first_failure():
 def test_the_live_config_parks_a_quota_wall_row_on_its_first_429():
     """fleet-ops#11146 pre-flight, gated: the z.ai, StepFun and Alibaba token-plan rows sit
     on quota walls with a fixed reset clock, not bursts, so each parks on its first 429 for 6 h
-    (#9075, #9122) and re-probes about 4x/day. Without this gate a config edit back to
-    the 900 s burst cool with allowed_fails 1 re-enters the wall every 15 min and leaks
+    (#9075, #9122) and re-probes about 4x/day. The Synthetic rows joined them (fleet-ops#11476):
+    their 429 reads 'You've exceeded your subscription rate limits' off the 500-req/5h pool, a
+    wall that lasts hours and a hard wall for Pi (#11268), and the rows carry no slot cap, so
+    they can never answer the router's short slots-in-use 429. Without this gate a config edit
+    back to the 900 s burst cool with allowed_fails 1 re-enters the wall every 15 min and leaks
     it to the caller again (58.9% of worker-capable chat calls failed on 2026-10-30
     02:28Z with 19 of the 29 worker-capable rows walled; the token-plan row alone held the
     judge group on the RouterGroupJammed alert on 2026-10-31, fleet-ops#11234)."""
@@ -470,12 +485,13 @@ def test_the_live_config_parks_a_quota_wall_row_on_its_first_429():
         "https://api.z.ai/api/coding/paas/v4",
         "https://api.stepfun.ai/step_plan/v1",
         "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+        "https://api.synthetic.new/openai/v1",
     )
     with open(CONFIG_PATH, "rb") as fh:
         cfg = yaml.safe_load(fh)
     walled = [row for row in cfg["model_list"]
               if row["litellm_params"].get("api_base") in walled_api_bases]
-    assert len(walled) == 22, [row["model_info"]["id"] for row in walled]
+    assert len(walled) == 30, [row["model_info"]["id"] for row in walled]
     for row in walled:
         assert row["litellm_params"]["cooldown_time"] == 21600, row["model_info"]["id"]
         policy = row.get("model_info", {}).get("allowed_fails_policy") or {}
@@ -702,6 +718,41 @@ def test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself():
     assert pin == {"model_id": "seat-a"}, pin
 
 
+def test_a_synthetic_subscription_wall_429_parks_the_row_and_lands_the_session_on_a_healthy_row():
+    """fleet-ops#11476: Synthetic's 429 reads 'You've exceeded your subscription rate
+    limits. Upgrade, or try again later. You can view your usage at
+    https://synthetic.new/billing' (the body of run 41228448381) -- a plan wall that
+    lasts hours, not the router's own 'max_parallel_requests slots in use' 429 that
+    #10178 keeps the same-row retry for. The synthetic rows carry no slot cap, so
+    every 429 they answer is the wall kind: with the #11146 park treatment the row
+    parks on its first 429, the in-flight call retries on the healthy peer in the same
+    group, and the next call of the session lands on the peer too while the wall
+    holds. The pin is kept (first-writer-wins), so the session returns to the row once
+    the 5 h pool refills."""
+    server = _Server()
+    try:
+        attempts, outcome = asyncio.run(_run_no_fallback(
+            server, RP_ZERO, "s-synwall-class", seat_a_lane="/synwall"))
+    finally:
+        server.close()
+    assert outcome == "RateLimitError", outcome
+    assert attempts == ["/synwall/chat/completions"], attempts
+
+    server = _Server()
+    try:
+        batches, outcomes, pin = asyncio.run(_run(
+            server, RP_PROPOSED, "s-synwall",
+            rows=_rows(server.port, park_on_first_429=True,
+                       seat_a_lane="/synwall", peer_lane="/okcapable"), calls=2))
+    finally:
+        server.close()
+    assert outcomes == ["ok", "ok"], outcomes
+    assert batches[0] == ["/synwall/chat/completions",
+                          "/okcapable/chat/completions"], batches
+    assert batches[1] == ["/okcapable/chat/completions"], batches
+    assert pin == {"model_id": "seat-a"}, pin
+
+
 def test_a_429_on_the_pinned_row_is_answered_by_a_peer_row():
     # fleet-ops#10178: worker-capable has no fallback group, so a pinned row that keeps
     # answering 429 (a one-slot row that is full) must be left by the in-router retries
@@ -915,6 +966,7 @@ if __name__ == "__main__":
         test_the_fix_retries_the_row_that_failed_then_a_peer,
         test_a_transient_429_recovers_on_the_row_it_hit,
         test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself,
+        test_a_synthetic_subscription_wall_429_parks_the_row_and_lands_the_session_on_a_healthy_row,
         test_a_429_on_the_pinned_row_is_answered_by_a_peer_row,
         test_zero_retries_hit_the_fallback_on_a_transient_429,
         test_a_404_gets_one_in_group_retry_on_litellm_1_105_0,
