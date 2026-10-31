@@ -818,6 +818,9 @@ def test_a_synthetic_concurrency_429_parks_the_row_at_the_burst_cool_too():
                           "/okcapable/chat/completions"], batches
     assert batches[1] == ["/okcapable/chat/completions"], batches
     assert pin == {"model_id": "seat-a"}, pin
+
+
+def test_a_429_on_the_pinned_row_is_answered_by_a_peer_row():
     # fleet-ops#10178: worker-capable has no fallback group, so a pinned row that keeps
     # answering 429 (a one-slot row that is full) must be left by the in-router retries
     # themselves. Two rows, no fallbacks: the pinned seat-a 429s on every call, seat-c
