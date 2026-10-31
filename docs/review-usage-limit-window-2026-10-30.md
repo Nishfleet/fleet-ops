@@ -12,18 +12,17 @@ bug.
 The seat hit its session limit twice on this day, measured from the end of the
 recorded 2026-10-29 window, 20:58:59Z:
 
-    2026-10-29T23:44:02Z .. 2026-10-30T04:28:56Z   night: 23 events, 15 min apart
-    2026-10-30T14:25:44Z .. 2026-10-30T16:59:01Z   day:   19 events, 15 min apart
+    2026-10-29T23:44:02Z .. 2026-10-30T04:28:56Z   night: 23 events on a 15-min cadence
+    2026-10-30T14:25:44Z .. 2026-10-30T16:59:01Z   day:   19 events on a 15-min cadence
 
 Claude printed
 `You've hit your session limit · resets 10:10am (Asia/Kolkata)` in the night
 window (reset 04:40:00Z) and `You've hit your session limit · resets 10:40pm
 (Asia/Kolkata)` in the day window (reset 17:10:00Z); both rejections read `"rateLimitType":"five_hour"` with
 `"overageStatus":"rejected","overageDisabledReason":"out_of_credits"`, so each
-window is one five-hour session the seat spent rejected. The 15-minute
-interval is the retry backoff, as in the 2026-10-29 window.
-
-
+window is one five-hour period the seat spent rejected. The events fall on a
+15-minute cadence, with same-minute neighbours where several asks were in
+flight together, as in the 2026-10-29 window.
 
 ## Count
 
@@ -55,7 +54,11 @@ evidence either way.
 That is 10 red `review-risky / review` jobs across the day window and its
 fallout, on 10 heads, of which 9 are limit-family:
 
-    6 red review jobs inside the window (14:16 .. 16:21), 6 distinct heads
+    6 red review jobs in the same limit cluster (14:16 .. 16:21), 6 heads.
+      The cluster runs are counted by run creation time, and the 14:16 and
+      14:23 runs sit before the first recorded 429 line, the same shape as
+      the 2026-10-29 window, whose first red run at 18:10:35Z also precedes
+      its first recorded event at 18:29:45Z
     4 of them carry the "gave no answer" comment the #11112 count reads
     2 carry no comment; their re-asks recovered within 25 min
     3 more red review jobs in the 17:01 .. 17:28 fallout, after the 17:10 reset
