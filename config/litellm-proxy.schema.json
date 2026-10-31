@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). A worker-group row whose supports_prompt_caching is false must set litellm_params.order: 2 so long sessions fall to it only as overflow (order filtering is applied after the cooldown filter in LiteLLM v1.98.0 router.py, proven by tests/test_router_order2_overflow.py). router_settings.redis_host, redis_port and redis_password (os.environ/REDIS_PASSWORD) are required and redis_url is forbidden (v1.98.0 drops the password when redis_url is set; the cache has requirepass): session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings. router_settings.allowed_fails_policy.NotFoundErrorAllowedFails must be 0 (fleet-ops#9469): a 404 is a withdrawn free model or a dead model id, and the per-exception threshold falls back to the router-level allowed_fails (1) for a key the policy does not name, so without it a dead lane needs two 404s to park and leaks one to the next caller. See the allowed_fails_policy property for the mechanism and for what the 404 cooldown costs on the 7 quota-walled rows.",
+  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). A row on api.z.ai/api/coding/paas/v4 or api.stepfun.ai/step_plan/v1 must park the same way on its first 429 with a 6 h cooldown, because those 429s are a weekly quota and a drained prepaid balance with fixed reset clocks, not bursts (fleet-ops#11146). Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). A worker-group row whose supports_prompt_caching is false must set litellm_params.order: 2 so long sessions fall to it only as overflow (order filtering is applied after the cooldown filter in LiteLLM v1.98.0 router.py, proven by tests/test_router_order2_overflow.py). router_settings.redis_host, redis_port and redis_password (os.environ/REDIS_PASSWORD) are required and redis_url is forbidden (v1.98.0 drops the password when redis_url is set; the cache has requirepass): session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings. router_settings.allowed_fails_policy.NotFoundErrorAllowedFails must be 0 (fleet-ops#9469): a 404 is a withdrawn free model or a dead model id, and the per-exception threshold falls back to the router-level allowed_fails (1) for a key the policy does not name, so without it a dead lane needs two 404s to park and leaks one to the next caller. See the allowed_fails_policy property for the mechanism and for what the 404 cooldown costs on the 7 quota-walled rows.",
   "type": "object",
   "required": ["model_list", "router_settings"],
   "if": { "properties": { "model_list": { "contains": { "$ref": "#/$defs/tetherGroupRow" } } } },
@@ -163,10 +163,10 @@
       "minItems": 1,
       "allOf": [
         {
-          "$comment": "fleet-ops#10608 (Nish 2026-10-28): GLM-5.3-Flash is a worker model only and Qwen is a judge or reviewer only. A GLM-5.3-Flash row in any group but a worker group, or a Qwen row in a worker group, fails here.",
+          "$comment": "fleet-ops#10608 (Nish 2026-10-28): GLM-5.3-Flash is a worker model only and Qwen is a judge or reviewer only. A GLM-5.3-Flash row in any group but a worker group, or a Qwen row in a worker group, fails here. pilot is the gh-aw pilot's worker group (fleet-ops#11311).",
           "items": {
             "allOf": [
-              { "if": { "type": "object", "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "pattern": "[Gg][Ll][Mm]-5\\.3-[Ff][Ll][Aa][Ss][Hh]" } } } } }, "then": { "required": ["model_name"], "properties": { "model_name": { "enum": ["worker-capable", "worker-cheap", "worker-public"] } } } },
+              { "if": { "type": "object", "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "pattern": "[Gg][Ll][Mm]-5\\.3-[Ff][Ll][Aa][Ss][Hh]" } } } } }, "then": { "required": ["model_name"], "properties": { "model_name": { "enum": ["worker-capable", "worker-cheap", "worker-public", "pilot"] } } } },
               { "if": { "type": "object", "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "pattern": "[Qq][Ww][Ee][Nn]" } } } } }, "then": { "properties": { "model_name": { "not": { "pattern": "^worker-" } } } } }
             ]
           }
@@ -314,6 +314,37 @@
                     "max_budget": { "type": "number", "exclusiveMinimum": 0, "maximum": 9.5 },
                     "budget_duration": { "const": "30d" },
                     "api_key": { "const": "os.environ/STRAITLY_API_KEY" }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "$comment": "fleet-ops#11146: a row on api.z.ai/api/coding/paas/v4 or api.stepfun.ai/step_plan/v1 sits on a quota wall with a fixed reset clock, not a burst: the z.ai Coding Plan answers 429 code 1310 'Weekly/Monthly Limit Exhausted' naming its reset time, and the Step Plan answers 429 'you have no left credit' while the prepaid balance is drained. The 900 s burst cool with allowed_fails 1 re-enters the wall every 15 min and leaks it to the caller: 58.9% of worker-capable chat calls failed at 2026-10-30 02:28Z with 19 of the 29 worker-capable rows walled. The row parks on its first 429 for 6 h and re-probes about 4x/day, so a reset is picked up within hours (the #9075/#9122 treatment).",
+            "if": {
+              "required": ["litellm_params"],
+              "properties": {
+                "litellm_params": {
+                  "required": ["api_base"],
+                  "properties": {
+                    "api_base": { "enum": ["https://api.z.ai/api/coding/paas/v4", "https://api.stepfun.ai/step_plan/v1"] }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "litellm_params": {
+                  "required": ["cooldown_time"],
+                  "properties": { "cooldown_time": { "const": 21600 } }
+                },
+                "model_info": {
+                  "required": ["allowed_fails_policy"],
+                  "properties": {
+                    "allowed_fails_policy": {
+                      "required": ["RateLimitErrorAllowedFails"],
+                      "properties": { "RateLimitErrorAllowedFails": { "const": 0 } }
+                    }
                   }
                 }
               }

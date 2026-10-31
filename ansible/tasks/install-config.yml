@@ -104,10 +104,11 @@
 # already running. On 2026-10-29 the read-only deploy-clone bind had been installed for
 # hours while every runner still started before it, so a job could write the clone
 # (fleet-ops#10866). Restarting the pool to install it cut three hand-offs mid-session on
-# the same day (fleet-ops#10898), so this play reloads the daemon and restarts no runner:
-# every running job keeps running, and the drop-in arrives at the next start, which the
-# nightly update performs after it drains the runners. The deploy job is not one of those
-# jobs: deploy-box.yml runs it on [self-hosted, fleet-ci].
+# the same day (fleet-ops#10898), so the restarts go through the apply unit, which
+# restarts only the idle runners whose drop-in is newer than their start: every running
+# job keeps running, the change reaches an idle runner the moment the deploy flushes the
+# handlers, and a busy one when its job ends, within 5 min (fleet-ops#11248). The deploy
+# job is not one of those restarts: deploy-box.yml runs it on [self-hosted, fleet-ci].
 - name: Install the agent runner sandbox
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/"
@@ -115,8 +116,29 @@
     owner: root
     group: root
     mode: preserve
-  notify: Reload systemd
+  notify:
+    - Reload systemd
+    - Start the runner sandbox apply
 
+# A drop-in applies at the next start, and Restart=always or the daily hermes update
+# would be the first start: unbounded. This copy runs before the generic one below
+# (which would consume the change) so the gateway takes the sandbox at the deploy
+# (fleet-ops#11185).
+- name: Install the hermes sandbox drop-in and restart the hermes units when it changes
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/system/hermes-.service.d/"
+    dest: /etc/systemd/system/hermes-.service.d/
+    owner: root
+    group: root
+    mode: preserve
+  notify:
+    - Reload systemd
+    - Restart hermes units for their sandbox
+
+# The per-unit drop-in dirs (the review runners' 30-review-user.conf, the pilot's
+# own dir) are not covered by the agent-runner copy above, so this generic copy
+# spreads the apply unit over them too: the apply pass itself decides which runner
+# is stale, so a deploy that only changed an unrelated unit file restarts no runner.
 - name: Install systemd units, slices and drop-ins
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/systemd/system/"
@@ -124,7 +146,64 @@
     owner: root
     group: root
     mode: preserve
-  notify: Reload systemd
+  notify:
+    - Reload systemd
+    - Start the runner sandbox apply
+
+# A review runner drop-in loads the reviewer App key, so a unit that can still take a
+# worker job is a second identity that can post an approval on its own PR
+# (fleet-ops#9521). GitHub routes a job by the runner's labels, and the labels live at
+# GitHub, not here: the technical lead adds `review` to netcup-agent-11 and -12 and drops
+# `agent` and `fleet-ops` from them by hand, which he did on 2026-10-29 before this merged.
+# The read below is what decides, so a runner that still carries a worker label keeps its
+# drop-in off, the unit keeps running as nish on the nish runner directory, and no worker
+# job meets the reviewer key. The org endpoint is the one that lists these runners, the
+# same one update.yml counts them from, and it is read as nish because that is the login
+# the box's other GitHub reads use. No answer at all holds them back too: a check that
+# waves itself through when it cannot run is not a check (fleet-ops#10144).
+- name: Read the labels GitHub holds for the two new review runners
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv:
+      - gh
+      - api
+      - orgs/Nishfleet/actions/runners
+      - --paginate
+      - --jq
+      - '.runners[] | select(.name == "netcup-agent-11" or .name == "netcup-agent-12") | select(any(.labels[]; .name == "review") and all(.labels[]; .name != "agent" and .name != "fleet-ops")) | .name'
+  register: new_review_runner_labels
+  # One API blip must not hold a rollout back for a whole deploy cycle, and the
+  # count in update.yml retries this same endpoint for the same reason.
+  until: new_review_runner_labels.rc == 0
+  retries: 3
+  delay: 20
+  changed_when: false
+  ignore_errors: true
+
+# The copy above installs every drop-in rootfs/ ships, so the two new ones are taken back
+# here while their runner can still take a worker job. host.yml: copy never deletes, and
+# removing a live file is a reviewed PR that deletes it in rootfs/ and adds a
+# `state: absent` task for it, which is what this is. The reload is notified here and not
+# left to the copy above, because systemd forgets a drop-in only on a daemon-reload and the
+# copy reports `ok` once the file is already on the box, which would leave a held drop-in
+# loaded until the nightly restart. The unit reads the drop-in at its next start, which the
+# nightly update performs after it drains the runners (fleet-ops#10898). A held drop-in
+# leaves the unit inert as a review runner, which is where the pool was before this change,
+# and the drift check in retired-and-drift.yml passes because a file the box does not have
+# is not a hand install.
+- name: Hold the two new review runner drop-ins back until both are review-only
+  ansible.builtin.file:
+    path: /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-{{ item }}.service.d/30-review-user.conf
+    state: absent
+  loop: [11, 12]
+  notify:
+    - Reload systemd
+    - Start the runner sandbox apply
+  when: >-
+    new_review_runner_labels.rc | default(1) != 0
+    or (new_review_runner_labels.stdout_lines | default([]) | sort) != ['netcup-agent-11', 'netcup-agent-12']
 
 # fleet-update.service reads the healthchecks.io success-ping URL from a
 # root-only curl config; the URL is not named in the repo (fleet-ops#9965).

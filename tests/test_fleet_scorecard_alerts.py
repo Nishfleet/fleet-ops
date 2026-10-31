@@ -134,6 +134,16 @@ def _review(number, approved_hours):
             0,
             id="no-runners",
         ),
+        pytest.param(
+            {
+                "P": ("P_slots", _pool(4, hours=(30, 42))),
+                "A": ("A_runs", []),
+                "D": ("D_runs", []),
+                "B": ("B_issues", _waiting_issue()),
+            },
+            1,
+            id="no-sample-today-falls-back-to-the-pool-mean",
+        ),
     ],
 )
 def test_idle_rule_fires_only_when_both_days_are_idle_with_work_waiting(tables, want):

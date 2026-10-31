@@ -26,7 +26,7 @@ def probe_step() -> str:
 def test_the_hidden_list_comes_from_the_job_mount_namespace() -> None:
     step = probe_step()
     assert "/proc/self/mountinfo" in step
-    assert "/systemd/inaccessible/" in step
+    assert "/systemd/inaccessible/" in step.replace("\\", "")
 
 
 def test_the_probe_reads_no_loaded_unit_config() -> None:

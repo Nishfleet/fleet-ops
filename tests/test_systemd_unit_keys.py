@@ -174,6 +174,42 @@ def test_claude_vps_listener_is_sandboxed_and_egress_capped() -> None:
 HERMES_UNITS = ("hermes-gateway", "hermes-serve")
 HERMES_DIRS = (INSTALLED / "hermes-.service.d", *(INSTALLED / f"{unit}.service.d" for unit in HERMES_UNITS))
 HERMES_FORBIDDEN = ("RestrictNamespaces", "SystemCallFilter", "MemoryDenyWriteExecute", "PrivateUsers", "PrivateNetwork")
+HERMES_HIDDEN = (
+    "/home/nish/.config/fleet-ops",
+    "/home/nish/.config/fleet-worker",
+    "/home/nish/.config/cloudflare",
+    "/home/nish/.config/systemd",
+    "/home/nish/.ssh",
+    "/home/nish/.git-credentials",
+    "/home/nish/.claude",
+    "/home/nish/.claude-vps",
+    "/home/nish/.local/share/claude-seat-backup",
+    "/home/nish/.commandcode",
+    "/home/nish/.cursor",
+    "/home/nish/.devin",
+    "/home/nish/.config/opencode",
+    "/home/nish/.config/tincan/claude-vps.json",
+    "/home/nish/.config/tincan/command-code.json",
+    "/home/nish/.config/tincan/cursor-vps.json",
+    "/home/nish/.config/tincan/devin-vps.json",
+    "/home/nish/.config/tincan/fleet-worker.json",
+    "/home/nish/.config/tincan/issue-desk.json",
+    "/home/nish/.config/tincan/opencode.json",
+    "/home/nish/.config/tincan/pi.json",
+    "/home/nish/.config/tincan/agentmail.key",
+    "/run/user/1000",
+    "/run/docker.sock",
+)
+HERMES_READABLE = (
+    "/home/nish/.hermes",
+    "/home/nish/.local/state/hermes",
+    "/home/nish/.config/gh",
+    "/home/nish/.config/tincan",
+    "/home/nish/.config/tincan/hermes.json",
+    "/home/nish/.config/tincan/hermes-webhook.secret",
+    "/home/nish/.cua",
+    "/home/nish/.pi",
+)
 
 
 def _unit_keys_text(text: str) -> dict[str, list[str]]:
@@ -247,6 +283,16 @@ def test_hermes_sandbox_dropin_sits_in_the_prefix_dir_both_units_read() -> None:
     assert prefix != directory.name, f"{directory.name} is an ordinary drop-in dir: the shared file would cover no unit"
     assert [unit for unit in HERMES_UNITS if unit.startswith(prefix)] == list(HERMES_UNITS), prefix
     assert (directory / "sandbox.conf").is_file()
+    version = _systemd_version()
+    assert version >= 249, f"systemd {version} does not search the dash-truncated drop-in dir, so hermes-serve starts with no deny list"
+    for unit in HERMES_UNITS:
+        assert directory / "sandbox.conf" in _layers(unit), f"{unit} does not read the shared file, so it runs with no deny list (systemd {version})"
+
+
+def _systemd_version() -> int:
+    out = subprocess.run(["systemd-analyze", "--version"], capture_output=True, text=True, check=False)
+    fields = out.stdout.split()
+    return int(fields[1]) if out.returncode == 0 and len(fields) > 1 and fields[1].isdigit() else 0
 
 
 def test_hermes_units_confine_writes_to_the_paths_hermes_uses() -> None:
@@ -298,6 +344,83 @@ def test_no_hermes_layer_takes_what_the_children_need() -> None:
         keys = _unit_keys(path)
         for key in HERMES_FORBIDDEN:
             assert key not in keys, f"{path.relative_to(INSTALLED)}: {key} stops Chrome's sandbox zygote or node's JIT (measured 2026-10-22), and everything in this file reaches both units or the unit it names"
+
+
+def _hermes_hidden() -> set[PurePosixPath]:
+    hidden: set[PurePosixPath] = set()
+    for unit in HERMES_UNITS:
+        for path in _layers(unit):
+            for value in _unit_keys(path).get("InaccessiblePaths", []):
+                for entry in shlex.split(value):
+                    hidden.add(PurePosixPath(entry.removeprefix("-")))
+    return hidden
+
+
+def test_the_hermes_lock_hides_the_credentials_no_chat_turn_reads() -> None:
+    hidden = _hermes_hidden()
+    for path in HERMES_HIDDEN:
+        assert PurePosixPath(path) in hidden, f"the chat agent must not read {path}: no hermes layer hides it"
+
+
+def test_the_hermes_lock_keeps_what_hermes_and_its_children_measured_to_need() -> None:
+    hidden = _hermes_hidden()
+    for path in HERMES_READABLE:
+        covering = [hidden_path for hidden_path in hidden if path == str(hidden_path) or path.startswith(str(hidden_path) + "/")]
+        assert not covering, f"{path} is hidden by {covering}, so hermes or an MCP child breaks"
+    assert PurePosixPath("/home/nish") not in hidden, "hiding all of HOME undoes ProtectHome=read-only and the grants above"
+
+
+def test_every_hermes_hidden_path_survives_being_absent() -> None:
+    hidden = _hermes_hidden()
+    assert hidden, "no hermes layer hides anything"
+    assert not [str(path) for path in hidden if " " in str(path)], "a hidden path with a space is split by the shell grammar systemd reads these lines with, so this check would read half of it"
+    for unit in HERMES_UNITS:
+        for path in _layers(unit):
+            for value in _unit_keys(path).get("InaccessiblePaths", []):
+                for entry in shlex.split(value):
+                    assert entry.startswith("-"), f"{path.relative_to(INSTALLED)}: {entry} without the - prefix stops the unit from starting on a host that does not have it (fleet-ops#10081)"
+
+
+def _table_path(path: str, home: str) -> str:
+    return path.replace("~", home, 1) if path.startswith("~/") else path
+
+
+def test_no_hermes_hidden_path_undoes_a_write_grant() -> None:
+    hidden = _hermes_hidden()
+    for unit in HERMES_UNITS:
+        grants = {PurePosixPath(entry.removeprefix("-")) for entry in shlex.split(" ".join(_effective(unit)["ReadWritePaths"]))}
+        assert sum(1 for grant in grants if " " in str(grant)) == 1, (
+            f"{unit}: the vault inbox grant carries a space, so it reads quoted from the drop-in; "
+            "losing the quoting would let shlex split it and this check would pass on the fragments"
+        )
+        for grant in grants:
+            covering = [path for path in hidden if grant == path or str(grant).startswith(str(path) + "/")]
+            assert not covering, f"{unit}: {grant} is granted for writes and hidden by {covering}, a no-op that reads as a lock"
+
+
+def test_both_hermes_units_are_in_the_agent_lock_table() -> None:
+    table = json.loads((ROOT / "config/agent-locks.json").read_text())
+    home = f"/home/{table['user']}"
+    agents = table["agents"]
+    entries = []
+    for unit in HERMES_UNITS:
+        assert unit in agents, f"{unit} is missing from config/agent-locks.json"
+        entry = agents[unit]
+        assert entry["unit"] == f"rootfs/etc/systemd/system/{unit}.service", entry
+        entries.append(entry)
+    lists = [{_table_path(path, home) for path in entry["must_hide"]} for entry in entries]
+    assert lists[0] == lists[1], "hermes-gateway and hermes-serve read the same hermes-.service.d/sandbox.conf, so their must_hide lists cannot differ"
+    for entry in entries:
+        assert len(entry["must_hide"]) == len(lists[0]), f"{entry['unit']}: a path listed twice hides nothing twice"
+
+
+def test_the_table_accounts_for_every_path_the_hermes_lock_hides() -> None:
+    table = json.loads((ROOT / "config/agent-locks.json").read_text())
+    home = f"/home/{table['user']}"
+    named = {_table_path(path, home) for unit in HERMES_UNITS for path in table["agents"][unit]["must_hide"]}
+    hidden = {str(path) for path in _hermes_hidden()}
+    assert not hidden - named, f"a hermes layer hides these and the table accounts for none of them: {sorted(hidden - named)}"
+    assert not named - hidden, f"the table hides these and no hermes layer does: {sorted(named - hidden)}"
 
 
 def test_hermes_serve_unit_pins_its_program_bind_address_and_restart_policy() -> None:
@@ -1375,6 +1498,7 @@ RUNNER_DROPINS = sorted(INSTALLED.glob("actions.runner.*.service.d"))
 CREATING_TYPES = {"d", "D", "f", "F", "L"}
 RUN_PATH_ALLOWLIST = {
     "/run/docker.sock": "created by docker.socket (enabled, started at sockets.target, before the runners)",
+    "/run/user": "made at boot by systemd's shipped tmpfiles file (/usr/lib/tmpfiles.d/systemd.conf, d /run/user 0755 root root -), before the runners; nothing unprivileged recreates it (fleet-ops#11232)",
     "/run/user/1000": "the user runtime dir comes from logind (linger), before the runners",
     "/run/user/1000/*": "entries of the user runtime dir; the dir itself comes from logind (linger)",
     "/run/podman-eval": "retired path, kept masked",
@@ -1804,7 +1928,9 @@ def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> No
     assert "conclusion,url" in starts[0]
     assert keys["Type"] == ["oneshot"]
     assert keys["Restart"] == ["on-failure"] and keys["RestartSec"] == ["60"]
-    assert keys["StartLimitIntervalSec"] == ["1h"] and keys["StartLimitBurst"] == ["3"]
+    assert keys["StartLimitIntervalSec"] == ["15min"] and keys["StartLimitBurst"] == ["3"], (
+        "one timer period: each 15-minute timer start counts against the budget, so 1h with burst 3 failed every fourth sweep"
+    )
     assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
     assert keys["TimeoutStartSec"] == ["120"]
     assert keys["EnvironmentFile"] == ["%t/fleet-worker-github-token/actions:%i.env"], (
@@ -2064,8 +2190,8 @@ def test_root_tincan_listener_keeps_its_trim_flags_and_its_role_allow_list() -> 
 
 
 WAKE_UNITS = (
-    "systemd/tincan-listen-fleet-worker.service",
-    "systemd/tincan-listen-pi.service",
+    "rootfs/etc/systemd/system/tincan-listen-fleet-worker.service",
+    "rootfs/etc/systemd/system/tincan-listen-pi.service",
     "rootfs/etc/systemd/user/cua-desk-daemon.service",
 )
 # Decision (fleet-ops#10263): the permissive flags stay. These listeners run headless with nobody to answer a prompt, and the
@@ -2097,14 +2223,16 @@ def test_wake_unit_is_in_the_repo_and_carries_the_page_hook(relative: str) -> No
     assert _last(keys, "Restart") == "always"
     if relative != DESK_UNIT:
         assert _last(keys, "OnFailure") == "fleet-unit-failed@%n.service"
-    assert _last(keys, "WantedBy") == "default.target"
+    assert _last(keys, "WantedBy") == (
+        "multi-user.target" if relative.startswith("rootfs/etc/systemd/system/") else "default.target"
+    )
     if relative != DESK_UNIT:
         assert keys["ExecStart"][0].startswith("/home/nish/.local/bin/tincan listen --exec ")
 
 
 def test_each_wake_unit_is_pinned_on_its_agent_flags_and_task_id() -> None:
     for name, (binary, flags) in WAKE_AGENT.items():
-        keys = effective_directives(ROOT / "systemd" / f"{name}.service")
+        keys = effective_directives(ROOT / "rootfs/etc/systemd/system" / f"{name}.service")
         exec_start = keys["ExecStart"][0]
         assert binary in exec_start, f"{name}: ExecStart no longer runs {binary}"
         if flags:
@@ -2534,24 +2662,58 @@ def test_daily_host_config_timer_is_retired() -> None:
     assert (INSTALLED / "fleet-host-config-boot.timer").exists(), "the boot run stays"
 
 
-def test_grafana_provisioning_reload_retries_through_a_grafana_restart() -> None:
-    """fleet-ops#10171: the provisioning reload unit carries the keys a Grafana restart needs."""
+def test_grafana_provisioning_reload_never_spends_its_start_limit() -> None:
+    """fleet-ops#10848: a .path unit dies with unit-start-limit-hit the moment the unit it
+    triggers spends its start limit (systemd 255, src/core/path.c,
+    path_trigger_notify_impl), and a .path unit cannot restart itself, so the reload
+    service must never spend its burst. 2026-10-29 six Restart=on-failure starts spent
+    StartLimitBurst=6 and fleet-grafana-provisioning.path stayed failed until 14:39.
+    """
     keys = _unit_keys(GRAFANA_PROVISIONING)
-    assert keys["Restart"] == ["on-failure"], "a clean exit must not restart, and a failure restarts only inside the start limit"
-    assert keys["RestartMode"] == ["direct"], "systemd 254+ restarts without the failed state, so the token unit's start waits the retries out instead of failing with them, and OnFailure= fires once"
+    assert not {"Restart", "RestartSec", "RestartMode"} & keys.keys(), "a restart loop spends the burst, and a spent burst kills fleet-grafana-provisioning.path"
     assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"], "a real outage must still page"
     assert "fleet-grafana.service" not in keys.get("After", []), "fleet-grafana.service has After= on the token unit that starts this one, so an ordering edge back would hold a Grafana start until its timeout"
-    interval = int(keys["StartLimitIntervalSec"][0])
+    assert "--retry-max-time 60" in keys["ExecStart"][0], "the one start has to outlast the 30 s a Grafana restart holds the reload out (fleet-ops#10038)"
+    interval = _seconds("StartLimitIntervalSec", keys["StartLimitIntervalSec"][0])
     burst = int(keys["StartLimitBurst"][0])
-    restart = int(keys["RestartSec"][0])
-    attempt = int(keys["TimeoutStartSec"][0])
     assert interval > 0 and burst > 0, "a zero interval disables the start limit"
-    assert burst >= 3, "one retry does not outlast a Grafana start"
-    assert burst * restart < interval, "the limit must be reachable inside its interval"
-    assert (burst - 1) * restart >= 60, "the 2026-10-23 Grafana restart held the reload out for 30 s"
+    path = _unit_keys(ROOT / "systemd/fleet-grafana-provisioning.path")
+    window = _seconds("TriggerLimitIntervalSec", path["TriggerLimitIntervalSec"][0])
+    windows = -(-interval // window)
+    deliverable = windows * int(path["TriggerLimitBurst"][0]) + 2
+    assert burst > deliverable, "the path unit delivers TriggerLimitBurst starts a trigger window and the token unit adds its timer and one per Grafana start, so the service's own burst must sit above what one interval of trigger rate can deliver"
+    attempt = int(keys["TimeoutStartSec"][0])
+    flags = keys["ExecStart"][0]
+    retry_window = int(re.search(r"--retry-max-time (\d+)", flags).group(1))
+    one_attempt = int(re.search(r"--max-time (\d+)", flags).group(1))
+    assert attempt >= 5 + 2 * (retry_window + one_attempt), (
+        "curl retries until --retry-max-time and then lets the attempt in flight run to --max-time "
+        "(man curl, --retry-max-time), so one endpoint holds --retry-max-time + --max-time and the "
+        "sleep 5 plus two endpoints must fit inside TimeoutStartSec, or systemd kills the reload "
+        "half-loaded"
+    )
     token = _unit_keys(GRAFANA_TOKEN)
-    assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost, which is what failed with it"
-    assert int(token["TimeoutStartSec"][0]) > (burst - 1) * restart + attempt, "the token unit waits on the retries from its ExecStartPost, so its own timeout must cover the retry spacing plus one attempt at the reload unit's own TimeoutStartSec ceiling"
+    assert int(token["TimeoutStartSec"][0]) > attempt, "the token unit waits on the reload from its ExecStartPost, so its own timeout must cover the reload unit's ceiling"
+    assert token["ExecStartPost"][0].startswith("-"), "a reload that cannot get through pages through the reload unit's own OnFailure=, so it must not fail the mint with it"
+    assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost"
+
+
+def test_grafana_provisioning_reload_fails_loud_without_a_password(tmp_path: Path) -> None:
+    """The reload unit's own ExecStart, run the way systemd runs it: a missing or empty
+    admin password file fails the unit before either reload call, so a provisioning
+    change is never half-loaded (fleet-ops#10848).
+    """
+    keys = _unit_keys(GRAFANA_PROVISIONING)
+    command = keys["ExecStart"][0].replace("%h", str(tmp_path)).replace("$$", "$")
+    target = tmp_path / ".config" / "fleet-ops" / "grafana-admin-password"
+    target.parent.mkdir(parents=True)
+    for body in (None, ""):
+        target.unlink(missing_ok=True)
+        if body is not None:
+            target.write_text(body)
+        proc = subprocess.run(["/bin/bash", "-c", command], capture_output=True, text=True, timeout=30)
+        assert proc.returncode == 1, f"a {body!r} password file must fail the unit: {proc.stdout} {proc.stderr}"
+        assert "grafana admin password file missing or empty" in proc.stderr
 
 
 RESTART_POLICIES = {"always", "on-success", "on-failure", "on-abnormal", "on-abort", "on-watchdog"}

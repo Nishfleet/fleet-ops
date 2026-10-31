@@ -10,7 +10,7 @@
 # of the repo's production deploy workflow on main in the last 7 days (3 for 0509)
 # (Workflow_Runs). A Grafana SQL expression keeps the newest finished run and
 # reads 1 when it did not succeed, 0 when it did. Skipped runs are ignored:
-# drive, mailbox, siterep-public and seo-fix-kit deploy on workflow_run and
+# drive, siterep-public and seo-fix-kit deploy on workflow_run and
 # skip unless CI succeeded on a push, so a skip can also be a pull-request CI
 # run, not a red main. A red CI on main is the CI-red issue rule's to report,
 # not this rule's (known gap). A cancelled run is ignored only when a newer
@@ -66,10 +66,11 @@
 # A repo with no production deploy left gets no rule, in either group. Nothing
 # here checks that, so this is the record of an intent and not a gate.
 # inish-mail-filter kept one after its deploy path was deleted on 2026-10-23
-# (fleet-ops#9855). Drop the rule with the deploy path it watches, never pause
-# it: a paused rule still shows in the list and the next reader learns nothing
-# from it. Dropping it means two edits, the rule and its uid in deleteRules
-# below.
+# (fleet-ops#9855); the mailbox repo was deleted, so its rule in both groups
+# went with it (fleet-ops#11087). Drop the rule with the deploy path it watches,
+# never pause it: a paused rule still shows in the list and the next reader
+# learns nothing from it. Dropping it means two edits, the rule and its uid in
+# deleteRules below.
 #
 # One rule per repo: the plugin reads its queries one after another, so one
 # rule for all repos took 21 s of Grafana's 30 s evaluation timeout, and a repo
@@ -105,6 +106,10 @@ apiVersion: 1
 deleteRules:
   - orgId: 1
     uid: deploy-failed-inish-mail-filter
+  - orgId: 1
+    uid: deploy-failed-mailbox
+  - orgId: 1
+    uid: deploy-failed-24h-mailbox
 
 groups:
   - orgId: 1
@@ -228,31 +233,6 @@ groups:
           summary: '{{ if $values }}CI or deploy failing: the latest run of ci.yml (test, then deploy) on main in Nishfleet/inish-site did not succeed.{{ else }}The fleet cannot read GitHub runs for Nishfleet/inish-site, so its deploy check is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}The latest main is not deployed: either its tests or its deploy failed.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/inish-site/actions/workflows/ci.yml?query=branch%3Amain'
         labels: {severity: warning, signal: deploy-failed, repo: Nishfleet/inish-site, workflow: ci.yml}
-        isPaused: false
-
-      - uid: deploy-failed-mailbox
-        title: Production deploy failed Nishfleet/mailbox
-        condition: C
-        data:
-          - &q-mailbox
-            refId: A
-            relativeTimeRange: {from: 604800, to: 0}
-            datasourceUid: fleet-github
-            model:
-              datasource: {type: grafana-github-datasource, uid: fleet-github}
-              queryType: Workflow_Runs
-              owner: Nishfleet
-              repository: "mailbox"
-              options: {owner: Nishfleet, repository: "mailbox", workflow: deploy-production.yml, branch: main}
-              refId: A
-          - *deploy-failed-latest
-        noDataState: OK
-        execErrState: Error
-        for: 30m
-        annotations:
-          summary: '{{ if $values }}Production deploy failing: the latest run of deploy-production.yml on main in Nishfleet/mailbox did not succeed.{{ else }}The fleet cannot read GitHub runs for Nishfleet/mailbox, so its deploy check is blind until the read is fixed.{{ end }}'
-          description: '{{ if $values }}Production is not running main. A fleet issue; it pages Nish if it is still red in 24 hours.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/mailbox/actions/workflows/deploy-production.yml?query=branch%3Amain'
-        labels: {severity: warning, signal: deploy-failed, repo: Nishfleet/mailbox, workflow: deploy-production.yml}
         isPaused: false
 
       - uid: deploy-failed-siterep-public
@@ -404,21 +384,6 @@ groups:
           summary: '{{ if $values }}Production deploy red for 24 hours: no run of deploy-production.yml on main in Nishfleet/drive has succeeded since a failure a day ago.{{ else }}The fleet cannot read GitHub runs for Nishfleet/drive, so its 24-hour deploy check is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}Production is not running main, and the fleet issue filed for it has not fixed it in a day.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/drive/actions/workflows/deploy-production.yml?query=branch%3Amain'
         labels: {severity: critical, signal: deploy-failed-24h, repo: Nishfleet/drive, workflow: deploy-production.yml}
-        isPaused: false
-
-      - uid: deploy-failed-24h-mailbox
-        title: Production deploy red for 24h Nishfleet/mailbox
-        condition: C
-        data:
-          - *q-mailbox
-          - *deploy-failed-day
-        noDataState: OK
-        execErrState: Error
-        for: 10m
-        annotations:
-          summary: '{{ if $values }}Production deploy red for 24 hours: no run of deploy-production.yml on main in Nishfleet/mailbox has succeeded since a failure a day ago.{{ else }}The fleet cannot read GitHub runs for Nishfleet/mailbox, so its 24-hour deploy check is blind until the read is fixed.{{ end }}'
-          description: '{{ if $values }}Production is not running main, and the fleet issue filed for it has not fixed it in a day.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/mailbox/actions/workflows/deploy-production.yml?query=branch%3Amain'
-        labels: {severity: critical, signal: deploy-failed-24h, repo: Nishfleet/mailbox, workflow: deploy-production.yml}
         isPaused: false
 
       - uid: deploy-failed-24h-siterep-public

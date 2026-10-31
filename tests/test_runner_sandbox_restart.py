@@ -21,6 +21,8 @@ SYSTEM = ROOT / "rootfs/etc/systemd/system"
 POOL = "actions.runner.Nishfleet.netcup-agent-.service.d"
 REVIEW_POOL_9 = "actions.runner.Nishfleet.netcup-agent-9.service.d"
 REVIEW_POOL_10 = "actions.runner.Nishfleet.netcup-agent-10.service.d"
+REVIEW_POOL_11 = "actions.runner.Nishfleet.netcup-agent-11.service.d"
+REVIEW_POOL_12 = "actions.runner.Nishfleet.netcup-agent-12.service.d"
 CLONE = "fleet-ops-deploy-clone"
 RELOAD = "Reload systemd"
 DRAIN = "Wait until those jobs finish"
@@ -82,7 +84,7 @@ def test_every_pool_that_binds_the_deploy_clone_is_read_back() -> None:
     ships unproven: the review runners bind it too, and their unit names still match.
     """
     pools = clone_pools()
-    assert set(pools) == {POOL, REVIEW_POOL_9, REVIEW_POOL_10}
+    assert set(pools) == {POOL, REVIEW_POOL_9, REVIEW_POOL_10, REVIEW_POOL_11, REVIEW_POOL_12}
     pick = next(t for t in update()["always"] if t["name"] == PICK)
     selector = re.search(r"select\('match', '([^']+)'\)", pick["ansible.builtin.set_fact"]["agent_runner"]).group(1)
     selector = selector.replace("\\\\", "\\")
@@ -94,7 +96,8 @@ def test_every_pool_that_binds_the_deploy_clone_is_read_back() -> None:
 
 def test_a_sandbox_change_is_installed_and_the_daemon_reloaded() -> None:
     notified = copy_task()["notify"]
-    assert set(notified if isinstance(notified, list) else [notified]) == {RELOAD}
+    # The apply unit restarts only idle runners, so a change reaches them without cutting a job (fleet-ops#11248).
+    assert set(notified if isinstance(notified, list) else [notified]) == {RELOAD, "Start the runner sandbox apply"}
 
 
 def test_the_sandbox_install_restarts_no_unit() -> None:
