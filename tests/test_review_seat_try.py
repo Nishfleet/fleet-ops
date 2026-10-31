@@ -39,6 +39,34 @@ def test_row_id_header_names_the_family(tmp_path):
     assert "rc=0" in out and out.endswith("alibaba-qwen38max-judge")
 
 
+# The two jam strings the router sends for a group it has walled: every row cooled at the provider's quota wall, or the seat key is over its budget cap (fleet-ops#11297).
+JAM_BODY = '{"error":{"message":"No deployments available for selected model, Try again in 900 seconds. All deployments for selected model are in cooldown. Passed model=judge. pre-call-checks=False","type":"None","param":"None","code":"429"}}'
+BUDGET_BODY = '{"error":{"message":"Budget has been exceeded! Key=jev-eval (sk-...qLcw). Current cost: 1.08, Max budget: 1.0","type":"None","param":"None","code":"422"}}'
+
+
+def calls_stub():
+    return 'ask_row() { echo x >> "$RUNNER_TEMP/calls"; cp "$H" "$RUNNER_TEMP/$2-headers.txt"; cp "$B" "$RUNNER_TEMP/$2-body.json"; }'
+
+
+def test_a_walled_group_ends_the_retry_at_once(tmp_path):
+    out = seat_try(tmp_path, ERR_HEADERS, JAM_BODY, backoff=" ".join(["0"] * len(delays())), ask=calls_stub())
+    assert "rc=1" in out and "group is walled on the router's side" in out and "All deployments for selected model are in cooldown" in out
+    assert len((tmp_path / "calls").read_text().splitlines()) == 1
+    assert not (tmp_path / "third.txt").exists()
+
+
+def test_a_key_over_its_budget_ends_the_retry_at_once(tmp_path):
+    out = seat_try(tmp_path, ERR_HEADERS, BUDGET_BODY, backoff=" ".join(["0"] * len(delays())), ask=calls_stub())
+    assert "rc=1" in out and "group is walled on the router's side" in out and "Budget has been exceeded" in out
+    assert len((tmp_path / "calls").read_text().splitlines()) == 1
+
+
+def test_an_ordinary_429_still_rides_the_backoff(tmp_path):
+    out = seat_try(tmp_path, ERR_HEADERS, ERR_BODY, backoff=" ".join(["0"] * len(delays())), ask=calls_stub())
+    assert "rc=1" in out and "group is walled" not in out
+    assert len((tmp_path / "calls").read_text().splitlines()) == len(delays()) + 1
+
+
 def test_router_error_is_named_not_just_an_empty_row_id(tmp_path):
     out = seat_try(tmp_path, ERR_HEADERS, ERR_BODY)
     assert "rc=1" in out and "no row id, the router said: Too many concurrent requests" in out
