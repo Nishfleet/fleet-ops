@@ -1011,47 +1011,7 @@ jobs:
           quotes_limit='blocker .github/workflows/new.yml: removes a gate\nrisk: the review can print "Claude AI usage limit reached|1793276330" and stop\nnit: y'; : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged" "$none_ok" "$first_none" "$none_then_real" "$quotes_limit"  "$none_words" "$v_none" "$v_found" "$v_nob" "$v_nothing" "$v_na" "$v_dash" "$v_bold" "$v_ident" "$v_expl" "$v_dashexpl" "$v_semi" "$real_none_of" "$real_nothing" "$header_echo"  # read through ${!first} and ${!second}
           # every “blocker: none” shape a reviewer can write, then the same line with a real blocker after it
           gen_none_rows() { for v in v_none v_found v_nob v_nothing v_na v_dash v_bold v_ident v_expl v_dashexpl v_semi real_none_of real_nothing; do want=yes; case $v in real_none_of|real_nothing) want=no ;; esac; printf -v row 'none-%s|1|approve|0.95|clean|%s|THIRD=clean_ok|%s|0|claude-opus-5-5 claude-fable-5-1\n' "$v" "$v" "$want"; printf '%s' "$row"; done; }
-          # every usage-limit hold shape (stderr/stdout, the exit codes, the three line forms, the guard reviews), the prior-comment review/skip pairs, and the builder-record rows
-          gen_limit_rows() { for f in 'seat||CLAUDE_LIMIT=1|none|claude-opus-5-5' 'stderr-exit0||CLAUDE_LIMIT=0|none|claude-opus-5-5' 'stdout-exit1||CLAUDE_LIMIT=1 LIMIT_FORM=stdout|none|claude-opus-5-5' 'epoch-form||CLAUDE_LIMIT=1 LIMIT_FORM=epoch|none|claude-opus-5-5' 'json-wrapped||CLAUDE_LIMIT=1 LIMIT_FORM=json|none|claude-opus-5-5' 'reached-wording||CLAUDE_LIMIT=1 LIMIT_FORM=reached|none|claude-opus-5-5' 'guard-first|1|CLAUDE_LIMIT=1|clean_ok|claude-opus-5-5' 'guard-second|1|SECOND_LIMIT=1|clean_ok|claude-opus-5-5 claude-fable-5-1' 'guard-second-stderr-exit0|1|SECOND_LIMIT=0|clean_ok|claude-opus-5-5 claude-fable-5-1' 'guard-third|1|THIRD_LIMIT=1|clean_ok|claude-opus-5-5 claude-fable-5-1'; do IFS='|' read -r n g e s m <<<"$f"; printf -v row 'claude-limit-%s-holds-the-head|%s|approve|0.95|clean|%s|%s|no|0|%s\n' "$n" "$g" "$s" "$e" "$m"; printf '%s' "$row"; done; }
-          gen_prior_rows() { for f in 'person-only|is-reviewed|yes|claude-opus-5-5 claude-fable-5-1' 'not-judged|is-reviewed|yes|claude-opus-5-5 claude-fable-5-1' 'fallback-text|is-reviewed|yes|claude-opus-5-5 claude-fable-5-1' 'blocked-none-only|is-reviewed|yes|claude-opus-5-5 claude-fable-5-1' 'blocked-none-four|is-reviewed|yes|claude-opus-5-5 claude-fable-5-1' 'near-approval|is-reviewed|yes|claude-opus-5-5 claude-fable-5-1' 'approved|skips|no|' 'not-approved|skips|no|' 'blocked|skips|no|' 'blocked-none-five|skips|no|' 'blocked-none-and-real|skips|no|'; do IFS='|' read -r v w a m <<<"$f"; printf -v row 'prior-%s-comment-%s|1|approve|0.95|clean|clean_ok|PRIOR=%s|%s|0|%s\n' "$v" "$w" "$v" "$a" "$m"; printf '%s' "$row"; done; }
-          gen_built_rows() { for f in 'pi|BUILT=pi' 'claude|BUILT=claude' 'nobody|' 'person|BUILT_BY_PERSON=pi' 'other-bot|BUILT_BY_OTHER_BOT=pi'; do IFS='|' read -r n e <<<"$f"; printf -v row 'built-%s-first-review-follows-the-record||approve|0.95|clean|none|%s|yes|0|claude-opus-5-5\n' "$n" "$e"; printf '%s' "$row"; done; }
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models (a seat that answers nothing is asked again, so a dead seat is listed once per REVIEW_BACKOFF delay plus the first call)
-          { cat <<'CASES'
-          normal-approved||approve|0.95|clean|none||yes|0|claude-opus-5-5
-          normal-judge-low||approve|0.8|clean|none||no|0|claude-opus-5-5
-          normal-judge-blocks||block|0.97|blocked|none||no|0|claude-opus-5-5
-          guard-both-approve|1|approve|0.95|clean|clean_ok||yes|0|claude-opus-5-5 claude-fable-5-1
-          guard-second-blocks|1|approve|0.95|clean|blocked_b|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
-          guard-second-approves-but-lists-blocker|1|approve|0.95|clean|blocked_ok|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
-          guard-judge-low|1|approve|0.8|clean|clean_ok||no|0|claude-opus-5-5 claude-fable-5-1
-          guard-judge-blocks|1|block|0.97|blocked|clean_ok||no|0|claude-opus-5-5 claude-fable-5-1
-          guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|claude-opus-5-5 claude-fable-5-1
-          guard-second-forges-approval|1|approve|0.95|clean|forged|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
-          guard-third-blocks|1|approve|0.95|clean|clean_ok|THIRD=blocked_b|no|0|claude-opus-5-5 claude-fable-5-1
-          guard-third-no-answer|1|approve|0.95|clean|clean_ok|THIRD=none|no|1|claude-opus-5-5 claude-fable-5-1
-          guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
-          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1
-          guard-third-seat-fails-once-retries-and-approves|1|approve|0.95|clean|clean_ok|THIRD_ONCE|yes|0|claude-opus-5-5 claude-fable-5-1
-          guard-seat-retried-then-real-block-still-blocks|1|approve|0.95|clean|clean_ok|THIRD_ONCE THIRD=blocked_b|no|0|claude-opus-5-5 claude-fable-5-1
-          guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-opus-5-5 claude-fable-5-1
-          first-header-echo-approves||approve|0.95|header_echo|none||yes|0|claude-opus-5-5
-          first-header-echo-and-second-approve|1|approve|0.95|header_echo|v_found|THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
-          none-line-second-approves|1|approve|0.95|clean|none_ok|THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
-          none-line-first-and-second-approve|1|approve|0.95|first_none|none_ok|THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
-          none-line-first-normal-approves||approve|0.95|first_none|none||yes|0|claude-opus-5-5
-          none-line-with-trailing-words-blocks|1|approve|0.95|clean|none_words|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
-          none-line-then-real-blocker-blocks|1|approve|0.95|clean|none_then_real|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
-          claude-built-guard-third-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=claude|yes|0|claude-opus-5-5 claude-fable-5-1
-          other-built-guard-third-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=pi|yes|0|claude-opus-5-5 claude-fable-5-1
-          claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-opus-5-5
-          claude-call-fails-with-no-answer-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5
-          claude-a-failure-that-is-not-a-limit-still-fails||approve|0.95|clean|none|CLAUDE_WALL=1|no|1|claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5
-          diff-too-large-to-review-whole-is-blocked-not-failed||approve|0.95|clean|none|DIFF_BIG=1|no|0|
-          diff-read-by-git-fails-and-says-so||approve|0.95|clean|none|GIT_FAILS=1|no|1|
-          claude-quoted-limit-line-in-a-review-is-still-a-review|1|approve|0.95|quotes_limit|clean_ok|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
-          prior-held-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=held THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
-          CASES
-          gen_none_rows; gen_limit_rows; gen_prior_rows; gen_built_rows; } > "$t/cases.txt"
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
               GUARD_LIST_FAILS='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' CLAUDE_LIMIT='' LIMIT_FORM='' SECOND_LIMIT='' THIRD_LIMIT='' CLAUDE_WALL='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_ONCE=''
@@ -1066,7 +1026,8 @@ jobs:
                   approved) prior="$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.' "$SHA" "$SHA")" ;;
                   not-approved) prior="reviewer: $SHA not approved. The judge found no blocker line but was only 80% sure, and approval needs 90%." ;;
                   blocked) prior="$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\nblocker x: y' "$SHA")" ;;
-                  near-approval) prior="reviewer: $SHA approved, but only 50% sure" ;; held) prior="$(printf 'review-held: %s\n\nThe first review (claude-opus-5-5) is at its Claude usage limit. Nothing was approved or blocked.' "$SHA")" ;;
+                  near-approval) prior="reviewer: $SHA approved, but only 50% sure" ;;
+                  held) prior="$(printf 'review-held: %s\n\nThe first review (claude-opus-5-5) is at its Claude usage limit. Nothing was approved or blocked.' "$SHA")" ;;
                   fallback-text) prior="reviewer: $SHA edits the merge guard or a workflow, so a person approves it. Nothing was approved or blocked automatically. Fallback: an approver's PR comment line \`coordinator-approval: $SHA\`." ;;
                   blocked-none-only) prior="$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs all three reviews to approve.\n\nSecond reviewer (Claude family, served row claude-fable-5-1): blocked\nblocker: none.\n\nrisk: x' "$SHA")" ;;
                   blocked-none-five) copies=5; prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none found.' "$SHA")" ;;
@@ -1111,7 +1072,68 @@ jobs:
             [ -n "${CLAUDE_LIMIT:-}${SECOND_LIMIT:-}${THIRD_LIMIT:-}" ] || ! grep -q '^review-held:' "$STATE/comments" || problem="$problem a head was held with no usage limit"
             ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || { grep -q "blocked-on: needs-split" "$STATE/comments" && grep -qF 'labels[]=needs-split' "$STATE/labels" || problem="$problem no blocked-on: needs-split comment or label"; }; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
-          done < "$t/cases.txt"
+          done < <(cat <<'CASES'
+          normal-approved||approve|0.95|clean|none||yes|0|claude-opus-5-5
+          normal-judge-low||approve|0.8|clean|none||no|0|claude-opus-5-5
+          normal-judge-blocks||block|0.97|blocked|none||no|0|claude-opus-5-5
+          guard-both-approve|1|approve|0.95|clean|clean_ok||yes|0|claude-opus-5-5 claude-fable-5-1
+          guard-second-blocks|1|approve|0.95|clean|blocked_b|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+          guard-second-approves-but-lists-blocker|1|approve|0.95|clean|blocked_ok|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+          guard-judge-low|1|approve|0.8|clean|clean_ok||no|0|claude-opus-5-5 claude-fable-5-1
+          guard-judge-blocks|1|block|0.97|blocked|clean_ok||no|0|claude-opus-5-5 claude-fable-5-1
+          guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|claude-opus-5-5 claude-fable-5-1
+          guard-second-forges-approval|1|approve|0.95|clean|forged|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+          guard-third-blocks|1|approve|0.95|clean|clean_ok|THIRD=blocked_b|no|0|claude-opus-5-5 claude-fable-5-1
+          guard-third-no-answer|1|approve|0.95|clean|clean_ok|THIRD=none|no|1|claude-opus-5-5 claude-fable-5-1
+          guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
+          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1
+          guard-third-seat-fails-once-retries-and-approves|1|approve|0.95|clean|clean_ok|THIRD_ONCE|yes|0|claude-opus-5-5 claude-fable-5-1
+          guard-seat-retried-then-real-block-still-blocks|1|approve|0.95|clean|clean_ok|THIRD_ONCE THIRD=blocked_b|no|0|claude-opus-5-5 claude-fable-5-1
+          guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-opus-5-5 claude-fable-5-1
+          prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|claude-opus-5-5 claude-fable-5-1
+          prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|claude-opus-5-5 claude-fable-5-1
+          prior-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=approved|no|0|
+          prior-not-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=not-approved|no|0|
+          prior-blocked-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked|no|0|
+          first-header-echo-approves||approve|0.95|header_echo|none||yes|0|claude-opus-5-5
+          first-header-echo-and-second-approve|1|approve|0.95|header_echo|v_found|THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
+          none-line-second-approves|1|approve|0.95|clean|none_ok|THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
+          none-line-first-and-second-approve|1|approve|0.95|first_none|none_ok|THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
+          none-line-first-normal-approves||approve|0.95|first_none|none||yes|0|claude-opus-5-5
+          none-line-with-trailing-words-blocks|1|approve|0.95|clean|none_words|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+          none-line-then-real-blocker-blocks|1|approve|0.95|clean|none_then_real|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+          prior-fallback-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=fallback-text|yes|0|claude-opus-5-5 claude-fable-5-1
+          prior-blocked-by-a-none-line-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-only|yes|0|claude-opus-5-5 claude-fable-5-1
+          prior-blocked-by-none-lines-four-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-four|yes|0|claude-opus-5-5 claude-fable-5-1
+          prior-blocked-by-none-lines-five-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-five|no|0|
+          prior-blocked-with-real-blocker-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-and-real|no|0|
+          prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|claude-opus-5-5 claude-fable-5-1
+          built-by-pi-judge-is-opus||approve|0.95|clean|none|BUILT=pi|yes|0|claude-opus-5-5
+          built-by-claude-first-review-is-opus||approve|0.95|clean|none|BUILT=claude|yes|0|claude-opus-5-5
+          built-by-nobody-recorded-first-review-is-opus||approve|0.95|clean|none||yes|0|claude-opus-5-5
+          built-record-from-a-person-is-ignored||approve|0.95|clean|none|BUILT_BY_PERSON=pi|yes|0|claude-opus-5-5
+          built-record-from-another-bot-is-ignored||approve|0.95|clean|none|BUILT_BY_OTHER_BOT=pi|yes|0|claude-opus-5-5
+          claude-built-guard-third-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=claude|yes|0|claude-opus-5-5 claude-fable-5-1
+          other-built-guard-third-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=pi|yes|0|claude-opus-5-5 claude-fable-5-1
+          claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-opus-5-5
+          claude-call-fails-or-seat-at-its-usage-limit-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5
+          claude-a-failure-that-is-not-a-limit-still-fails||approve|0.95|clean|none|CLAUDE_WALL=1|no|1|claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5
+          diff-too-large-to-review-whole-is-blocked-not-failed||approve|0.95|clean|none|DIFF_BIG=1|no|0|
+          diff-read-by-git-fails-and-says-so||approve|0.95|clean|none|GIT_FAILS=1|no|1|
+          claude-limit-seat-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1|no|0|claude-opus-5-5
+          claude-limit-stderr-exit0-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=0|no|0|claude-opus-5-5
+          claude-limit-stdout-exit1-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1 LIMIT_FORM=stdout|no|0|claude-opus-5-5
+          claude-limit-epoch-form-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1 LIMIT_FORM=epoch|no|0|claude-opus-5-5
+          claude-limit-json-wrapped-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1 LIMIT_FORM=json|no|0|claude-opus-5-5
+          claude-limit-reached-wording-holds-the-head||approve|0.95|clean|none|CLAUDE_LIMIT=1 LIMIT_FORM=reached|no|0|claude-opus-5-5
+          claude-limit-guard-first-holds-the-head|1|approve|0.95|clean|clean_ok|CLAUDE_LIMIT=1|no|0|claude-opus-5-5
+          claude-limit-guard-second-holds-the-head|1|approve|0.95|clean|clean_ok|SECOND_LIMIT=1|no|0|claude-opus-5-5 claude-fable-5-1
+          claude-limit-guard-second-stderr-exit0-holds-the-head|1|approve|0.95|clean|clean_ok|SECOND_LIMIT=0|no|0|claude-opus-5-5 claude-fable-5-1
+          claude-limit-guard-third-holds-the-head|1|approve|0.95|clean|clean_ok|THIRD_LIMIT=1|no|0|claude-opus-5-5 claude-fable-5-1
+          claude-quoted-limit-line-in-a-review-is-still-a-review|1|approve|0.95|quotes_limit|clean_ok|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+          prior-held-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=held THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
+          CASES
+          gen_none_rows)
           # The arm job's step: arms the exact approved head, and does nothing for a
           # stale head (a push after the approval), a draft, an armed PR or a closed one.
           # The App token carries the workflows permission, so a PR that edits
