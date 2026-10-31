@@ -153,26 +153,27 @@ def merged_values(dirs: list[Path], key: str) -> list[str]:
 
 
 def runner_bind_leaks(stem: str, bind_values: list[str]) -> list[str]:
-    """Runner-tree tokens a unit's own .service.d binds wider than its own runner dir.
+    """Binds a unit's own .service.d makes under the runner tree that reach past its own runner dir.
 
     systemd.unit(5): %j is the final component of the prefix, so for
     actions.runner.Nishfleet.netcup-agent-20.service it is 20, and the pooled
     20-lockdown.conf's agent-runner/%j line resolves to agent-runner/20. A bind of
-    agent-runner itself or of any sibling number lets a job write every runner's
-    start script: the outage of 2026-10-31 overwrote all 30 runsvc.sh files through
-    that one line.
+    agent-runner itself, a sibling number or anything above the tree lets a job
+    write every runner's start script: the outage of 2026-10-31 overwrote all 30
+    runsvc.sh files through one such line.
     """
-    
     root = Path(HOME) / ".local/share/agent-runner"
     number = stem.removesuffix(".service.d").removesuffix(".service").rsplit("-", 1)[1]
     own = root / number if number.isdigit() else root / "%j"
     leaks = []
     for value in bind_values:
         for token in shlex.split(value):
-            path = Path(token.lstrip("-+"))
+            source = token.lstrip("-+").split(":")[0]
             if number.isdigit():
-                path = Path(str(path).replace("%j", number))
-            if path.is_relative_to(root) and path != own:
+                source = source.replace("%j", number)
+            path = Path(source)
+            wide = path == root or path.is_relative_to(root) or root.is_relative_to(path)
+            if wide and path != own:
                 leaks.append(token)
     return leaks
 
@@ -553,11 +554,7 @@ def test_the_agent_pool_binds_only_each_runners_own_dir() -> None:
     runner N could overwrite runner M's runsvc.sh, and the outage of
     2026-10-31 took all 30 runners down that way.
     """
-    units = agent_pool_units()
-    leaks = runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-.service.d",
-                              merged_values(units["actions.runner.Nishfleet.netcup-agent-.service.d"], "BindPaths"))
-    assert not leaks, leaks
-    for name, dirs in units.items():
+    for name, dirs in agent_pool_units().items():
         leaks = runner_bind_leaks(name.removesuffix(".service.d"), merged_values(dirs, "BindPaths"))
         assert not leaks, leaks
 
@@ -565,9 +562,14 @@ def test_the_agent_pool_binds_only_each_runners_own_dir() -> None:
 def test_gate_fails_on_a_wide_agent_runner_bind() -> None:
     """The bind that let the 2026-10-31 outage reach every runner fails the gate."""
     wide = [f"{HOME}/.local/share/agent-runner"]
+    above = [f"{HOME}/.local/share"]
     own = [f"{HOME}/.local/share/agent-runner/%j"]
     sibling = [f"-{HOME}/.local/share/agent-runner/25"]
+    retarget = [f"{HOME}/.local/share/agent-runner/20:/tmp/runner"]
     assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", wide) == wide
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", above) == above
     assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", own) == []
     assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", sibling) == sibling
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", retarget) == []
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", [own[0] + ":/alt"]) == []
     assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-.service.d", own) == []

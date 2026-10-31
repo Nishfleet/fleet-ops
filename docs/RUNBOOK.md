@@ -260,13 +260,11 @@ the prefix" (systemd.unit(5)), so `20` for `-20.service`. The bind used to name
 `runsvc.sh` through it, which took the pool offline until each was restored from
 its own `bin/runsvc.sh`. A runner's self-update and restarts are unaffected:
 `bin.<ver>`/`externals.<ver>` and their links live in the runner's own dir.
-`test_gate_fails_on_a_wide_agent_runner_bind` in
+`test_the_agent_pool_binds_only_each_runners_own_dir` in
 `tests/test_runner_jail_start_state.py` fails the PR if the line is widened;
 detection that catches it live is `fleet-sync`'s STUB-GUARD (fleet-ops#11483).
 
 ## Dashboards and the CI runner flip
-
-
 
 `systemctl --user is-active fleet-grafana.service` prints `active`. The service is
 the Quadlet `containers/quadlet/fleet-grafana.container`, read-only for every
