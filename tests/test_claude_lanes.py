@@ -915,9 +915,9 @@ def _dup_gate(tmp_path, title, open_issues, list_fail=""):
     """Runs the Gate's duplicate-alert block (fleet-ops#10348) for issue 50 against a fake gh."""
     script = _step("work", "Gate")
     start = script.index("if jq -e --argjson titles")
-    end = script.index("skip duplicate-alert\n", start)
-    fi_inner = script.index("fi\n", end + len("skip duplicate-alert\n"))
-    end = script.index("fi\n", fi_inner + 2) + len("fi\n")
+    end = script.index("skip duplicate-alert", start) + len("skip duplicate-alert")
+    fi1 = script.index("fi\n", end)
+    end = script.index("fi\n", fi1 + 2) + len("fi\n")
     b = tmp_path / "bin"
     b.mkdir()
     (b / "gh").write_text(DUP_GH)
