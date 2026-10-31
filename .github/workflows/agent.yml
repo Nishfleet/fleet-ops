@@ -626,6 +626,15 @@ jobs:
           THIRD_MODEL: claude-sonnet-5-5
         run: |
           set -euo pipefail
+          # The jev-eval cap is reviewed config (fleet-ops#11272): the probe holds no spend, so it runs first, and a live key that differs from config/litellm-key-budgets.json fails the review loudly instead of spending or refusing mid-review. A hand-set value (the #11282 hole) shows up here.
+          budgets="$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-key-budgets.json"
+          test -s "$budgets" || { echo "::error::config/litellm-key-budgets.json is missing from the deploy clone, so the reviewed budget cannot be checked"; exit 1; }
+          jev_env=${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}/typesafe-jev.env # gitleaks:allow
+          info=$(curl -sS --max-time 30 127.0.0.1:4000/key/info --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") -H 'content-type: application/json') || { echo "::error::the /key/info probe failed with curl exit $?"; exit 1; }
+          live=$(jq -er '.info | [.key_alias, .max_budget, .budget_duration] | @tsv' <<<"$info") || { echo "::error::/key/info answered without the key's own info"; exit 1; }
+          want=$(jq -er '["jev-eval", ."jev-eval".max_budget, ."jev-eval".budget_duration] | map(tostring) | @tsv' "$budgets")
+          [ "$live" = "$want" ] || { echo "::error::budget-drift on jev-eval: the live key is $live but config/litellm-key-budgets.json says $want; a budget change is a reviewed PR or an owner decision, never a hand-set value"; exit 1; }
+          echo "jev-eval matches the reviewed config: max_budget=$(cut -f2 <<<"$want"), budget_duration=$(cut -f3 <<<"$want")"
           # No review text goes public unscanned (fleet-ops#9528): every post runs gitleaks with the PR scan's own rules and binary, a matched line is withheld behind a note, and a scan that cannot run posts nothing at all.
           scan() { local r=$RUNNER_TEMP/rules.toml j=$RUNNER_TEMP/scan.json rc=0 PATH=$RUNNER_TEMP/gl:$PATH
             command -v gitleaks >/dev/null || { mkdir -p "$RUNNER_TEMP/gl" && curl -fsSL --retry 5 --retry-all-errors --max-time 180 -o "$RUNNER_TEMP/g.tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz && echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/g.tgz" | sha256sum --check --strict --status - && tar -xzf "$RUNNER_TEMP/g.tgz" -C "$RUNNER_TEMP/gl" gitleaks; } >&2
@@ -880,7 +889,8 @@ jobs:
           key=$(sed -n 's/^LITELLM_JEV_KEY=//p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") # gitleaks:allow
           [ -n "$key" ] || { echo "::error::LITELLM_JEV_KEY missing from the Jev seat file (Jev ranks through the router's /jev, not TypeSafe direct); an unranked edition is not worth 40 minutes of model time"; exit 1; }
           admin() { curl -sf --max-time 30 --config <(sed -n 's|^LITELLM_MASTER_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/litellm-master-key.env") -H 'Content-Type: application/json' "$@"; }; key_alias="inish-daily-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; router_key="$RUNNER_TEMP/router-key.env"
-          trap '[ -s "$router_key" ] && { admin -d @<(sed -n "s/^LITELLM_MASTER_KEY=\(.*\)/{\"keys\":[\"\1\"]}/p" "$router_key") http://127.0.0.1:4000/key/delete > /dev/null || echo "::warning::could not revoke $key_alias; it expires in 3h"; }' EXIT; (umask 077; admin -d "{\"models\":[\"worker-capable\"],\"duration\":\"3h\",\"max_budget\":5,\"key_alias\":\"$key_alias\"}" http://127.0.0.1:4000/key/generate | jq -er '"LITELLM_MASTER_KEY=" + (.key | strings)' > "$router_key") || { echo "::error::could not mint the inish-daily router key"; exit 1; }
+          key_alias="inish-daily-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; router_key="$RUNNER_TEMP/router-key.env"
+          trap '[ -s "$router_key" ] && { admin -d @<(sed -n "s/^LITELLM_AGENT_KEY=\(.*\)/{\"keys\":[\"\1\"]}/p" "$router_key") http://127.0.0.1:4000/key/delete > /dev/null || echo "::warning::could not revoke $key_alias; it expires in 3h"; }' EXIT; (umask 077; admin -d "{\"models\":[\"worker-capable\"],\"duration\":\"3h\",\"max_budget\":5,\"key_alias\":\"$key_alias\"}" http://127.0.0.1:4000/key/generate | jq -er '"LITELLM_AGENT_KEY=" + (.key | strings)' > "$router_key") || { echo "::error::could not mint the inish-daily router key"; exit 1; }
           echo "::add-mask::$key"; echo "::add-mask::$(cut -d= -f2- "$router_key")"; x_key=$(sed -n 's/^X_BEARER_TOKEN=//p' "$HOME/.config/fleet-ops/seats/x-api.env" 2>/dev/null | head -n 1 | tr -d "\"'" || true); [ -z "$x_key" ] || echo "::add-mask::$x_key" # gitleaks:allow
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           claude_hides() { local d t out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-* "$HOME"/.local/share/claude-seat-backup*; do t=$d; if [ -L "$d" ]; then t=$(readlink -f "$d") || continue; fi; { [ "$d" = "$1" ] || [ "$t" = "$1" ]; } && continue; if [ -d "$t" ]; then out="$out --tmpfs $t"; elif [ -f "$t" ]; then out="$out --ro-bind /dev/null $t"; fi; done; echo "$out"; }
@@ -921,7 +931,7 @@ jobs:
             rc=0
             # One FLEET_TASK_ID per attempt (router session id, #9015); the agent- prefix keeps it in the Gate's live() count.
             echo "Compile today's The Daily edition (today = $today, Asia/Kolkata)." \
-              | (cd "$src" && env -u GH_TOKEN FLEET_TASK_ID="inish-daily-${GITHUB_RUN_ID}-$n" timeout 40m $jail_base --ro-bind "$router_key" "$HOME/.config/fleet-ops/litellm-master-key.env" -- pi --print --no-context-files \
+              | (cd "$src" && env -u GH_TOKEN FLEET_TASK_ID="inish-daily-${GITHUB_RUN_ID}-$n" timeout 40m $jail_base --ro-bind "$router_key" "$HOME/.config/fleet-ops/seats/litellm-agent.env" -- pi --print --no-context-files \
                   --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                   --append-system-prompt "$HOME/AGENTS.md" \
                   --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/inish-daily.md" \

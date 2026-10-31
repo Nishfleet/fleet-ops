@@ -1375,6 +1375,21 @@ jobs:
         run: |
           set -euo pipefail
           cd "$WORKTREE"
+          # The session reads seats/litellm-agent.env, never the master key (fleet-ops#11272).
+          # This step is unjailed, so it can mint before the session jail below tmpfs's the
+          # whole ~/.config/fleet-ops directory and binds only that seat file back into it.
+          admin() { curl -sf --max-time 30 --config <(sed -n 's|^LITELLM_MASTER_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/litellm-master-key.env") -H 'Content-Type: application/json' "$@"; }
+          if [ ! -s "$HOME/.config/fleet-ops/seats/litellm-agent.env" ]; then
+            # One static interactive key for the lane, a $2/day reviewed value (fleet-ops#11272), minted once per host; the session's own run key below keeps its spend separate.
+            mkdir -p "$HOME/.config/fleet-ops/seats" && chmod 700 "$HOME/.config/fleet-ops/seats"
+            (umask 077; admin -d '{"models":["worker-capable","worker-cheap","judge"],"duration":"30d","max_budget":2,"budget_duration":"1d","key_alias":"fleet-agent"}' http://127.0.0.1:4000/key/generate | jq -er '"LITELLM_AGENT_KEY=" + (.key | strings)' > "$HOME/.config/fleet-ops/seats/litellm-agent.env") || { echo "::error::could not mint the fleet-agent seat key"; exit 1; }
+            chmod 600 "$HOME/.config/fleet-ops/seats/litellm-agent.env"
+          fi
+          key_alias="orch-${REPO_NAME#*/}-$ISSUE_N-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; router_key="$RUNNER_TEMP/orch-router-key.env"
+          trap '[ -s "$router_key" ] && { admin -d @<(sed -n "s/^LITELLM_AGENT_KEY=\(.*\)/{\"keys\":[\"\1\"]}/p" "$router_key") http://127.0.0.1:4000/key/delete > /dev/null || echo "::warning::could not revoke $key_alias; it expires in 3h"; }' EXIT
+          (umask 077; admin -d '{"models":["worker-capable","worker-cheap","judge"],"duration":"3h","max_budget":5,"key_alias":"'"$key_alias"'"}' http://127.0.0.1:4000/key/generate | jq -er '"LITELLM_AGENT_KEY=" + (.key | strings)' > "$router_key") || { echo "::error::could not mint the orchestrator session key"; exit 1; }
+          seats=(--ro-bind "$router_key" "$HOME/.config/fleet-ops/seats/litellm-agent.env")
+          if [ -s "$HOME/.config/fleet-ops/seats/typesafe-jev.env" ]; then seats+=(--ro-bind "$HOME/.config/fleet-ops/seats/typesafe-jev.env" "$HOME/.config/fleet-ops/seats/typesafe-jev.env"); fi
           # The prompt from THIS checkout; a repo without one falls back to the fleet copy.
           prompt="prompts/orchestrator-handoff.md"
           if [ ! -f "$prompt" ]; then
@@ -1390,7 +1405,7 @@ jobs:
           # session reads outsider issue text, so the jail hides the unit's credential directory
           # and the store that holds it, which leaves a sibling runner's copy of the same key out
           # of reach too (fleet-ops#10957).
-          jail=(bwrap --dev-bind / / --tmpfs "$HOME/.config/fleet-worker" --tmpfs "$RUNNER_TEMP/_runner_file_commands" ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"} --die-with-parent --)
+          jail=(bwrap --dev-bind / / --tmpfs "$HOME/.config/fleet-worker" --tmpfs "$RUNNER_TEMP/_runner_file_commands" ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"} --tmpfs "$HOME/.config/fleet-ops" "${seats[@]}" --die-with-parent --)
           if [ "$ORCH_RUNNER" = pi ]; then
             # No Claude spend and no turn cap: the step's timeout-minutes is the wall
             # (fleet-ops#10349).

@@ -1,0 +1,15 @@
+{
+  "jev-eval": {
+    "max_budget": 2.0,
+    "budget_duration": "1d",
+    "serves": "Real Jev spend only: the /jev judge route, the review judge and the review extra seats on metered providers.",
+    "source": "Owner decision 2026-10-31 (fleet-ops#11272): $2/day. Changing this value needs the owner; the review probe fails the review job while the live key differs from this file."
+  },
+  "fleet-agent": {
+    "max_budget": 2.0,
+    "budget_duration": "1d",
+    "duration": "30d",
+    "serves": "Interactive pi lane under Nish's login: the orchestrator jail ro-binds this file into sessions so they never read the master key (fleet-ops#11272).",
+    "source": "fleet-ops#11272: scoped replacement for the master key the interactive pi lane used to read."
+  }
+}
