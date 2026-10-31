@@ -121,6 +121,33 @@ ExecStart=-/bin/rm -rf %h/.config/systemd/user/executor.service.d
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/helper.md %h/.claude/agents/helper.md
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/scout.md %h/.claude/agents/scout.md
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/claude-max-agents.conf %h/.config/user-tmpfiles.d/claude-max-agents.conf
+# 2d'. The worktree age-out (fleet-ops#10945): agent-worktrees.conf has held
+#      the 3-day rule for the run worktrees beside the two x lines (the
+#      .orch-mirror and the parked orch-damaged-*.git save-dirs) since Nish
+#      2026-09-19, but no task installed it, so old worktree dirs never aged
+#      out. Install it beside the claude-max one (COPY class, same as
+#      2c/2d/2f/6/7); step 5 below (`systemd-tmpfiles --user --create`)
+#      installs it on every sync, and the pass that ages anything out is the
+#      user systemd-tmpfiles-clean.timer's --clean: tmpfiles.d(5) ages every
+#      entry, a file or a whole directory, on its own b/ctime/mtime (age-by
+#      bcmBCM), so a worktree whose top level saw no write for 3 days is
+#      removed whole there. The timer is on by the user preset
+#      /usr/lib/systemd/user-preset/90-systemd.preset line 15 enables it, and
+#      its systemd-tmpfiles-clean.service ran on this host 2026-10-30 18:27
+#      IST, journal systemd[1664]). Fleet
+#      sessions live minutes to about one day under the dispatch walls, so
+#      nothing valid is 3 days old. The first pass's reach on this host was
+#      scanned before push: 54 entries older than 3 days out of 740, and every
+#      git tree among them is delivered, archived to
+#      `orch-issue-10183-flock-archive` (its flock rework went another way on
+#      main), declared scrap (a deleted remote, broken checkouts), or
+#      uncommitted work the standing rule calls not-happened; the PR body
+#      names one for each class.
+#      Off switch: delete this step first, then the conf line in the clone
+#      (`config/user-tmpfiles.d/agent-worktrees.conf`) with it, or a later
+#      deploy reinstalls the file; then
+#      `rm %h/.config/user-tmpfiles.d/agent-worktrees.conf` by hand.
+ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/agent-worktrees.conf %h/.config/user-tmpfiles.d/agent-worktrees.conf
 # 2f. The overdue-issue sweep (later-sweep.timer, fleet-ops#9758): install the
 #     repo list the unit reads, then link the unit pair, so every deploy carries
 #     edits to it. The install is a user-scope COPY, same class as 2c/6/7:
