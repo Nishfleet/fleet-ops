@@ -46,11 +46,11 @@ jobs:
         with: {persist-credentials: false, fetch-depth: 0}
       # fleet-ops#8724: the router config's hard rules (no bench list, per-row cooldown_time <=900 s,
       # router cooldown <=60 s) live in the schema; each rejects/ file breaks one and must fail.
+      # fleet-ops#10417: the test also replays each file's `# undo:` header lines, so it proves the file
+      # fails on its own mutation and passes once reverted, not on drift from the live config.
       - run: |
           pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json config/litellm-proxy.yaml
-          for f in config/litellm-proxy.schema.rejects/*.yaml; do
-            ! pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json "$f" || { echo "schema accepted $f"; exit 1; }
-          done
+          pipx run --spec pytest==8.3.5 --pip-args='jsonschema==4.25.1 pyyaml==6.0.2' pytest -q -p no:cacheprovider tests/test_reject_files_fail_on_their_own_rule.py
       - run: pipx install semgrep==1.170.0
       # No glue (Nish 2026-09-29; 0509 reads no-glue.yml by URL), no host cua-driver plus its fixtures (#9297).
       - run: semgrep scan --config .semgrep/no-glue.yml --config .semgrep/no-host-cua-driver.yml --metrics=off --error && semgrep --test --metrics=off --config .semgrep/no-host-cua-driver.yml .semgrep/no-host-cua-driver.txt
