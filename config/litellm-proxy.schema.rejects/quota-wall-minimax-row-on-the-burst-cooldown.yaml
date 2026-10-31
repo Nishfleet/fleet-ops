@@ -1,7 +1,7 @@
 # fleet-ops#11417: a MiniMax row on the burst cool. The MINIMAX_API_KEY plan's 429s are a quota wall with a fixed reset
-# clock (the 'Token Plan usage limit reached (2056)' spent-plan wall), not a burst: with the router default of
-# allowed_fails 1 the row needs three 429s to park and re-entered the wall every 1800 s, which landed 179 of its 429s
-# inside the RouterStrongGroupFailing window on 2026-10-31. The row must park on its first 429
+# clock (the 'Token Plan usage limit reached (2056)' spent-plan wall), not a burst: with the row's own
+# RateLimitErrorAllowedFails: 3 overriding the router policy the row needed three 429s to park and entered
+# the wall every 1800 s, which landed 179 of its 429s inside the RouterStrongGroupFailing window on 2026-10-31. The row must park on its first 429
 # (model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0) with cooldown_time 21600, so it re-probes about 4x/day.
 # The rows and router_settings are the live config's judge fallback, judge paid and first
 # MiniMax worker-capable rows plus its own router_settings, which pass the schema alone, so the change
