@@ -78,6 +78,11 @@ regexes = ['''home/nish/(\.local/bin/beacon|\.beacon|\.hermes)''']
 condition = "AND"
 
 [[allowlists]]
+description = "The seat-bypass eval cases are the held-out command shapes the interactive sandbox must block: each command spells the seat directory it tries to reach, so the JSON has no comment line to carry gitleaks:allow. The machine check executes them against a synthetic home and never opens a real seat file; fleet-ops#11320"
+targetRules = ["private-fleet-seats-config"]
+paths = ['''^tests/evals/cases/seat_bypass\.json$''']
+
+[[allowlists]]
 description = "dockerd-eval.service denies the CGNAT block (the tailnet range) in IPAddressDeny=, a unit line with no inline comment to carry gitleaks:allow, and its test reads that line back; the block is a generic range, not a host address; fleet-ops#9983"
 targetRules = ["private-tailscale-ipv4"]
 paths = ['''^rootfs/etc/systemd/system/dockerd-eval\.service$|^tests/test_dockerd_eval\.py$''']

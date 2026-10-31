@@ -48,3 +48,36 @@ file mode or a sandbox, not another pattern (fleet-ops#11114).
   JSON-object `validate:` as root and keeps the file's mode, and the defaults
   file is installed as itself and not as part of a directory copy.
 
+## The seats sandbox for interactive sessions
+
+The deny rules bind the command text, and a same-uid reader reaches a seat file
+with a relative path a string rule cannot spell (`cd ~/.config && cat
+fleet-ops/seats/x` above), while a file mode binds only readers of other uids
+(fleet-ops#11114). The control for the same-uid boundary is the kernel, not the
+command text: start an interactive session inside a bubblewrap sandbox that
+mounts an empty tmpfs over the seats directory, the same mount primitive the
+worker jail builds in `agent.yml`:
+
+    bwrap --dev-bind / / --tmpfs ~/.config/fleet-ops/seats --proc /proc --unshare-pid --die-with-parent claude
+
+Inside it the seats directory exists but is empty, so the deny-rule bypass shape
+cannot matter: every spelling, `cd`-relative, runtime-built, glob or
+`readlink`-resolved, opens a namespace with nothing behind it. The sandbox
+session sees `~/.config/fleet-ops/seats` as an empty tmpfs and never the live
+seat files.
+
+- Verify: `tests/test_interactive_seats_sandbox.py` builds a synthetic home
+  with a probe seat file, checks the doc launch line, and (where bubblewrap is
+  installed) runs every held-out case in `tests/evals/cases/seat_bypass.json`
+  bare (each reaches the probe) and inside the sandbox (each is blocked). On a
+  host without bubblewrap the executed halves skip.
+- The numbers are in `tests/evals/results/seat_bypass.json`: 6 held-out bypass
+  shapes, written and labelled by a non-Claude family seat before the sandbox
+  was built, 1 run each, before reached / after blocked on every case.
+- It binds only the sessions started inside it; the sandbox launch is the
+  documented way an interactive session starts, not a trap on the `claude`
+  binary. A per-seat uid would bind every reader, but the fleet's own
+  consumers (`agent.yml`, the runner drop-ins, the provider watch) read the
+  seats as the same user, so the packet's ranking puts the sandbox first
+  (fleet-ops#11114, fleet-ops#11320).
+
