@@ -52,6 +52,14 @@ jobs:
             ! pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json "$f" || { echo "schema accepted $f"; exit 1; }
           done
       - run: pipx install semgrep==1.170.0
+      # A *.lock.yml is out of the ratchet only as gh-aw's compiled output of a counted .md: recompile, drop
+      # orphans, fail on any change (gh-aw docs: compile in CI). Caught 2026-10-31: a hand edit, a sourceless lock.
+      - name: gh-aw lock files are fresh compiles of their .md
+        env: {GH_TOKEN: "${{ github.token }}"}
+        run: |
+          compgen -G '.github/workflows/*.lock.yml' > /dev/null || exit 0
+          gh extension install github/gh-aw --pin v1.0.1 && gh aw compile --purge
+          git status --porcelain | { ! grep .; }
       # No glue (Nish 2026-09-29; 0509 reads no-glue.yml by URL), no host cua-driver plus its fixtures (#9297).
       - run: semgrep scan --config .semgrep/no-glue.yml --config .semgrep/no-host-cua-driver.yml --metrics=off --error && semgrep --test --metrics=off --config .semgrep/no-host-cua-driver.yml .semgrep/no-host-cua-driver.txt
       - name: No agent attribution in the PR's commits or body
