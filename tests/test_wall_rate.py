@@ -57,12 +57,18 @@ def _runs_fixture(fake, runs, timeouts=(), early_failures=()):
         elif rid in early_failures:
             (fake / f"ann-{900 + rid}.json").write_text(json.dumps(
                 [{"message": "The action 'Worker' has failed. tests came back red on main"}]))
+        else:
+            (fake / f"ann-{900 + rid}.json").write_text(json.dumps([]))
 
 
-def _run(tmp_path, runs, timeouts=(), early_failures=(), repo="Nishfleet/0509"):
+def _run(tmp_path, runs, timeouts=(), early_failures=(), repo="Nishfleet/0509", drop_jobs=(), drop_ann=()):
     fake = tmp_path / "fake"
     fake.mkdir()
     _runs_fixture(fake, runs, timeouts, early_failures)
+    for n in drop_jobs:
+        (fake / f"jobs-{n}.json").unlink()
+    for n in drop_ann:
+        (fake / f"ann-{900 + n}.json").unlink()
     gh = fake / "gh"
     gh.write_text(FAKE_GH)
     gh.chmod(0o755)
@@ -113,6 +119,8 @@ def test_no_worker_step_run_is_not_in_the_denominator(tmp_path):
     fake = tmp_path / "fake"
     fake.mkdir()
     (fake / "runs.json").write_text(json.dumps({"workflow_runs": runs}))
+    (fake / "jobs-1.json").write_text(json.dumps({"jobs": [{"id": 901, "name": "work", "steps": [{"name": "Checkout"}]}]}))
+    (fake / "jobs-2.json").write_text(json.dumps({"jobs": [{"id": 902, "name": "work", "steps": [{"name": "Checkout"}]}]}))
     gh = fake / "gh"; gh.write_text(FAKE_GH); gh.chmod(0o755)
     env = {**os.environ, "FAKE_DIR": str(fake), "PATH": f"{fake}:{os.environ['PATH']}",
            "GITHUB_REPOSITORY": "Nishfleet/0509",
@@ -138,6 +146,16 @@ def test_failed_runs_read_fails_loud(tmp_path):
     out = r.stdout + r.stderr
     assert "::error::" in out and "runs-list read failed" in out
     assert "nothing to report" not in out
+
+
+def test_jobs_read_failure_is_loud(tmp_path):
+    r = _run(tmp_path, [_wr(1, "success", _S, _E1_H)], drop_jobs=(1,))
+    assert r.returncode != 0 and "::error::" in r.stdout and "jobs read" in r.stdout
+
+
+def test_annotations_read_failure_is_loud(tmp_path):
+    r = _run(tmp_path, [_wr(1, "failure", _S, _E1_H)], timeouts=(1,), drop_ann=(1,))
+    assert r.returncode != 0 and "::error::" in r.stdout and "annotations read" in r.stdout
 
 
 def test_cancelled_wall_death_is_counted(tmp_path):

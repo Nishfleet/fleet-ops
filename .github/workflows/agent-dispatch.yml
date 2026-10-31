@@ -46,8 +46,8 @@ on:
   # never wait an hour for queued work (fleet-ops#10935).
   schedule:
     - cron: '*/10 * * * *'
-    # wall-rate counts once a day (fleet-ops#9288); this second fire runs the other scheduled
-    # jobs once more per day, which the review accepted.
+    # wall-rate counts once a day (fleet-ops#9288); this second fire also runs the other
+    # scheduled jobs once more per day, under the same concurrency group.
     - cron: '30 2 * * *'
 permissions: {}
 # One sweep running and one waiting per repo (15 queued behind busy runners on 2026-09-28);
@@ -1105,6 +1105,7 @@ jobs:
           # ADMIT_BUDGET_SEC stops the loop before the 20-minute job timeout.
           deadline=$(( $(date +%s) + ${ADMIT_BUDGET_SEC:-780} ))
           for n in $nums; do
+            pwall=""
             [ "$(date +%s)" -lt "$deadline" ] || {
               echo "::warning::admit: time budget reached; the rest keeps needs-triage for the next sweep"; break; }
             [ "$admitted_now" -lt "$budget" ] || {
@@ -1142,7 +1143,7 @@ jobs:
             fi
             case $band in
               admit) gh issue edit "$n" -R "$REPO" --add-label agent-ready --remove-label needs-triage >/dev/null; admitted_now=$((admitted_now+1)); msg="triage-admit: admitted. $verdict Added agent-ready and removed needs-triage." ;;
-                *) ensure_label needs-orchestrator fbca04 "Parked for the orchestrator"; gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label needs-triage >/dev/null; msg="triage-admit: sent to the orchestrator. $verdict Added needs-orchestrator and removed needs-triage, for a person to decide."; if [ "${pwall:-}" != "" ] && jq -nr --argjson wall "$pwall" '$wall >= 0.9 | not' >/dev/null; then msg="$msg A wall fit under 0.9 means the estimate does not fit one worker session, so the orchestrator can split the issue."; fi ;;
+                *) ensure_label needs-orchestrator fbca04 "Parked for the orchestrator"; gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label needs-triage >/dev/null; msg="triage-admit: sent to the orchestrator. $verdict Added needs-orchestrator and removed needs-triage, for a person to decide."; if [ "${pwall:-}" != "" ] && jq -ne --argjson wall "$pwall" '$wall >= 0.9 | not' >/dev/null; then msg="$msg A wall fit under 0.9 means the estimate does not fit one worker session, so the orchestrator can split the issue."; fi ;;
             esac
             gh issue comment "$n" -R "$REPO" --body "$msg Run: $run_url" >/dev/null
             echo "admit: #$n -> $band"
@@ -1163,7 +1164,7 @@ jobs:
   # the workflow's run history carries the share's record.
   wall-rate:
     if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && github.event_name == 'schedule' && github.event.schedule == '30 2 * * *'"
-    runs-on: [self-hosted, agent]
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}
     timeout-minutes: 10
     permissions: {actions: read, checks: read} # checks: read is what the annotations read needs; a 403 would read green forever (review on #11180)
     # Guard baseline (fleet-ops#9288): 8 of 60 real worker runs hit the wall
@@ -1187,14 +1188,13 @@ jobs:
             # its job id, and the timeout's annotation is the stock line. Only
             # runs with a Worker step are the denominator (the audit's
             # worker-run count), so the 144 daily sweeps are not in it.
-            jobid=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(any(.steps[]; .name == "Worker"))][0].id // empty') || jobid=""; [ -n "$jobid" ] || { echo "wall-rate: run $id has no Worker step on record"; continue; }
+            jobid=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(any(.steps[]; .name == "Worker"))][0].id // empty') || { echo "::error::wall-rate: the jobs read for run $id failed"; exit 1; }; [ -n "$jobid" ] || { echo "wall-rate: run $id has no Worker step on record"; continue; }
             total=$((total+1)); case $conclusion in failure|cancelled) ;; *) continue ;; esac
             # A run that hit the wall can conclude failure or cancelled (the audit
             # counted both); a success run is denominator only.
-            ann=$(gh api "repos/$GITHUB_REPOSITORY/check-runs/$jobid/annotations" --jq '[.[].message] | join("\n")') || ann=""
+            ann=$(gh api "repos/$GITHUB_REPOSITORY/check-runs/$jobid/annotations" --jq '[.[].message] | join("\n")') || { echo "::error::wall-rate: the annotations read for run $id (job $jobid) failed"; exit 1; }
             case $ann in *"has timed out after $WALL_MINUTES minutes"*) timed=$((timed+1)) ;; *"exceeded the maximum execution time of $WALL_MINUTES minutes"*) timed=$((timed+1)) ;; esac
           done <<<"$list"; [ "$total" -gt 0 ] || { echo "wall-rate: no finished agent-dispatch run with a Worker step in the last 24 hours; nothing to report"; exit 0; }
-          [ "$total" -gt 0 ] || { echo "wall-rate: no finished agent-dispatch run with a Worker step in the last 24 hours; nothing to report"; exit 0; }
           echo "wall-rate: $timed of $total finished agent-dispatch runs in the last 24 hours hit $WALL_MINUTES minutes (target: below $WALL_RATE_MAX%)"
           [ $((timed * 100)) -lt $((total * WALL_RATE_MAX)) ] || { echo "::error::$timed of $total agent-dispatch runs in $GITHUB_REPOSITORY hit the $WALL_MINUTES-minute wall in the last 24 hours (target: below $WALL_RATE_MAX%)."; exit 1; }
 
