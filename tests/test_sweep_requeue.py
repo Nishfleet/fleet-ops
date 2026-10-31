@@ -293,6 +293,21 @@ def test_the_infra_ending_is_not_the_counted_prefix():
     assert not infra[0].startswith(counted), (counted, infra[0])
 
 
+def test_strikes_count_from_the_last_escalation(tmp_path):
+    """Clearing needs-nish-decision resets the count: five old endings before the sweep's escalation
+    comment no longer escalate (#11372 re-escalated at once after the owner's flag was cleared), while
+    three new ones after it do. Only the workflow's own escalation comment resets."""
+    esc = {"body": "orchestrator: needs Nish. Three hand-offs ended", "authorAssociation": "NONE", "author": {"login": "github-actions"}}
+    fake = {**esc, "authorAssociation": "NONE", "author": {"login": "stranger"}}
+    cleared, again, forged = issue(1, ended=5), issue(2, ended=5), issue(3, ended=5)
+    cleared["comments"].append(esc)
+    again["comments"] += [esc] + issue(2, ended=3)["comments"]
+    forged["comments"].append(fake)
+    w = run(tmp_path, [cleared, again, forged])
+    assert edits(w, "--add-label needs-orchestrator") == [1]
+    assert edits(w, "--add-label needs-nish-decision") == [2, 3]
+
+
 def test_three_tries_escalate_not_requeue(tmp_path):
     w = run(tmp_path, [issue(1, ended=3), issue(2, ended=2)])
     assert edits(w, "--add-label needs-nish-decision") == [1]
