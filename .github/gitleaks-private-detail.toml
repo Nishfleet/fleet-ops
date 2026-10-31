@@ -52,6 +52,11 @@ targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = ['''(^|/)rootfs/etc/systemd/system/tincan-listen-.*\.service(\.d/.*)?$''', '''(^|/)rootfs/etc/systemd/system/fleet-agent-lock\.service\.d/''', '''(^|/)config/agent-locks\.json$''']
 
 [[allowlists]]
+description = "fleet-ops#11114's PR commits 292c6aa3e and ef35ab9cf spelled the seats path in the new detector's fail_msg prose and the new test's docstring; a PR scan reads every commit and history cannot be rewritten on an open PR, and the follow-up commit names the paths through {{ nish_config }} at runtime instead. Only these two files are allowed, so the trigger stays live elsewhere"
+targetRules = ["private-fleet-seats-config"]
+paths = ['''(^|/)ansible/tasks/final-checks\.yml$''', '''^tests/test_seat_file_modes\.py$''']
+
+[[allowlists]]
 description = "The pre-existing prometheus-reload and blacksmith-flip retirement lines in fleet-sync.service, touched by earlier commits of #9697 (a PR scan reads every commit, and history cannot be rewritten on an open PR)"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)systemd/fleet-sync\.service$''']
