@@ -1,0 +1,31 @@
+# Cloudflare Tunnel connector for the gh-aw pilot (fleet-ops#11311). It dials out
+# to Cloudflare, so no port opens on this box; config/cloudflared/llm-gateway.yml
+# says which two router paths it carries. The credentials file is 0600 and
+# outside the repo; deleting the tunnel in Cloudflare and this file is the whole
+# rollback.
+
+[Unit]
+Description=Cloudflare Tunnel to the router's two LLM paths (Quadlet, fleet-ops#11311)
+After=fleet-litellm-proxy.service
+StartLimitIntervalSec=1h
+StartLimitBurst=20
+OnFailure=fleet-unit-failed@%N.service
+
+[Container]
+# 2026.10.1, pinned to its manifest-list digest.
+Image=docker.io/cloudflare/cloudflared:2026.10.1@sha256:a15a3b50b8dabd57ac2090e9484c0247dba9dfa1f0df4d298d4317f9d69eb2d5
+ContainerName=fleet-llm-gateway
+Network=host
+# The host user maps to the image's nonroot uid 65532, so the 0600 credentials file reads.
+UserNS=keep-id:uid=65532,gid=65532
+Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/cloudflared/llm-gateway.yml:/etc/cloudflared/config.yml:ro
+Volume=%h/.config/cloudflare/llm-gateway-tunnel.json:/etc/cloudflared/credentials.json:ro
+Exec=tunnel --config /etc/cloudflared/config.yml run
+
+[Service]
+MemoryMax=256M
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

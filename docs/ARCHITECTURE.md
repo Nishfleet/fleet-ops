@@ -191,7 +191,8 @@ The rules still in force:
   Those four runners run as the no-sudo service user `fleet-reviewer`, in their own HOME,
   and the reviewer App key reaches them by bare `LoadCredential=` from `/etc/credstore`,
   so no unit other than these four and no job on another runner can read it (fleet-ops#10950).
-  All four read the review lane's seat b from `claude-seat-b.env`; seat a serves worker jobs only.
+  All four read the review lane's seat b from `claude-seat-b.env`; seat a serves worker jobs, and a review
+  call falls back to it (`claude-seat-a.env` as a systemd credential) only when seat b fails, such as at its usage limit.
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the review user's own

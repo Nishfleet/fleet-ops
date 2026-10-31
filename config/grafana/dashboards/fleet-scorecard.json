@@ -34,7 +34,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Fleet-ops#10711. Four tables: merged per day, failed share of agent runs, idle agent-runner minutes while ready work waits, and the two at the bottom, head to review verdict and approval to merge (Fleet-ops#10887). The idle table counts runner-minutes with no agent run in flight, on days when an open `agent-ready` issue was waiting, against that day's mean count of online agent runners.\n\nThe two tables above bucket days with SUBSTRING, which the expression engine allows, and the merged table searches each repository on its own (Fleet-ops#10853). The failed share counts every non-success finished run, not only infra failures. The verdict and approval tables pair each merged fleet-ops PR with its reviews: the export carries no head commit timestamp, so the head clock starts at the PR opening or at the push that dismissed the previous approval, whichever is later.\n\nNo data source yet (fleet-ops#10966): Claude limit per merged PR. Five of the six numbers have a rule in `config/grafana/provisioning/alerting/fleet-scorecard.yaml`, and each files a fleet-ops issue when it misses its target two days running. Targets: idle 0 min/day, verdict p50 < 20 min and p90 < 60 min, infra failures < 2%, approval to merge < 15 min, products ahead of fleet-ops, Claude limit per PR cut 30%."
+        "content": "Fleet-ops#10711. Six tables: merged per day, failed share of agent runs, idle agent-runner minutes while ready work waits, the two below it, head to review verdict and approval to merge (Fleet-ops#10887), and the hand-off to PR rate (fleet-ops#11167). The idle table counts runner-minutes with no agent run in flight, on days when an open `agent-ready` issue was waiting, against that day's mean count of online agent runners.\n\nThe two tables above bucket days with SUBSTRING, which the expression engine allows, and the merged table searches each repository on its own (Fleet-ops#10853). The failed share counts every non-success finished run, not only infra failures. The verdict and approval tables pair each merged fleet-ops PR with its reviews: the export carries no head commit timestamp, so the head clock starts at the PR opening or at the push that dismissed the previous approval, whichever is later.\n\nNo data source yet (fleet-ops#10966): Claude limit per merged PR. Five of the six numbers have a rule in `config/grafana/provisioning/alerting/fleet-scorecard.yaml`, and each files a fleet-ops issue when it misses its target two days running. Targets: idle 0 min/day, verdict p50 < 20 min and p90 < 60 min, infra failures < 2%, approval to merge < 15 min, products ahead of fleet-ops, Claude limit per PR cut 30%."
       }
     },
     {
@@ -316,7 +316,7 @@
           "owner": "Nishfleet",
           "repository": "",
           "options": {
-            "query": "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision NOT \"grafana alert:\" in:title archived:false",
+            "query": "org:Nishfleet is:issue label:agent-ready -is:blocked -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision NOT \"grafana alert:\" in:title archived:false",
             "timeField": 2
           },
           "hide": true
@@ -475,6 +475,77 @@
           },
           "type": "sql",
           "expression": "WITH pair AS (\n  SELECT a.number AS pr,\n         MIN(UNIX_TIMESTAMP(a.created_at)) AS opened_at,\n         MIN(UNIX_TIMESTAMP(a.merged_at)) AS merged_at,\n         MAX(CASE WHEN b.review_state = 'APPROVED' AND UNIX_TIMESTAMP(b.review_created_at) <= UNIX_TIMESTAMP(a.merged_at) THEN UNIX_TIMESTAMP(b.review_created_at) END) AS verdict_at,\n         MAX(CASE WHEN b.review_state = 'DISMISSED' AND UNIX_TIMESTAMP(b.review_updated_at) <= UNIX_TIMESTAMP(a.merged_at) THEN UNIX_TIMESTAMP(b.review_updated_at) END) AS dismissed_at\n  FROM A AS a JOIN B AS b ON b.pull_request_number = a.number\n  GROUP BY a.number\n), minutes AS (\n  SELECT DATE_FORMAT(FROM_UNIXTIME(merged_at), '%Y-%m-%d') AS day,\n         (merged_at - verdict_at) / 60.0 AS waiting\n  FROM pair WHERE verdict_at IS NOT NULL\n), ranked AS (\n  SELECT day, waiting,\n         ROW_NUMBER() OVER (PARTITION BY day ORDER BY waiting) AS rn,\n         COUNT(*) OVER (PARTITION BY day) AS c\n  FROM minutes\n)\nSELECT day, COUNT(*) AS prs,\n       ROUND(AVG(CASE WHEN rn >= (c + 1) / 2.0 - 0.5 AND rn <= (c + 1) / 2.0 + 0.5 THEN waiting END), 1) AS p50_minutes,\n       ROUND(MAX(CASE WHEN rn = CEIL(0.9 * c) THEN waiting END), 1) AS p90_minutes\nFROM ranked GROUP BY day ORDER BY day"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "id": 7,
+      "title": "Hand-off to PR rate per day, last 14 days",
+      "description": "Hand-offs that opened a PR (PRs opened that day from orch/ branches) over those plus hand-offs that ended with no PR (issues labelled handoff-ended, by last update day; a later comment on such an issue moves it to a later day). Target: over 80%. Source: fleet-ops#11167.",
+      "gridPos": {
+        "x": 0,
+        "y": 51,
+        "w": 24,
+        "h": 9
+      },
+      "timeFrom": "14d",
+      "hideTimeOverride": true,
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Issues",
+          "owner": "Nishfleet",
+          "repository": "",
+          "options": {
+            "query": "is:issue label:handoff-ended repo:Nishfleet/fleet-ops",
+            "timeField": 1
+          },
+          "hide": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "query": "is:pr head:orch/ repo:Nishfleet/fleet-ops",
+            "timeField": 1
+          },
+          "hide": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "type": "sql",
+          "expression": "SELECT x.d AS day, COALESCE(p.n, 0) + COALESCE(e.n, 0) AS handoffs, COALESCE(p.n, 0) AS prs, ROUND(100.0 * COALESCE(p.n, 0) / (COALESCE(p.n, 0) + COALESCE(e.n, 0)), 1) AS pr_rate_percent\nFROM (SELECT SUBSTRING(created_at, 1, 10) AS d FROM B UNION SELECT SUBSTRING(updated_at, 1, 10) AS d FROM A) x\nLEFT JOIN (SELECT SUBSTRING(created_at, 1, 10) AS d, COUNT(*) AS n FROM B GROUP BY d) p ON p.d = x.d\nLEFT JOIN (SELECT SUBSTRING(updated_at, 1, 10) AS d, COUNT(*) AS n FROM A GROUP BY d) e ON e.d = x.d\nORDER BY x.d"
         }
       ],
       "options": {

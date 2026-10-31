@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh the Hermes gh login before its App token expires (fleet-ops#10267)
+
+[Timer]
+# The minted token lives one hour. 20 min leaves two further attempts before
+# it stops working, and a missed run does not matter because the next one
+# replaces the file whole.
+OnBootSec=2min
+OnUnitActiveSec=20min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

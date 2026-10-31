@@ -13,6 +13,7 @@ import time
 from pathlib import Path, PurePosixPath
 
 import pytest
+import yaml
 import ansible_host
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,7 @@ def unit_files() -> list[Path]:
     found += sorted(INSTALLED.glob("fleet-deploy.*"))
     found += sorted(INSTALLED.glob("fleet-host-config*"))
     found += sorted(INSTALLED.glob("fleet-update.*"))
+    found += sorted(INSTALLED.glob("fleet-hermes-github-token.*"))
     found += sorted(INSTALLED.glob("tether-*"))
     found += sorted(INSTALLED.glob("tincan-listen-*"))
     found += sorted(INSTALLED.glob("claude-remote-control*"))
@@ -41,6 +43,114 @@ def test_no_directive_starts_with_the_ignore_failure_dash(unit: Path) -> None:
         f"{unit.relative_to(ROOT)}: {offenders}. The ignore-failure prefix goes after the '=' "
         "as ExecStart=-command, not in front of the key."
     )
+
+
+DEPLOY_BOX = ROOT / ".github/workflows/deploy-box.yml"
+DEPLOY_DIR = "/var/lib/fleet-deploy"
+
+
+def _deploy_box_run_block() -> str:
+    """The apply job's shell, from the workflow's only run: block."""
+    text = DEPLOY_BOX.read_text()
+    marker = "        run: |\n"
+    assert text.count(marker) == 1, "one run block in deploy-box.yml"
+    body = text.split(marker, 1)[1]
+    stop = body.find("\n      - ")
+    return body[:stop] if stop != -1 else body
+
+
+def _run_deploy_box(tmp_path: Path, result: str, log: str, systemctl_exit: int) -> subprocess.CompletedProcess:
+    """Run deploy-box's step against a temp mailbox with a stub systemctl."""
+    mailbox = tmp_path / "fleet-deploy"
+    mailbox.mkdir(parents=True)
+    (mailbox / "result").write_text(result)
+    (mailbox / "log").write_text(log)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "systemctl").write_text(f"#!/bin/sh\nexit {systemctl_exit}\n")
+    (bin_dir / "systemctl").chmod(0o755)
+    body = _deploy_box_run_block().replace(DEPLOY_DIR, str(mailbox))
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "GITHUB_RUN_ID": "12345",
+        "GITHUB_RUN_ATTEMPT": "2",
+    }
+    script = tmp_path / "step.sh"
+    script.write_text(body)
+    return subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, check=False)
+
+
+def test_deploy_box_requests_the_deploy_then_probes_the_runner() -> None:
+    text = DEPLOY_BOX.read_text()
+    assert "runs-on: [self-hosted, fleet-ci]" in text
+    probe = text.index("runner-probe")
+    run_block = text.index("        run: |")
+    assert run_block < probe, (
+        "the deploy request comes first and the probe runs last, so a red probe "
+        "can no longer skip the deploy (fleet-ops#10046)"
+    )
+    body = _deploy_box_run_block()
+    assert "systemctl is-active --quiet fleet-deploy.path" in body, "an inactive path unit must fail the job at once"
+    assert 'grep "^$stamp "' in body, "the poll must match only this run's own request line"
+    for gone in ("--user", "XDG_RUNTIME_DIR", "sudo", "polkit", "systemctl start", "journalctl"):
+        assert gone not in body, gone
+
+
+def test_deploy_box_exits_0_on_a_success_verdict(tmp_path: Path) -> None:
+    proc = _run_deploy_box(tmp_path, "run-12345-2 success 0 2026-10-22T10:00:00Z\n", "", 0)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "deploy request: run-12345-2" in proc.stdout
+    assert "deploy verdict: run-12345-2 success 0" in proc.stdout
+
+
+def test_deploy_box_fails_on_a_failed_verdict_and_prints_the_log(tmp_path: Path) -> None:
+    proc = _run_deploy_box(tmp_path, "run-12345-2 exit-code 3 2026-10-22T10:00:00Z\n", "PLAY RECAP failed=1\n", 0)
+    assert proc.returncode != 0
+    assert "PLAY RECAP failed=1" in proc.stdout, "the runner cannot read the journal, so the unit's log is the evidence"
+
+
+def test_deploy_box_ignores_another_runs_verdict_and_fails_when_the_path_unit_is_dead(tmp_path: Path) -> None:
+    mailbox = tmp_path / "fleet-deploy"
+    mailbox.mkdir()
+    (mailbox / "result").write_text("run-99999-1 success 0 2026-10-22T10:00:00Z\n")
+    (mailbox / "log").touch()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "systemctl").chmod(0o755)
+    script = tmp_path / "step.sh"
+    script.write_text(_deploy_box_run_block().replace(DEPLOY_DIR, str(mailbox)))
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "GITHUB_RUN_ID": "12345",
+        "GITHUB_RUN_ATTEMPT": "2",
+    }
+    proc = subprocess.run(["timeout", "5", "bash", str(script)], env=env, capture_output=True, text=True, check=False)
+    assert proc.returncode == 124, "a verdict for another request must never satisfy this run (job timeout is the backstop)"
+    proc = _run_deploy_box(tmp_path / "dead", "", "", 3)
+    assert proc.returncode != 0
+    assert "fleet-deploy.path is not active" in proc.stdout
+
+
+def test_the_deploy_grant_is_retired_from_the_polkit_rule() -> None:
+    host = (ROOT / "ansible/host.yml").read_text()
+    retired = host.split("    retired:", 1)[1].split("    box_only_file:", 1)[0]
+    rule = ROOT / "rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules"
+    startable = rule.read_text().split("var fleetStartableUnits = [", 1)[1].split("];", 1)[0]
+    assert f"- {DEPLOY_DIR}" not in host
+    assert "/etc/polkit-1/rules.d/50-fleet-host-config.rules" not in retired
+    assert "Install polkit rules" in (ROOT / "ansible/tasks/agent-policy.yml").read_text()
+    assert "fleet-host-config.service" not in startable, "no runner may start the host config: the deploy runs from fleet-deploy.service (root)"
+    for unit in ("fleet-update.service", "restic-r2-backup.service", "restic-r2-size-guard.service"):
+        assert f'"{unit}"' in startable, unit
+
+
+def test_the_fleet_ci_runners_hide_the_user_bus() -> None:
+    for runner in ("1", "2"):
+        conf = ROOT / f"rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-{runner}.service.d/40-no-bus.conf"
+        assert "InaccessiblePaths=-/run/user/1000" in conf.read_text(), conf
 
 
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")
@@ -174,6 +284,45 @@ def test_claude_vps_listener_is_sandboxed_and_egress_capped() -> None:
 HERMES_UNITS = ("hermes-gateway", "hermes-serve")
 HERMES_DIRS = (INSTALLED / "hermes-.service.d", *(INSTALLED / f"{unit}.service.d" for unit in HERMES_UNITS))
 HERMES_FORBIDDEN = ("RestrictNamespaces", "SystemCallFilter", "MemoryDenyWriteExecute", "PrivateUsers", "PrivateNetwork")
+HERMES_GH_DIR = "/run/fleet-hermes-github-token"
+HERMES_TOKEN = INSTALLED / "fleet-hermes-github-token.service"
+HERMES_TOKEN_TIMER = INSTALLED / "fleet-hermes-github-token.timer"
+HERMES_HIDDEN = (
+    "/home/nish/.config/fleet-ops",
+    "/home/nish/.config/fleet-worker",
+    "/home/nish/.config/gh",
+    "/home/nish/.config/cloudflare",
+    "/home/nish/.config/systemd",
+    "/home/nish/.ssh",
+    "/home/nish/.git-credentials",
+    "/home/nish/.claude",
+    "/home/nish/.claude-vps",
+    "/home/nish/.local/share/claude-seat-backup",
+    "/home/nish/.commandcode",
+    "/home/nish/.cursor",
+    "/home/nish/.devin",
+    "/home/nish/.config/opencode",
+    "/home/nish/.config/tincan/claude-vps.json",
+    "/home/nish/.config/tincan/command-code.json",
+    "/home/nish/.config/tincan/cursor-vps.json",
+    "/home/nish/.config/tincan/devin-vps.json",
+    "/home/nish/.config/tincan/fleet-worker.json",
+    "/home/nish/.config/tincan/issue-desk.json",
+    "/home/nish/.config/tincan/opencode.json",
+    "/home/nish/.config/tincan/pi.json",
+    "/home/nish/.config/tincan/agentmail.key",
+    "/run/user/1000",
+    "/run/docker.sock",
+)
+HERMES_READABLE = (
+    "/home/nish/.hermes",
+    "/home/nish/.local/state/hermes",
+    "/home/nish/.config/tincan",
+    "/home/nish/.config/tincan/hermes.json",
+    "/home/nish/.config/tincan/hermes-webhook.secret",
+    "/home/nish/.cua",
+    "/home/nish/.pi",
+)
 
 
 def _unit_keys_text(text: str) -> dict[str, list[str]]:
@@ -247,6 +396,137 @@ def test_hermes_sandbox_dropin_sits_in_the_prefix_dir_both_units_read() -> None:
     assert prefix != directory.name, f"{directory.name} is an ordinary drop-in dir: the shared file would cover no unit"
     assert [unit for unit in HERMES_UNITS if unit.startswith(prefix)] == list(HERMES_UNITS), prefix
     assert (directory / "sandbox.conf").is_file()
+    version = _systemd_version()
+    assert version >= 249, f"systemd {version} does not search the dash-truncated drop-in dir, so hermes-serve starts with no deny list"
+    for unit in HERMES_UNITS:
+        assert directory / "sandbox.conf" in _layers(unit), f"{unit} does not read the shared file, so it runs with no deny list (systemd {version})"
+
+
+def _systemd_version() -> int:
+    out = subprocess.run(["systemd-analyze", "--version"], capture_output=True, text=True, check=False)
+    fields = out.stdout.split()
+    return int(fields[1]) if out.returncode == 0 and len(fields) > 1 and fields[1].isdigit() else 0
+
+
+def _task_file(name: str) -> dict[str, dict]:
+    return {task["name"]: task for task in yaml.safe_load((ROOT / f"ansible/tasks/{name}").read_text())}
+
+
+def test_hermes_reads_a_minted_login_while_nishes_admin_login_is_hidden() -> None:
+    for unit in HERMES_UNITS:
+        keys = _effective(unit)
+        hidden = {entry.removeprefix("-") for values in keys["InaccessiblePaths"] for entry in values.split()}
+        assert "/home/nish/.config/gh" in hidden, f"{unit}: nish's admin gh login is still readable, and this unit reads text from strangers (fleet-ops#10267)"  # gitleaks:allow
+        env = {name: value for values in keys["Environment"] for name, value in (item.split("=", 1) for item in shlex.split(values))}
+        assert env.get("GH_CONFIG_DIR") == HERMES_GH_DIR, f"{unit}: gh must read the minted login, not ~/.config/gh: {env.get('GH_CONFIG_DIR')}"
+        assert "fleet-hermes-github-token.service" in shlex.split(" ".join(keys["Wants"])), f"{unit}: the minted login is never pulled in on a start"
+        assert "fleet-hermes-github-token.service" not in " ".join(keys.get("Requires", [])), f"{unit}: a Requires= pull-in stops the whole start when the mint meets an outage, and a dependency failure never fires Restart=: Hermes stayed down until a deploy (fleet-ops#11502 review, 7c7c8df)"
+        assert "fleet-hermes-github-token.service" in shlex.split(" ".join(keys["After"])), f"{unit}: a restart could start before the token directory is written"
+
+
+def test_the_hermes_login_oneshot_mints_the_narrow_token_gh_needs() -> None:
+    keys = _unit_keys(HERMES_TOKEN)
+    assert _last(keys, "Type") == "oneshot"
+    assert _last(keys, "User") == "nish", "the App key and the token directory are nish's, not root's"
+    assert int(_last(keys, "StartLimitIntervalSec").removesuffix("min")) * 60 >= 60, "no cap on how fast the pull-ins can mint spends the worker runs' installation-token quota"
+    assert int(_last(keys, "StartLimitBurst")) > 0, "no cap on how fast the pull-ins can mint spends the worker runs' installation-token quota"
+    assert _last(keys, "RuntimeDirectory") == HERMES_GH_DIR.rsplit("/", 1)[1]
+    assert _last(keys, "RuntimeDirectoryMode") == "0700", "gh's hosts.yml carries a live token"
+    assert _last(keys, "RuntimeDirectoryPreserve") == "yes", "gh reads the file between mints, so it may not vanish when the oneshot exits"
+    assert _last(keys, "OnFailure") == "fleet-unit-failed@%n.service"  # _last() lowercases, so %N reads back as %n
+    assert "network-online.target" in _last(keys, "Wants") and "network-online.target" in _last(keys, "After"), (
+        "the first mint after a boot races DHCP and DNS: the start waits for network-online.target, and both curl calls retry"
+    )
+    assert not (INSTALLED / f"{HERMES_TOKEN.name}.d").is_dir(), "the deploy restarts Hermes on a change to the shared drop-in, not to a per-unit layer here"
+    script = " ".join(keys["ExecStart"]).replace("%%", "%").replace("$$", "$").replace("\\\\", "\\")
+    assert "$((now - $(stat -c %Y \"$RUNTIME_DIRECTORY/hosts.yml\")))" in script, "a pull-in must skip a still-fresh token file: every Hermes restart would otherwise spend the worker runs' installation-token quota"
+    assert "lt 900" in script, "the skip window must be shorter than the timer's refresh interval, or the token could age past its one-hour expiry"
+    assert '-d "{\\"permissions\\":{\\"actions\\":\\"read\\",\\"issues\\":\\"write\\",\\"pull_requests\\":\\"read\\"}}"' in script, (
+        "the token must grant only what config/hermes/ calls: issue reads and comments, pull request and workflow-run reads"
+    )
+    assert "repositories" not in script, "no repositories key, so gh repo list still sees every repo the App is installed on"
+    assert script.count("$tok") == 1 and 'echo "    oauth_token: $tok"' in script, "the token goes straight into the 0600 file and nowhere else: not into an argument list, not into the journal"
+    assert script.count("--config <(auth)") == 2, "the App JWT goes to curl as a config fd for the installation lookup and the token request only, so no later call can reuse it against another host"
+    assert script.count("--retry-all-errors") == 2, "curl retries neither a DNS failure (exit 6) nor the POST without it, so a boot-time outage left the mint failed until the timer ran again: both GitHub calls retry (curl, --retry-all-errors)"
+    assert "mv -f" in script, "a rename keeps a reader from seeing a half-written hosts.yml"
+
+
+def test_the_hermes_login_timer_refreshes_before_the_app_token_expires() -> None:
+    keys = _unit_keys(HERMES_TOKEN_TIMER)
+    minutes = int(_last(keys, "OnUnitActiveSec").removesuffix("min"))
+    assert minutes * 60 < 3600, f"an installation token lives one hour, so {minutes} min between mints leaves no room for a retry"
+    assert _last(keys, "WantedBy") == "timers.target", "a timer without WantedBy= is enabled but never runs"
+
+
+def test_the_deploy_mints_the_hermes_login_and_proves_it_before_restarting_hermes() -> None:
+    tasks = _task_file("services.yml")
+    timer = tasks["Enable the Hermes GitHub login refresh"]["ansible.builtin.systemd_service"]
+    assert timer["name"] == HERMES_TOKEN_TIMER.name and timer["enabled"] is True and timer["state"] == "started"
+    mint = tasks["Mint the Hermes GitHub login now"]
+    assert mint["ansible.builtin.systemd_service"]["name"] == HERMES_TOKEN.name
+    assert mint["ignore_errors"] is True, "a GitHub outage at deploy time must not turn the rest of the host config red"
+    assert mint["register"] == "hermes_login_mint"
+    stat = tasks["Read the login file the mint wrote"]["ansible.builtin.stat"]
+    assert stat["path"] == f"{HERMES_GH_DIR}/hosts.yml", "the restart waits on the file itself, not on the task result: an old token file may still be there"
+    proof = tasks["Prove the Hermes login reads the issue it was built for"]
+    assert proof["become_user"] == "nish"
+    assert proof["environment"]["GH_CONFIG_DIR"] == HERMES_GH_DIR, "a proof that reads nish's own ~/.config/gh proves nothing about the minted login"
+    assert set(proof["environment"]) == {"HOME", "PATH", "GH_CONFIG_DIR"}, (
+        f"gh reads HOME and GH_CONFIG_DIR only, so nothing else belongs here: a hardcoded XDG_RUNTIME_DIR would go stale on a uid change and gh would fall back to ~/.config/gh: {proof['environment']}"
+    )
+    assert "hermes_login_file.stat.exists" in str(proof["when"]), "the proof must not run when the mint wrote nothing"
+    argv = proof["ansible.builtin.command"]["argv"]
+    assert argv[:3] == ["/usr/bin/gh", "issue", "view"] and argv[3] == "10267", argv
+    restart = tasks["Restart Hermes onto the minted login"]
+    when = str(restart["when"])
+    assert "hermes_installed_sandbox_dropin.stat.mtime" in when, "systemd reads the drop-in only at start, so a change to it without a restart leaves the old sandbox running"
+    assert "hermes_login_file.stat.exists" in when, "a restart without a minted login leaves Hermes with no gh at all"
+    assert "hermes_login_proof is skipped or hermes_login_proof is succeeded" in when, "the restart waits on the proof too, or it moves Hermes onto a login nothing has proven"
+    assert set(restart["loop"]) == {"hermes-gateway.service", "hermes-serve.service"}
+    names = {handler["name"] for handler in _play_handlers()}
+    assert not ({"Restart the Hermes units", "Restart hermes units for their sandbox"} & names), "a handler can flush before services.yml mints and proves the login (review of PR #11116)"
+
+
+def test_the_hermes_restart_gates_on_the_dropin_being_newer_than_the_units_starts() -> None:
+    """The staleness is systemd's own fact, the comparison fleet-runner-sandbox-apply makes (fleet-ops#11248)."""
+    tasks = _task_file("services.yml")
+    stat = tasks["Read the installed Hermes sandbox drop-in"]
+    assert stat["ansible.builtin.stat"]["path"] == "/etc/systemd/system/hermes-.service.d/sandbox.conf"
+    for name, register in (
+        ("Read when hermes-gateway last started", "hermes_gateway_start"),
+        ("Read when hermes-serve last started", "hermes_serve_start"),
+    ):
+        task = tasks[name]
+        assert task["register"] == register
+        assert task["check_mode"] is False, "a read-only start-time lookup must answer in check mode, or the staleness read gives an undefined stdout"
+    restart = tasks["Restart Hermes onto the minted login"]
+    when = str(restart["when"])
+    assert "hermes_gateway_start.stdout" in when and "hermes_serve_start.stdout" in when, "the restart compares the drop-in's mtime against both units' ActiveEnterTimestamp, so a natural Restart=always start after the install clears the staleness"
+    assert "hermes_installed_sandbox_dropin.stat.mtime" in when
+    assert "hermes_restart" not in when
+    assert "hermes-sandbox-restart-pending" not in str(tasks), "no state file: systemd holds the staleness (the review of PR #11116 cut the marker)"
+    assert "Install the Hermes sandbox drop-in and notice its change" not in str(_task_file("install-config.yml")), "the generic copy installs the drop-in, and the gate reads the installed mtime, so no early copy or register exists"
+
+
+def test_the_deploy_restarts_hermes_when_the_dropin_that_hides_the_login_changes() -> None:
+    """The drop-in reaches the box through the generic systemd copy, and the restart still sits behind the proof."""
+    install = _task_file("install-config.yml")
+    generic = install["Install systemd units, slices and drop-ins"]
+    assert generic["ansible.builtin.copy"]["src"].endswith("etc/systemd/system/")
+    assert "Reload systemd" in generic["notify"], "a copied drop-in needs a daemon-reload"
+    tasks = _task_file("services.yml")
+    assert "hermes_sandbox_dropin" not in str(tasks), "services.yml reads the installed drop-in from disk, not from a register, so a change flag cannot answer for a file a natural restart has already re-read"
+
+
+def test_the_hermes_login_unit_names_an_absolute_key_path() -> None:
+    # Or %u: the system manager user name, "root" in a system unit, not User=
+    # (systemd.unit 255, "Specifiers", fleet-ops#10267 review of the /home/%u
+    # spelling). Only the spelled-out path reads the key the mint signs with.
+    keys = _unit_keys(HERMES_TOKEN)
+    key = [value for value in keys["Environment"] if value.startswith("APP_KEY=")][-1].split("=", 1)[1]
+    assert key == "/home/nish/.config/fleet-worker/nishfleet-worker.private-key.pem"  # gitleaks:allow
+    assert "%h" not in str(keys["Environment"]), "%h expands to /root in a system unit"
+    assert "%u" not in str(keys["Environment"]), "%u expands to root in a system unit"
 
 
 def test_hermes_units_confine_writes_to_the_paths_hermes_uses() -> None:
@@ -298,6 +578,83 @@ def test_no_hermes_layer_takes_what_the_children_need() -> None:
         keys = _unit_keys(path)
         for key in HERMES_FORBIDDEN:
             assert key not in keys, f"{path.relative_to(INSTALLED)}: {key} stops Chrome's sandbox zygote or node's JIT (measured 2026-10-22), and everything in this file reaches both units or the unit it names"
+
+
+def _hermes_hidden() -> set[PurePosixPath]:
+    hidden: set[PurePosixPath] = set()
+    for unit in HERMES_UNITS:
+        for path in _layers(unit):
+            for value in _unit_keys(path).get("InaccessiblePaths", []):
+                for entry in shlex.split(value):
+                    hidden.add(PurePosixPath(entry.removeprefix("-")))
+    return hidden
+
+
+def test_the_hermes_lock_hides_the_credentials_no_chat_turn_reads() -> None:
+    hidden = _hermes_hidden()
+    for path in HERMES_HIDDEN:
+        assert PurePosixPath(path) in hidden, f"the chat agent must not read {path}: no hermes layer hides it"
+
+
+def test_the_hermes_lock_keeps_what_hermes_and_its_children_measured_to_need() -> None:
+    hidden = _hermes_hidden()
+    for path in HERMES_READABLE:
+        covering = [hidden_path for hidden_path in hidden if path == str(hidden_path) or path.startswith(str(hidden_path) + "/")]
+        assert not covering, f"{path} is hidden by {covering}, so hermes or an MCP child breaks"
+    assert PurePosixPath("/home/nish") not in hidden, "hiding all of HOME undoes ProtectHome=read-only and the grants above"
+
+
+def test_every_hermes_hidden_path_survives_being_absent() -> None:
+    hidden = _hermes_hidden()
+    assert hidden, "no hermes layer hides anything"
+    assert not [str(path) for path in hidden if " " in str(path)], "a hidden path with a space is split by the shell grammar systemd reads these lines with, so this check would read half of it"
+    for unit in HERMES_UNITS:
+        for path in _layers(unit):
+            for value in _unit_keys(path).get("InaccessiblePaths", []):
+                for entry in shlex.split(value):
+                    assert entry.startswith("-"), f"{path.relative_to(INSTALLED)}: {entry} without the - prefix stops the unit from starting on a host that does not have it (fleet-ops#10081)"
+
+
+def _table_path(path: str, home: str) -> str:
+    return path.replace("~", home, 1) if path.startswith("~/") else path
+
+
+def test_no_hermes_hidden_path_undoes_a_write_grant() -> None:
+    hidden = _hermes_hidden()
+    for unit in HERMES_UNITS:
+        grants = {PurePosixPath(entry.removeprefix("-")) for entry in shlex.split(" ".join(_effective(unit)["ReadWritePaths"]))}
+        assert sum(1 for grant in grants if " " in str(grant)) == 1, (
+            f"{unit}: the vault inbox grant carries a space, so it reads quoted from the drop-in; "
+            "losing the quoting would let shlex split it and this check would pass on the fragments"
+        )
+        for grant in grants:
+            covering = [path for path in hidden if grant == path or str(grant).startswith(str(path) + "/")]
+            assert not covering, f"{unit}: {grant} is granted for writes and hidden by {covering}, a no-op that reads as a lock"
+
+
+def test_both_hermes_units_are_in_the_agent_lock_table() -> None:
+    table = json.loads((ROOT / "config/agent-locks.json").read_text())
+    home = f"/home/{table['user']}"
+    agents = table["agents"]
+    entries = []
+    for unit in HERMES_UNITS:
+        assert unit in agents, f"{unit} is missing from config/agent-locks.json"
+        entry = agents[unit]
+        assert entry["unit"] == f"rootfs/etc/systemd/system/{unit}.service", entry
+        entries.append(entry)
+    lists = [{_table_path(path, home) for path in entry["must_hide"]} for entry in entries]
+    assert lists[0] == lists[1], "hermes-gateway and hermes-serve read the same hermes-.service.d/sandbox.conf, so their must_hide lists cannot differ"
+    for entry in entries:
+        assert len(entry["must_hide"]) == len(lists[0]), f"{entry['unit']}: a path listed twice hides nothing twice"
+
+
+def test_the_table_accounts_for_every_path_the_hermes_lock_hides() -> None:
+    table = json.loads((ROOT / "config/agent-locks.json").read_text())
+    home = f"/home/{table['user']}"
+    named = {_table_path(path, home) for unit in HERMES_UNITS for path in table["agents"][unit]["must_hide"]}
+    hidden = {str(path) for path in _hermes_hidden()}
+    assert not hidden - named, f"a hermes layer hides these and the table accounts for none of them: {sorted(hidden - named)}"
+    assert not named - hidden, f"the table hides these and no hermes layer does: {sorted(named - hidden)}"
 
 
 def test_hermes_serve_unit_pins_its_program_bind_address_and_restart_policy() -> None:
@@ -1375,6 +1732,7 @@ RUNNER_DROPINS = sorted(INSTALLED.glob("actions.runner.*.service.d"))
 CREATING_TYPES = {"d", "D", "f", "F", "L"}
 RUN_PATH_ALLOWLIST = {
     "/run/docker.sock": "created by docker.socket (enabled, started at sockets.target, before the runners)",
+    "/run/user": "made at boot by systemd's shipped tmpfiles file (/usr/lib/tmpfiles.d/systemd.conf, d /run/user 0755 root root -), before the runners; nothing unprivileged recreates it (fleet-ops#11232)",
     "/run/user/1000": "the user runtime dir comes from logind (linger), before the runners",
     "/run/user/1000/*": "entries of the user runtime dir; the dir itself comes from logind (linger)",
     "/run/podman-eval": "retired path, kept masked",
@@ -1517,6 +1875,29 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired()
     assert f"- {GPG_AGENT_HOST_COPY}\n" in retired.group(1), (
         "the hand-placed copy shadows /etc/systemd/user, so the repo copy is inert"
     )
+
+
+RUNNER_DROPIN = ROOT / "rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/10-agent.conf"
+
+
+def test_runner_pressure_limit_kills_only_a_stalled_cgroup() -> None:
+    assert RUNNER_DROPIN.is_file(), f"{RUNNER_DROPIN.relative_to(ROOT)} is not in the repo, so a git pull carries no edit to it"
+    keys = effective_directives(RUNNER_DROPIN)
+    assert _last(keys, "ManagedOOMMemoryPressure") == "kill"
+    assert _last(keys, "MemoryHigh") == "4g", "the high line the 2026-10-05 sizing set is gone"
+    limit = int(_last(keys, "ManagedOOMMemoryPressureLimit").removesuffix("%"))
+    assert 2 <= limit <= 40, (
+        "a cgroup stalled by a leak reads 45-56% memory pressure (netcup-agent-19, 2026-10-30) and a real "
+        "workload pinned above its MemoryHigh reads 1.68% avg10 peak (same unit pinned at 4294M/4G line, "
+        "2026-10-30), so the line belongs between them: at 80% oomd never fires (fleet-ops#11123), below 2% "
+        "it kills real work, above 40% it only fires after a stall is already minutes deep"
+    )
+    shadow = [
+        p.name
+        for p in RUNNER_DROPIN.parent.glob("*.conf")
+        if p.name != RUNNER_DROPIN.name and "ManagedOOMMemoryPressureLimit" in p.read_text()
+    ]
+    assert not shadow, f"{shadow} also set ManagedOOMMemoryPressureLimit for the runner units, so 10-agent.conf does not decide"
 
 
 TINCAN_RELAY_UNIT = ROOT / "systemd/tincan-relay.service"
@@ -2066,8 +2447,8 @@ def test_root_tincan_listener_keeps_its_trim_flags_and_its_role_allow_list() -> 
 
 
 WAKE_UNITS = (
-    "systemd/tincan-listen-fleet-worker.service",
-    "systemd/tincan-listen-pi.service",
+    "rootfs/etc/systemd/system/tincan-listen-fleet-worker.service",
+    "rootfs/etc/systemd/system/tincan-listen-pi.service",
     "rootfs/etc/systemd/user/cua-desk-daemon.service",
 )
 # Decision (fleet-ops#10263): the permissive flags stay. These listeners run headless with nobody to answer a prompt, and the
@@ -2099,14 +2480,16 @@ def test_wake_unit_is_in_the_repo_and_carries_the_page_hook(relative: str) -> No
     assert _last(keys, "Restart") == "always"
     if relative != DESK_UNIT:
         assert _last(keys, "OnFailure") == "fleet-unit-failed@%n.service"
-    assert _last(keys, "WantedBy") == "default.target"
+    assert _last(keys, "WantedBy") == (
+        "multi-user.target" if relative.startswith("rootfs/etc/systemd/system/") else "default.target"
+    )
     if relative != DESK_UNIT:
         assert keys["ExecStart"][0].startswith("/home/nish/.local/bin/tincan listen --exec ")
 
 
 def test_each_wake_unit_is_pinned_on_its_agent_flags_and_task_id() -> None:
     for name, (binary, flags) in WAKE_AGENT.items():
-        keys = effective_directives(ROOT / "systemd" / f"{name}.service")
+        keys = effective_directives(ROOT / "rootfs/etc/systemd/system" / f"{name}.service")
         exec_start = keys["ExecStart"][0]
         assert binary in exec_start, f"{name}: ExecStart no longer runs {binary}"
         if flags:
@@ -2570,6 +2953,95 @@ def test_grafana_provisioning_reload_never_spends_its_start_limit() -> None:
     assert int(token["TimeoutStartSec"][0]) > attempt, "the token unit waits on the reload from its ExecStartPost, so its own timeout must cover the reload unit's ceiling"
     assert token["ExecStartPost"][0].startswith("-"), "a reload that cannot get through pages through the reload unit's own OnFailure=, so it must not fail the mint with it"
     assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost"
+
+
+def test_grafana_mint_reload_runs_only_when_the_loaded_token_needs_it(tmp_path: Path) -> None:
+    """fleet-ops#11441: the mint fired a provisioning reload at every mint, and Grafana
+    drops an in-flight webhook dispatch when a reload applies (all three observed
+    one-off notifications failures align with an apply or restart). The guard in the
+    mint unit's ExecStartPost must reload only when the token loaded into Grafana has
+    run down to the next mint interval, count the loaded token's date from the token
+    file mtime at the reload, and never record a reload that did not happen.
+    """
+    keys = _unit_keys(GRAFANA_TOKEN)
+    line = keys["ExecStartPost"][0]
+    assert line.startswith("-"), "a reload that cannot get through pages through the reload unit's own OnFailure=, so it must not fail the mint with it"
+    command = line[1:].replace("$$", "$").replace("%%", "%")
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    token = runtime / "token"
+    token.write_text("stub-token")
+    ledger = runtime / "provisioned-token-mint"
+    log = tmp_path / "start.log"
+    stub = tmp_path / "stub-systemctl"
+    stub.write_text("#!/bin/bash\necho started >> \"" + str(log) + "\"\n")
+    stub.chmod(0o755)
+    command = command.replace(
+        "/usr/bin/systemctl --user start fleet-grafana-provisioning.service", str(stub)
+    )
+
+    def run_guard() -> subprocess.CompletedProcess:
+        log.unlink(missing_ok=True)
+        return subprocess.run(
+            ["/bin/bash", "-c", command],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={"PATH": os.environ["PATH"], "RUNTIME_DIRECTORY": str(runtime)},
+        )
+
+    # No ledger (after a boot, a first run): the loaded token's date is unknown.
+    proc = run_guard()
+    assert proc.returncode == 0, proc.stderr
+    assert log.read_text().startswith("started"), proc.stdout + proc.stderr
+    assert int(ledger.read_text()) == int(token.stat().st_mtime), "the ledger holds the mint time of the token the reload loaded"
+    # A ledger the reload just wrote: a second mint inside the token's hour is a no-op.
+    proc = run_guard()
+    assert proc.returncode == 0, proc.stderr
+    assert not log.exists(), "a loaded token inside one mint interval of its expiry must not reload"
+    assert int(ledger.read_text()) == int(token.stat().st_mtime)
+    # A loaded token run down past the guard margin: the next mint reloads it.
+    old = token.stat().st_mtime - 3600
+    ledger.write_text(str(old))
+    proc = run_guard()
+    assert proc.returncode == 0, proc.stderr
+    assert log.read_text().startswith("started"), "a loaded token past the margin must reload"
+    assert int(ledger.read_text()) == int(token.stat().st_mtime)
+    # A corrupt ledger reads as unknown and reloads (a reload is the safe direction).
+    ledger.write_text("not-a-date")
+    proc = run_guard()
+    assert proc.returncode == 0, proc.stderr
+    assert log.read_text().startswith("started")
+    # A reload that cannot get through never records itself: the next mint retries.
+    ledger.unlink()
+    failing = tmp_path / "failing-stub"
+    failing.write_text("#!/bin/bash\nexit 5\n")
+    failing.chmod(0o755)
+    proc = subprocess.run(
+        ["/bin/bash", "-c", command.replace(str(stub), str(failing))],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": os.environ["PATH"], "RUNTIME_DIRECTORY": str(runtime)},
+    )
+    assert proc.returncode != 0, "a failed reload must leave the ledger unwritten so the next mint retries"
+    assert not ledger.exists(), f"a reload that did not happen must not be recorded: {proc.stdout}"
+
+
+def test_grafana_mint_reload_guard_keeps_the_reload_wiring() -> None:
+    """The guard must stay strippable by the CI mint test and keep the reload wiring
+    the mint tests and the docs assert on.
+    """
+    keys = _unit_keys(GRAFANA_TOKEN)
+    line = keys["ExecStartPost"][0]
+    assert line.startswith("-"), "a reload that cannot get through pages through the reload unit's own OnFailure=, so it must not fail the mint with it"
+    assert "/usr/bin/systemctl --user start fleet-grafana-provisioning.service" in line, "the absolute systemctl path keeps the mint start from PATH steering"
+    assert keys["RuntimeDirectoryPreserve"] == ["yes"], "the reload guard's ledger lives in the unit's RuntimeDirectory, so it must survive a finished oneshot"
+    unit_text = (ROOT / "systemd/fleet-grafana-github-token.service").read_text()
+    timer_text = (ROOT / "systemd/fleet-grafana-github-token.timer").read_text()
+    interval = int(re.search(r"OnUnitActiveSec=(\d+)min", timer_text).group(1)) * 60
+    margin = int(re.search(r"now - (\d+)\)", unit_text).group(1))
+    assert margin == 3600 - interval, "the guard reloads while the token loaded into Grafana keeps one mint interval of slack, no token life the mint cannot hold"
 
 
 def test_grafana_provisioning_reload_fails_loud_without_a_password(tmp_path: Path) -> None:

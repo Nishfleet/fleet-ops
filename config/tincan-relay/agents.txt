@@ -1,0 +1,25 @@
+# The agents the fleet owns on the Agent Tincan mesh (fleet-ops#9979). One name
+# per line, `#` comments and blank lines ignored. This file is the single source
+# for the relay's approval policy: config/tincan-relay/policy.jq renders
+# approval.json from it, and ansible/host.yml installs the result, so the policy
+# is never hand-made on the box and adding an agent is one line here.
+#
+# Every agent here gets a gate whose `unless` list is this roster plus the relay,
+# so a request between our agents goes through and a request whose chain names
+# anything else is held. An agent on the mesh that is not in this list is an
+# outsider and is held by design, so it must NOT be added here.
+#
+# Check the live list before editing:
+#   tincan agents --json --socket ~/.local/state/tincan-relay/admin.sock
+claude-mac
+claude-vps
+command-code
+cursor-vps
+devin-mac
+devin-vps
+fleet-worker
+grok-cli-mac
+hermes
+opencode
+pi
+pi-mac
