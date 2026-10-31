@@ -2,14 +2,15 @@
 
 Claude Code's deny rules match a command's text only, so a reader that hides the path and
 builds it after a cd (`cd ~/.config && python3 -c "open('fleet-ops/seats/x').read()"`)
-gets past every pattern that names the seats directory. A file mode binds the other uids
-(runner users, jailed engines outside the hides, other local accounts), never a process
-already reading as nish, whose hole is the sandbox the issue's follow-up tracks. The
-playbook therefore keeps `~/.config/fleet-ops/seats` at 0700 and every `.env` under it at
-0600 owned by nish, running as nish so a planted symlink cannot steer a root chmod (the
-litellm-keys tasks in the same file follow that rule), and ansible/tasks/final-checks.yml
-fails the deploy naming any file or the directory whose mode or owner drifts. The threat
-model is stated once in docs/managed-settings-defaults.md.
+gets past every pattern that names the seats directory, and the cd-quoted-interpreter shape from
+fleet-ops#11114 is its proof: the path the command reaches is spelled by no rule's text. A file
+mode binds the other uids (runner users, jailed engines outside the hides, other local accounts),
+never a process already reading as nish, whose hole is the sandbox the issue's follow-up tracks.
+The playbook therefore keeps the seats directory under nish's .config at 0700 and every `.env`
+under it at 0600 owned by nish, running as nish so a planted symlink cannot steer a root chmod
+(the litellm-keys tasks in the same file follow that rule), and ansible/tasks/final-checks.yml
+fails the deploy naming any file or the directory whose mode or owner drifts. The threat model is
+stated once in docs/managed-settings-defaults.md.
 """
 from __future__ import annotations
 

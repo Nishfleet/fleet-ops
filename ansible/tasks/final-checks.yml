@@ -95,7 +95,7 @@
       The seat file {{ item.path }} is readable or writable wider than nish (mode {{ item.mode | string }},
       owner {{ item.pw_name | default('unknown') }}), and Claude Code's deny rules cannot stop a reader
       that hides the path and builds it after a cd (Nishfleet/fleet-ops#11114), so the mode and owner are
-      the guard against the other uids: ansible/tasks/secrets.yml sets 0600 on every ~/.config/fleet-ops/seats/*.env
+      the guard against the other uids: ansible/tasks/secrets.yml sets 0600 on every {{ nish_config }}/fleet-ops/seats/*.env
       at the start of the apply. Rerun the deploy, and if the mode still falls back, rotate every key in
       that file that ran while it was open.
   loop: "{{ seat_modes.files }}"
@@ -111,7 +111,7 @@
       or reachable wider than nish (mode {{ seat_dir.stat.mode | default('unknown') | string }}), and
       Claude Code's deny rules cannot stop a reader that hides the path and builds it after a cd
       (Nishfleet/fleet-ops#11114), so the mode and owner are the guard against the other uids:
-      ansible/tasks/secrets.yml keeps ~/.config/fleet-ops/seats at 0700 owned by nish at the start of
+      ansible/tasks/secrets.yml keeps {{ nish_config }}/fleet-ops/seats at 0700 owned by nish at the start of
       the apply. Rerun the deploy, and if the mode still falls back, rotate every key in the directory
       that ran while it was open.
   quiet: true
