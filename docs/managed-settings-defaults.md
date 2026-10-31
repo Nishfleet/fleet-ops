@@ -23,10 +23,17 @@ before 2026-10-30 (fleet-ops#10567).
 The seat and tincan Bash rules are string rules, so their reach is the path as
 the command spells it: the Bash rule that covers the seats directory stops a command that
 names the directory, and a command that reaches the same file by a relative path
-(`cd ~/.config && cat fleet-ops/seats/x`) names no denied substring. The `*`
-prefix also matches a command that only mentions the path, so `rg -n
-'/.config/tincan/' docs` is denied too. Closing the relative-path hole needs a
-file mode or a sandbox, not another pattern (fleet-ops#11114).
+(`cd ~/.config && cat fleet-ops/seats/x`) names no denied substring. A reader that hides
+the path altogether gets past every rule that could name it: `cd ~/.config && python3 -c
+"open('fleet-ops/seats/x').read()"` reached the filesystem, so no pattern could match (fleet-ops#11114).
+Closing that hole is the file mode, not another pattern (fleet-ops#11114):
+ansible/tasks/secrets.yml keeps `~/.config/fleet-ops/seats` at 0700 and every `.env` under it
+at 0600 on every apply — 0600, not the issue's 0400, because a seat file edited by hand is
+written in place by a shell redirect as nish, and group and other are what the guard denies;
+it runs as nish, so a planted symlink cannot steer a root chmod. ansible/tasks/final-checks.yml
+fails the deploy naming any file or the directory where a group or other bit is set. The Bash
+rules stay: they deny a command that only mentions the path, and they still stop a reader whose
+file permissions let it through.
 
 - Verify: `cmp /etc/claude-code/managed-settings.json
   rootfs/etc/claude-code/managed-settings.json` is silent (the box copy is the
@@ -41,6 +48,8 @@ file mode or a sandbox, not another pattern (fleet-ops#11114).
   '{"permissions":{"deny":["Bash(<pattern>)"]}}'`, which merges with the managed
   lists (proved 2026-10-30: the managed `Bash(wrangler:*)` deny still fired with
   an unrelated `--settings` deny in place).
+- The seat mode lands with the apply on each deploy: `stat -c '%a' ~/.config/fleet-ops/seats`
+  prints `700`, and every `stat -c '%a %n' ~/.config/fleet-ops/seats/*.env` prints `600`.
 - Switch it off: a PR that deletes the file from `rootfs/` and adds
   `/etc/claude-code/managed-settings.json` to `retired` in `ansible/host.yml`.
 - The check is the `unit` job's `tests/test_claude_managed_settings.py`: every

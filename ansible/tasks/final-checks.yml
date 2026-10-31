@@ -64,6 +64,51 @@
     fail_msg: "Grafana secrets not refreshed, source or key missing or empty: {{ grafana_secrets_missing | join('; ') }}."
     quiet: true
 
+# The Bash deny rules that cover the seat files cannot stop a reader that hides the path
+# and builds it after a cd (Nishfleet/fleet-ops#11114), so the mode is the guard and this
+# check is the detector: any group or other bit on the seats directory or on a file under
+# it fails the deploy here, after the apply tasks in secrets.yml had their go.
+- name: Find the seat environment files and read their modes
+  become: true
+  become_user: nish
+  ansible.builtin.find:
+    paths: "{{ nish_config }}/fleet-ops/seats"
+    patterns: "*.env"
+    recurse: true
+  register: seat_modes
+
+- name: Read the live mode of the seats directory
+  become: true
+  become_user: nish
+  ansible.builtin.stat:
+    path: "{{ nish_config }}/fleet-ops/seats"
+  register: seat_dir
+
+- name: Fail when a seat environment file carries a group or other bit
+  ansible.builtin.assert:
+    that: not (item.rgrp or item.roth or item.wgrp or item.woth or item.xgrp or item.xoth)
+    fail_msg: >-
+      The seat file {{ item.path }} is reachable wider than nish (mode {{ item.mode | string }}),
+      and Claude Code's deny rules cannot stop a reader that hides the path and builds it after
+      a cd (Nishfleet/fleet-ops#11114), so the mode is the guard: ansible/tasks/secrets.yml sets
+      0600 on every ~/.config/fleet-ops/seats/*.env at the start of the apply. Rerun the deploy,
+      and if the mode still falls back, rotate every key in that file that ran while it was open.
+  loop: "{{ seat_modes.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  quiet: true
+
+- name: Fail when the seats directory carries a group or other bit
+  ansible.builtin.assert:
+    that: not (seat_dir.stat.rgrp or seat_dir.stat.roth or seat_dir.stat.wgrp or seat_dir.stat.woth or seat_dir.stat.xgrp or seat_dir.stat.xoth)
+    fail_msg: >-
+      The seats directory {{ seat_dir.stat.path }} is reachable wider than nish (mode {{ seat_dir.stat.mode | string }}),
+      and Claude Code's deny rules cannot stop a reader that hides the path and builds it after
+      a cd (Nishfleet/fleet-ops#11114), so the mode is the guard: ansible/tasks/secrets.yml keeps
+      ~/.config/fleet-ops/seats at 0700 at the start of the apply. Rerun the deploy, and if the
+      mode still falls back, rotate every key in the directory that ran while it was open.
+  quiet: true
+
 # A Cua Space that did not come up fails the run here, before the last two
 # tasks; force_handlers still runs the pending handlers.
 - name: Fail when tether's Cua Space could not be readied
