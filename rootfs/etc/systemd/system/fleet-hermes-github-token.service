@@ -83,7 +83,7 @@ ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
   s=$$(printf "%%s.%%s" "$$h" "$$p" | openssl dgst -sha256 -sign "$$APP_KEY" | b64); \
   auth() { printf "header = \\"Authorization: Bearer %%s.%%s.%%s\\"\\nheader = \\"Accept: application/vnd.github+json\\"\\n" "$$h" "$$p" "$$s"; }; \
   id=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --config <(auth) "$$GITHUB_API_URL/repos/Nishfleet/fleet-ops/installation" | jq -er .id); \
-  tok=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 -X POST --config <(auth) -d "{\\"permissions\\":{\\"actions\\":\\"read\\",\\"issues\\":\\"write\\",\\"pull_requests\\":\\"read\\"}}" "$$GITHUB_API_URL/app/installations/$$id/access_tokens" | jq -er .token); \
+  tok=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --retry-all-errors -X POST --config <(auth) -d "{\\"permissions\\":{\\"actions\\":\\"read\\",\\"issues\\":\\"write\\",\\"pull_requests\\":\\"read\\"}}" "$$GITHUB_API_URL/app/installations/$$id/access_tokens" | jq -er .token); \
   { echo "github.com:"; echo "    user: nishfleet-worker"; echo "    oauth_token: $$tok"; echo "    git_protocol: https"; } > "$$RUNTIME_DIRECTORY/hosts.yml.new"; \
   mv -f "$$RUNTIME_DIRECTORY/hosts.yml.new" "$$RUNTIME_DIRECTORY/hosts.yml"; \
   echo "minted the nishfleet-worker App token as the Hermes gh login, valid one hour"'

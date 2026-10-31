@@ -371,7 +371,26 @@ def test_the_deploy_mints_the_hermes_login_and_proves_it_before_restarting_herme
     assert "hermes_login_proof is skipped or hermes_login_proof is succeeded" in when, "the restart waits on the proof too, or it moves Hermes onto a login nothing has proven"
     assert set(restart["loop"]) == {"hermes-gateway.service", "hermes-serve.service"}
     names = {handler["name"] for handler in _play_handlers()}
-    assert "Restart the Hermes units" not in names, "a handler can flush before services.yml mints and proves the login (review of PR #11116)"
+    assert not ({"Restart the Hermes units", "Restart hermes units for their sandbox"} & names), "a handler can flush before services.yml mints and proves the login (review of PR #11116)"
+
+
+def test_a_failed_first_deploy_parks_the_restart_and_the_next_deploy_fires_it() -> None:
+    tasks = _task_file("services.yml")
+    stat = tasks["Read any parked-hermes-restart marker from a failed deploy"]
+    assert stat["ansible.builtin.stat"]["path"] == "/run/hermes-sandbox-restart-pending"
+    restart = tasks["Restart Hermes onto the minted login"]
+    when = str(restart["when"])
+    assert "hermes_restart_pending.stat.exists" in when, "a restart that skipped on a failed deploy must fire on a later deploy's proven login, not disappear with the copy's changed flag"
+    assert "hermes_login_file.stat.exists" in when and "hermes_login_proof is skipped or hermes_login_proof is succeeded" in when
+    clear = tasks["Clear the parked-hermes-restart marker the restart fired from"]
+    assert clear["ansible.builtin.file"]["state"] == "absent"
+    assert "hermes_restart is changed" in str(clear["when"]), "the marker dies only once the restart that consumed it ran, or a later deploy parks it again"
+    park = tasks["Park the failed-deploy restart in the marker file"]
+    park_when = str(park["when"])
+    assert park["ansible.builtin.copy"]["dest"] == "/run/hermes-sandbox-restart-pending"
+    assert "not ansible_check_mode" in park_when, "check mode installs nothing, so it must park nothing"
+    assert "hermes_sandbox_dropin is changed" in park_when
+    assert "hermes_login_file.stat.exists" in park_when and "hermes_login_proof is skipped or hermes_login_proof is succeeded" in park_when, "the park waits on exactly what the restart needs, so a later deploy restarts instead of parking twice"
 
 
 def test_the_deploy_restarts_hermes_when_the_dropin_that_hides_the_login_changes() -> None:

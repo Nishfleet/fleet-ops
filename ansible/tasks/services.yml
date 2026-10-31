@@ -217,6 +217,17 @@
 # issue: a restart in that state would leave Hermes with no gh at all, or with
 # a login nothing has proven, and both units run Restart=always. The proof is
 # skipped in check mode, so the gate also accepts that skip.
+# A failed first deploy quietly re-arms next time: the drop-in copy reports no
+# change on the deploy after, so the gate above would stay false forever while
+# the old login keeps running. /run/hermes-sandbox-restart-pending survives that
+# deploy gap (and dies on reboot, where a unit start re-reads the drop-in
+# anyway), so a restart that skipped once still fires once a proven login
+# exists, and the state of the file is the pending state users can look at.
+- name: Read any parked-hermes-restart marker from a failed deploy
+  ansible.builtin.stat:
+    path: /run/hermes-sandbox-restart-pending
+  register: hermes_restart_pending
+
 - name: Restart Hermes onto the minted login
   ansible.builtin.systemd_service:
     name: "{{ item }}"
@@ -225,6 +236,41 @@
     - hermes-gateway.service
     - hermes-serve.service
   when:
-    - hermes_sandbox_dropin is changed
+    - hermes_sandbox_dropin is changed or hermes_restart_pending.stat.exists
     - hermes_login_file.stat.exists
     - hermes_login_proof is skipped or hermes_login_proof is succeeded
+  register: hermes_restart
+
+- name: Clear the parked-hermes-restart marker the restart fired from
+  ansible.builtin.file:
+    path: /run/hermes-sandbox-restart-pending
+    state: absent
+  when: hermes_restart is changed
+
+- name: Explain a Hermes restart that waited on a proven login
+  ansible.builtin.debug:
+    msg: >-
+      The sandbox drop-in is installed but its restart is parked in
+      /run/hermes-sandbox-restart-pending until a minted login exists and reads
+      Nishfleet/fleet-ops#10267, so Hermes keeps the login it has. The timer
+      retries the mint every 20 minutes, and the next deploy picks the parked
+      restart up.
+  when:
+    - not ansible_check_mode
+    - hermes_sandbox_dropin is changed
+    - not (hermes_login_file.stat.exists and (hermes_login_proof is skipped or hermes_login_proof is succeeded))
+
+- name: Park the failed-deploy restart in the marker file
+  ansible.builtin.copy:
+    content: |
+      /etc/systemd/system/hermes-.service.d/sandbox.conf was installed on a deploy
+      whose mint or proof failed, so Hermes still runs the login the drop-in hides.
+      A later deploy restarts the Hermes units once a minted login reads an issue.
+    dest: /run/hermes-sandbox-restart-pending
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - not ansible_check_mode
+    - hermes_sandbox_dropin is changed
+    - not (hermes_login_file.stat.exists and (hermes_login_proof is skipped or hermes_login_proof is succeeded))
