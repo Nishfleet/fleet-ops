@@ -154,13 +154,17 @@ groups:
       # Any integration, any reason: a webhook 401 from an expired GitHub App
       # token is the case this was written for (fleet-grafana-github-token.timer).
       # The series appears with the first failure, so a healthy Grafana is silent.
+      # The sum() dropped the integration label, so no instance could name which
+      # receiver failed (fleet-ops#11426: a one-off telegram drop read as the
+      # webhook-token case). One integration rising is one alert; two integrations
+      # rising in one window are two alerts.
       - alert: GrafanaNotificationsFailing
-        expr: sum(increase(grafana_alerting_notifications_failed_total[15m])) > 0
+        expr: increase(grafana_alerting_notifications_failed_total[15m]) > 0
         labels:
           severity: nish
         annotations:
-          summary: "Grafana failed to deliver alert notifications in the last 15 minutes"
-          description: "grafana_alerting_notifications_failed_total rose in the last 15 minutes: check the Grafana log and fleet-grafana-github-token.service."
+          summary: "Grafana failed to deliver alert notifications in the last 15 minutes (integration {{ $labels.integration }})"
+          description: "grafana_alerting_notifications_failed_total rose for integration {{ $labels.integration }} in the last 15 minutes: check the Grafana log and fleet-grafana-github-token.service. If grafana_alerting_notification_requests_total rose the same way, the request went out and its error names the cause (a webhook 401 is an expired GitHub App token); if not, the send failed inside Grafana before any request. One one-off rise leaves the 15m window on its own."
 
   - name: fleet_backup
     rules:
