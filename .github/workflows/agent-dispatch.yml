@@ -1406,9 +1406,9 @@ jobs:
           # outlive it (four orphaned wrangler stacks plus the job's own dev
           # server from one orchestrator job, fleet-ops#11140). The TERM-to-KILL
           # pair covers a child that ignores TERM.
-          trap 'kill -TERM "-$engine_pid" 2>/dev/null || true' EXIT
           setsid "${engine[@]}" < "$RUNNER_TEMP/orchestrator-prompt.md" &
           engine_pid=$!
+          trap 'kill -TERM "-$engine_pid" 2>/dev/null || true' EXIT
           status=0
           wait "$engine_pid" || status=$?
           kill -TERM "-$engine_pid" 2>/dev/null || true
