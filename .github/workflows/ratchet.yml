@@ -1,4 +1,4 @@
-# The fleet's ratchet, defined once: net added code lines under .github/workflows, .github/actions, scripts and bin must be 0 or fewer; compiled gh-aw *.lock.yml files that the BASE tree's .gitattributes marks linguist-generated do not count (a PR cannot mark its own files). Reasons: docs/workflow-notes.md.
+# The fleet's ratchet, defined once: net added code lines under .github/workflows, .github/actions, scripts and bin must be 0 or fewer; compiled gh-aw *.lock.yml files that the BASE tree's .gitattributes marks linguist-generated do not count, and only when fresh() proves each changed lock a fresh compile of its .md (a PR cannot mark its own files). Reasons: docs/workflow-notes.md.
 name: Ratchet
 on: [workflow_call, pull_request, merge_group]
 permissions:
@@ -16,18 +16,21 @@ jobs:
           fetch-depth: 0
       - env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          GH_TOKEN: ${{ github.token }}
           HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
           net() { local b; b=$(git merge-base "$1" "$2"); git --attr-source="$b" diff --no-color --no-ext-diff -U0 "$b" "$2" -- .github/workflows .github/actions scripts bin ':(exclude,glob,attr:linguist-generated=true).github/workflows/*.lock.yml' | awk '/^diff --git/ {h=1} /^@@/ {h=0; next} h || /^[+-][[:space:]]*(#|$)/ {next} /^\+/ {n++} /^-/ {n--} END {print n+0}'; }
+          fresh() { local f l; l=$(git diff --name-only --diff-filter=ACMR "$1" "$2" -- '.github/workflows/*.lock.yml'); [ -n "$l" ] || return 0; while IFS= read -r f; do git cat-file -e "$2:${f%.lock.yml}.md" 2>/dev/null || { echo "::error::ratchet: $f has no source ${f%.lock.yml}.md in this tree"; return 1; }; done <<<"$l"; if ! { gh extension install github/gh-aw --pin v1.0.1 >/dev/null && echo "746d0b41d5fb87e2c010b8ac23a464436bb745ff89fbd19a3456431942c37652  ${XDG_DATA_HOME:-$HOME/.local/share}/gh/extensions/gh-aw/gh-aw" | sha256sum -c - >/dev/null; }; then echo "::error::ratchet: gh-aw would not install at its pinned checksum; cannot prove lock-file freshness"; return 1; fi; gh aw compile --purge >/dev/null; while IFS= read -r f; do [ -z "$(git status --porcelain -- "$f")" ] || { echo "::error::ratchet: $f is not a fresh compile (gh aw compile --purge rewrites it)"; return 1; }; done <<<"$l"; }
           t=$(mktemp -d); git init -q "$t"; mkdir -p "$t/.github/workflows" "$t/bin"; { seq 9; echo '# c'; } | tee "$t/.github/workflows/a.yml" > "$t/bin/b"; echo '.github/workflows/g.lock.yml linguist-generated=true' > "$t/.gitattributes"
           (cd "$t" && git add -A && git -c user.name=t -c user.email=t@t commit -qm base)
-          for c in 'seq 5 >> .github/workflows/a.yml;5' 'seq 5 >> bin/b;5' 'sed -i 1,3d .github/workflows/a.yml;-3' 'sed -i 1s/1/9/ .github/workflows/a.yml;0' 'printf "  # d\n\n" >> bin/b;0' 'sed -i /^#/d bin/b && echo x >> bin/b;1' 'seq 5 > .github/workflows/g.lock.yml && git add -A;0' 'printf ".github/workflows/*.lock.yml linguist-generated=true\\n" >> .gitattributes && seq 5 > .github/workflows/h.lock.yml && git add -A;5'; do
-            (cd "$t" && eval "${c%;*}" && git -c user.name=t -c user.email=t@t commit -qam t && got=$(net HEAD~1 HEAD) && git reset -q --hard HEAD~1 && [ "$got" = "${c##*;}" ]) || { echo "self-test '${c%;*}' failed"; exit 1; }
+          for c in 'seq 5 >> .github/workflows/a.yml;5;0' 'seq 5 >> bin/b;5;0' 'sed -i 1,3d .github/workflows/a.yml;-3;0' 'sed -i 1s/1/9/ .github/workflows/a.yml;0;0' 'printf "  # d\n\n" >> bin/b;0;0' 'sed -i /^#/d bin/b && echo x >> bin/b;1;0' 'seq 5 > .github/workflows/g.lock.yml && git add -A;0;1' 'printf ".github/workflows/*.lock.yml linguist-generated=true\\n" >> .gitattributes && seq 5 > .github/workflows/h.lock.yml && git add -A;5;1' 'printf "bin/*.lock.yml linguist-generated=true\\n" >> .gitattributes && seq 5 > bin/x.lock.yml && git add -A;5;0'; do
+            x=${c#*;}; (cd "$t" && eval "${c%%;*}" && git -c user.name=t -c user.email=t@t commit -qam t && n=$(net HEAD~1 HEAD) && g=0 && fresh HEAD~1 HEAD >/dev/null 2>&1 || g=$?; git reset -q --hard HEAD~1 && [ "$n" = "${x%%;*}" ] && [ "$g" = "${x##*;}" ]) || { echo "self-test '${c%%;*}' failed"; exit 1; }
           done
           f=${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY/"}; f=${f%@*}
           old=$(git show "$BASE:$f" 2>/dev/null | yq -o=json -I=0 '.jobs.ratchet' || true)
           case "$old" in *ratchet.yml@*) [ "$old" = "$(yq -o=json -I=0 '.jobs.ratchet' "$f")" ] || { echo "::error::ratchet: this PR edits the ratchet job in $f. A PR does not change the rule it is judged by."; exit 1; };; esac
+          fresh "$BASE" "$HEAD"
           n=$(net "$BASE" "$HEAD")
           echo "ratchet: net added code lines under .github/workflows, .github/actions, scripts, bin: $n"
           [ "$n" -le 0 ] || { echo "::error::ratchet: +$n net code lines of workflow or script. Delete as many as you add, or build the mechanism in its own repo behind an official extension point."; exit 1; }

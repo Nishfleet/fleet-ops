@@ -1,2 +1,2 @@
-# gh-aw compiles each .github/workflows/<name>.md into <name>.lock.yml; ci.yml's lint job proves each lock is a fresh compile.
+# gh-aw compiles each .github/workflows/<name>.md into <name>.lock.yml; the ratchet's fresh() gate (every repo) and ci.yml's lint job prove each lock is a fresh compile.
 .github/workflows/*.lock.yml linguist-generated=true
