@@ -722,6 +722,22 @@ line of the unit and restart it. That restores today's behaviour: the role
 file is then inert and nothing else in the unit changed. Only Nish restarts
 `claude-remote-control.service`, because that cuts the phone link.
 
+## gh-aw pilot gateway (fleet-ops#11311)
+
+`containers/quadlet/fleet-llm-gateway.container` runs a Cloudflare Tunnel that
+carries two router paths for the gh-aw pilot (`config/cloudflared/llm-gateway.yml`).
+Its credentials file is `~/.config/cloudflare/llm-gateway-tunnel.json` (0600).
+`tests/test_llm_gateway_tunnel.py` pins the ingress and the pilot rows' caps.
+
+- **On:** link the quadlet into `~/.config/containers/systemd/` like the
+  others, then run `systemctl --user daemon-reload && systemctl --user start fleet-llm-gateway`.
+- **Off:** run `systemctl --user stop fleet-llm-gateway`. GitHub-hosted runs then get no route
+  to the router.
+- **Delete:** stop the unit, remove the link and the credentials file, and delete the
+  tunnel and its DNS record in Cloudflare.
+- **Key leak:** delete the `gh-aw-pilot` router key (`/key/delete`). Each pilot row
+  is capped at 10 USD a day, and the key at 30 requests a minute.
+
 ## Break-glass access (SSH is Tailscale-only)
 
 If tailscaled is down, SSH is gone. The out-of-band layer exists today at zero
