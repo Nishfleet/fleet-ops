@@ -480,23 +480,26 @@ def test_the_live_config_parks_a_401_row_on_its_first_failure():
 
 
 def test_the_live_config_parks_a_quota_wall_row_on_its_first_429():
-    """fleet-ops#11146 pre-flight, gated: the z.ai, StepFun and Alibaba token-plan rows sit
-    on quota walls with a fixed reset clock, not bursts, so each parks on its first 429 for
-    6 h (#9075, #9122) and re-probes about 4x/day. Without this gate a config edit back to
-    the 900 s burst cool with allowed_fails 1 re-enters the wall every 15 min and leaks it
-    to the caller again (58.9% of worker-capable chat calls failed on 2026-10-30 02:28Z with
-    19 of the 29 worker-capable rows walled; the token-plan row alone held the judge group on
-    the RouterGroupJammed alert on 2026-10-31, fleet-ops#11234)."""
+    """fleet-ops#11146 pre-flight, gated: the z.ai, StepFun, Alibaba token-plan and MiniMax
+    token-plan rows sit on quota walls with a fixed reset clock, not bursts, so each parks
+    on its first 429 for 6 h (#9075, #9122) and re-probes about 4x/day. Without this gate a
+    config edit back to the 900 s burst cool with allowed_fails 1 re-enters the wall every
+    15 min and leaks it to the caller again (58.9% of worker-capable chat calls failed on
+    2026-10-30 02:28Z with 19 of the 29 worker-capable rows walled; the token-plan row alone
+    held the judge group on the RouterGroupJammed alert on 2026-10-31, fleet-ops#11234). On
+    2026-10-31 the MiniMax rows re-entered their spent token plan every 30 min and 179 of
+    their 429s landed inside the RouterStrongGroupFailing window (fleet-ops#11417)."""
     walled_api_bases = (
         "https://api.z.ai/api/coding/paas/v4",
         "https://api.stepfun.ai/step_plan/v1",
         "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+        "https://api.minimax.io/anthropic",
     )
     with open(CONFIG_PATH, "rb") as fh:
         cfg = yaml.safe_load(fh)
     walled = [row for row in cfg["model_list"]
               if row["litellm_params"].get("api_base") in walled_api_bases]
-    assert len(walled) == 22, [row["model_info"]["id"] for row in walled]
+    assert len(walled) == 27, [row["model_info"]["id"] for row in walled]
     for row in walled:
         assert row["litellm_params"]["cooldown_time"] == 21600, row["model_info"]["id"]
         policy = row.get("model_info", {}).get("allowed_fails_policy") or {}
@@ -567,6 +570,34 @@ def test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule(
             doc = yaml.safe_load(fh)
         paths = [list(e.absolute_path) for e in validator.iter_errors(doc)]
         assert any(p[:1] == ["router_settings"] for p in paths), (path, paths)
+
+
+def test_schema_rejects_the_minimax_quota_wall_fixture_on_its_three_deltas():
+    """fleet-ops#11417: the review of the preview head asked for a gate that runs the
+    minimax reject fixture, not a hand-quoted command. The fixture holds all three
+    deltas on the one MiniMax row (burst cool, third-429 park, slot cap), each one a
+    named rule violation at model_list/2; a one-key revert leaves the other keys'
+    violation, so no single field can pass the gate alone."""
+    with open(SCHEMA_PATH, "rb") as fh:
+        schema = json.load(fh)
+    validator = jsonschema.Draft202012Validator(schema)
+    fixture = "config/litellm-proxy.schema.rejects/quota-wall-minimax-row-on-the-burst-cooldown.yaml"
+    with open(fixture, "rb") as fh:
+        doc = yaml.safe_load(fh)
+    errors = list(validator.iter_errors(doc))
+    paths = [list(e.absolute_path) for e in errors]
+    assert all(p[:2] == ["model_list", 2] for p in paths), paths
+    # The fixture must not be picked up by the retry-policy gate above.
+    assert fixture not in sorted(glob.glob(REJECTS_GLOB))
+    # The cooldown and allowed-fails deltas fail at their own leaf keys.
+    for key in ("cooldown_time", "RateLimitErrorAllowedFails"):
+        assert any(p[:2] == ["model_list", 2] and p[-1] == key for p in paths), (key, paths)
+    # The no-slot-cap delta is a row-level `not` violation: its path stops at the
+    # row's litellm_params, and the message names the key.
+    assert any(p == ["model_list", 2, "litellm_params"]
+               and any("max_parallel_requests" in e.message
+                       for e in errors if list(e.absolute_path) == p)
+               for p in paths), paths
 
 
 def test_authentication_error_gets_one_retry():

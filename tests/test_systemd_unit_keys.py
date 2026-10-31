@@ -1764,6 +1764,29 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired()
     )
 
 
+RUNNER_DROPIN = ROOT / "rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/10-agent.conf"
+
+
+def test_runner_pressure_limit_kills_only_a_stalled_cgroup() -> None:
+    assert RUNNER_DROPIN.is_file(), f"{RUNNER_DROPIN.relative_to(ROOT)} is not in the repo, so a git pull carries no edit to it"
+    keys = effective_directives(RUNNER_DROPIN)
+    assert _last(keys, "ManagedOOMMemoryPressure") == "kill"
+    assert _last(keys, "MemoryHigh") == "4g", "the high line the 2026-10-05 sizing set is gone"
+    limit = int(_last(keys, "ManagedOOMMemoryPressureLimit").removesuffix("%"))
+    assert 2 <= limit <= 40, (
+        "a cgroup stalled by a leak reads 45-56% memory pressure (netcup-agent-19, 2026-10-30) and a real "
+        "workload pinned above its MemoryHigh reads 1.68% avg10 peak (same unit pinned at 4294M/4G line, "
+        "2026-10-30), so the line belongs between them: at 80% oomd never fires (fleet-ops#11123), below 2% "
+        "it kills real work, above 40% it only fires after a stall is already minutes deep"
+    )
+    shadow = [
+        p.name
+        for p in RUNNER_DROPIN.parent.glob("*.conf")
+        if p.name != RUNNER_DROPIN.name and "ManagedOOMMemoryPressureLimit" in p.read_text()
+    ]
+    assert not shadow, f"{shadow} also set ManagedOOMMemoryPressureLimit for the runner units, so 10-agent.conf does not decide"
+
+
 TINCAN_RELAY_UNIT = ROOT / "systemd/tincan-relay.service"
 TINCAN_RELAY_DIST_DROPIN = "{{ nish_home }}/.config/systemd/user/tincan-relay.service.d/dist-temp.conf"
 TINCAN_RELAY_DIST_DROPIN_DIR = "{{ nish_home }}/.config/systemd/user/tincan-relay.service.d"
