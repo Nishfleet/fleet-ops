@@ -1,4 +1,4 @@
-# The fleet's ratchet, defined once: net added code lines under .github/workflows, .github/actions, scripts and bin must be 0 or fewer. Reasons: docs/workflow-notes.md.
+# The fleet's ratchet, defined once: net added code lines under .github/workflows, .github/actions, scripts and bin must be 0 or fewer; compiled gh-aw *.lock.yml files that the BASE tree's .gitattributes marks linguist-generated do not count (a PR cannot mark its own files). Reasons: docs/workflow-notes.md.
 name: Ratchet
 on: [workflow_call, pull_request, merge_group]
 permissions:
@@ -19,10 +19,10 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
-          net() { git diff --no-color --no-ext-diff -U0 "$(git merge-base "$1" "$2")" "$2" -- .github/workflows .github/actions scripts bin | awk '/^diff --git/ {h=1} /^@@/ {h=0; next} h || /^[+-][[:space:]]*(#|$)/ {next} /^\+/ {n++} /^-/ {n--} END {print n+0}'; }
-          t=$(mktemp -d); git init -q "$t"; mkdir -p "$t/.github/workflows" "$t/bin"; { seq 9; echo '# c'; } | tee "$t/.github/workflows/a.yml" > "$t/bin/b"
+          net() { local b; b=$(git merge-base "$1" "$2"); git --attr-source="$b" diff --no-color --no-ext-diff -U0 "$b" "$2" -- .github/workflows .github/actions scripts bin ':(exclude,glob,attr:linguist-generated=true).github/workflows/*.lock.yml' | awk '/^diff --git/ {h=1} /^@@/ {h=0; next} h || /^[+-][[:space:]]*(#|$)/ {next} /^\+/ {n++} /^-/ {n--} END {print n+0}'; }
+          t=$(mktemp -d); git init -q "$t"; mkdir -p "$t/.github/workflows" "$t/bin"; { seq 9; echo '# c'; } | tee "$t/.github/workflows/a.yml" > "$t/bin/b"; echo '.github/workflows/g.lock.yml linguist-generated=true' > "$t/.gitattributes"
           (cd "$t" && git add -A && git -c user.name=t -c user.email=t@t commit -qm base)
-          for c in 'seq 5 >> .github/workflows/a.yml;5' 'seq 5 >> bin/b;5' 'sed -i 1,3d .github/workflows/a.yml;-3' 'sed -i 1s/1/9/ .github/workflows/a.yml;0' 'printf "  # d\n\n" >> bin/b;0' 'sed -i /^#/d bin/b && echo x >> bin/b;1'; do
+          for c in 'seq 5 >> .github/workflows/a.yml;5' 'seq 5 >> bin/b;5' 'sed -i 1,3d .github/workflows/a.yml;-3' 'sed -i 1s/1/9/ .github/workflows/a.yml;0' 'printf "  # d\n\n" >> bin/b;0' 'sed -i /^#/d bin/b && echo x >> bin/b;1' 'seq 5 > .github/workflows/g.lock.yml && git add -A;0' 'printf ".github/workflows/*.lock.yml linguist-generated=true\\n" >> .gitattributes && seq 5 > .github/workflows/h.lock.yml && git add -A;5'; do
             (cd "$t" && eval "${c%;*}" && git -c user.name=t -c user.email=t@t commit -qam t && got=$(net HEAD~1 HEAD) && git reset -q --hard HEAD~1 && [ "$got" = "${c##*;}" ]) || { echo "self-test '${c%;*}' failed"; exit 1; }
           done
           f=${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY/"}; f=${f%@*}
