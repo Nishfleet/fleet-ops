@@ -10,7 +10,7 @@ trailing `&`: those die with the shell (fleet-ops#350) and launch with no dead-m
 
 One line, stock systemd, no wrapper script:
 
-    XDG_RUNTIME_DIR=/run/user/1000 systemctl --user start fleet-worker-github-token@<repo>.service && sudo systemd-run --uid=nish --gid=nish -p RuntimeMaxSec=<deadline-seconds> -p "EnvironmentFile=/run/user/1000/fleet-worker-github-token/<repo>.env" -p "TemporaryFileSystem=$HOME/.config/gh" -p 'ExecStartPre=/bin/sh -c '"'"'test -n "$GH_TOKEN"'"'"'' -E DELIVERABLE=<abs path> -p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"'' --unit <name> -- timeout --verbose <pi-seconds> sh -c 'cat <packet.md> | $HOME/.local/bin/pi --print --provider <provider> --model <model>'
+    XDG_RUNTIME_DIR=/run/user/1000 systemctl --user start fleet-worker-github-token@<repo>.service && sudo systemd-run --uid=nish --gid=nish -p RuntimeMaxSec=<seconds> -p "EnvironmentFile=/run/user/1000/fleet-worker-github-token/<repo>.env" -p "TemporaryFileSystem=$HOME/.config/gh" -p 'ExecStartPre=/bin/sh -c '"'"'test -n "$GH_TOKEN"'"'"'' -E DELIVERABLE=<abs path> -p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"'' --unit <name> -- sh -c 'cat <packet.md> | $HOME/.local/bin/pi --print --provider <provider> --model <model>'
 
 `<repo>` is the Nishfleet repo the worker targets.
 
@@ -21,18 +21,17 @@ One line, stock systemd, no wrapper script:
 - `ExecStartPre=` makes an empty token exit non-zero before any work.
 - `TemporaryFileSystem=` blanks the human gh login the way `agent.yml`'s jail does,
   so a worker cannot fall back to it.
-- `timeout <pi-seconds>` bounds the Pi run itself, because nothing else does:
-  pi exposes no per-request timeout (its `timeoutMs` is internal API, with no
-  CLI flag and no config key), so one model call that never returns holds the
-  whole process. Without it the only bound is `RuntimeMaxSec`, and the unit
-  burns its full wall at almost no CPU before systemd's SIGKILL leaves a
-  `Result=timeout` journal with no cause named in it — that is what fired
-  `SystemUnitFailed` on `fix-pr-10422.service` on 2026-10-27 (fleet-ops#10448).
-  Keep `<pi-seconds>` below `<deadline-seconds>`: the timeout is the death the
-  journal names (exit 124, plus `timeout: sending signal TERM to command 'sh'`
-  from `--verbose`), and `RuntimeMaxSec` stays the dead-man for a Pi that
-  ignores SIGTERM.
-- `RuntimeMaxSec=` is the deadline (systemd kills into `Result=timeout`).
+- `RuntimeMaxSec=` is the deadline and the Pi run's only bound: pi exposes no
+  per-request timeout, so one model call that never returns holds the whole
+  process until the deadline — that burned `fix-pr-10422.service`'s full hour at
+  14 s of CPU with no deliverable and fired `SystemUnitFailed` (fleet-ops#10448).
+  At the deadline systemd terminates the unit into `Result=timeout`: SIGTERM
+  first, SIGKILL after `TimeoutStopSec` (systemd.service(5)), and the journal
+  names the death: `Service reached runtime time limit. Stopping.` then
+  `Failed with result 'timeout'`. A second timer on the exec line is dead
+  weight: it never fires when the deadline fires first, and its journal line
+  never appears. To end a hung run sooner, set `RuntimeMaxSec=` to the wall the
+  run deserves.
 - The `ExecStopPost=` line is the deliverable check: a stop at exit 0 with no
   artifact becomes `Result=exit-code`, i.e. `failed`.
 
