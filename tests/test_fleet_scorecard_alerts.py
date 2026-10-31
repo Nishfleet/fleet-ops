@@ -246,7 +246,7 @@ def test_approval_rule_ignores_a_pull_request_with_no_approving_review():
 
 @pytest.mark.parametrize(
     "uid",
-    ["scorecard-idle-runners", "scorecard-verdict-slow", "scorecard-approval-slow"],
+    ["scorecard-idle-runners", "scorecard-verdict-slow", "scorecard-approval-slow", "scorecard-blocked-abandoned"],
 )
 def test_every_new_rule_files_one_issue_through_the_catch_all(uid):
     rule = _rules()[uid]
