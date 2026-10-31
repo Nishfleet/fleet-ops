@@ -330,7 +330,9 @@ ExecStart=/usr/bin/find %h/.pi/agent/skills -xtype l -printf "[fleet-sync] skill
 #    call then exited 0 with no output and nothing paged. Fail LOUD on any listed
 #    launch path (symlinks followed) whose bytes equal /bin/true. A failed unit is
 #    the page (OnFailure=). It runs on every deploy. Off switch: delete this step.
-ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/tincan /usr/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
+#    The runners' runsvc.sh too: on 2026-10-31 a hand-off's stub loop overwrote all
+#    thirty (fleet-ops#10537 session), and each runner died on its next restart.
+ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/tincan /usr/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes %h/.local/share/agent-runner/*/runsvc.sh %h/.local/share/fleet-ci-runner/*/runsvc.sh; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
 # 11. The deploy result as a metric (fleet-ops#9437). Nothing paged for a failed
 #    fleet-sync: its OnFailure= healthchecks.io ping is inert on a host without
 #    ~/.config/fleet-ops/keystone-hc.env, and node_exporter's systemd collector

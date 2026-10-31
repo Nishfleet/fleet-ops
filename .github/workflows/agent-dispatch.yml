@@ -566,8 +566,10 @@ jobs:
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
       # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
+      # Ten infra endings (the provider's 429s and walls, fleet-ops#11166) escalate too, so a real fault reaches the owner.
       # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran
       # for an hour). The sweep runs hourly, so a quiet priority item re-fires within the hour.
+      # Strikes count from the sweep's last escalation comment: clearing needs-nish-decision resets them.
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -579,11 +581,12 @@ jobs:
           REQUEUE: |
             [.[] | (.labels | map(.name)) as $l
               | select((any($l[]; IN("needs-nish-decision", "agent-blocked")) | not) and (.updatedAt | fromdateiso8601) < $now - (if ($l | index("priority-now")) != null then 1800 else 21600 end)
-                and (($l | index("handoff-ended") != null) != ($l | index("needs-orchestrator") != null)) and ("orch/issue-\(.number)" | IN($prs[]) | not))
+                and (($l | index("handoff-ended") != null) != ($l | index("needs-orchestrator") != null)) and ("orch/issue-\(.number)" | IN($prs[]) | not)) | .comments |= .[([to_entries[] | select((.value.author.login | IN("github-actions", "github-actions[bot]")) and (.value.body | test("^orchestrator: needs Nish\\."))) | .key] | max // -1) + 1:]
               | {number, ended: ($l | index("handoff-ended") != null), prio: (($l | index("priority-now")) != null), runs: [.comments[]
                 | select((((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login == "nishfleet-worker")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
-                  or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
-              | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
+                  or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body],
+                infra: [.comments[] | select((((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login == "nishfleet-worker")) and (.body | startswith("orchestrator hand-off ended on infrastructure: ")))) | .body]}
+              | .act = (if (.runs | length) >= 3 or (.infra | length) >= 10 then "escalate" else "requeue" end)]
             | [.[] | select(.act == "escalate")] + ([.[] | select(.act == "requeue")] | sort_by(if .prio then 0 else 1 end))[:([12 - $queued, 0] | max)] | .[]
         run: |
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
@@ -599,7 +602,7 @@ jobs:
               n=$(jq -r .number <<<"$r")
               if [ "$(jq -r .act <<<"$r")" = escalate ]; then
                 gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-nish-decision || echo "::warning::#$n: escalation refused"
-                gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator: needs Nish. Three hand-offs ended without a PR or went idle again: $(jq -r '.runs | map(sub("^[^:]*: "; "")) | join(", ")' <<<"$r")" || echo "::warning::#$n: escalation comment refused"
+                gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator: needs Nish. Three hand-offs ended without a PR, ten on the provider's infrastructure, or it went idle again: $(jq -r '(.runs + .infra) | map(sub("^[^:]*: "; "")) | join(", ")' <<<"$r")" || echo "::warning::#$n: escalation comment refused"
               elif [ "$(jq -r .ended <<<"$r")" = true ]; then
                 GH_TOKEN="${LABEL_TOKEN:-}" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label handoff-ended --add-label needs-orchestrator || echo "::warning::#$n: re-queue refused"
               else
@@ -971,6 +974,21 @@ jobs:
           # record of a reserved call, not a queue state. An empty list makes the
           # edit fail and || true swallows it, the same net effect as skipping.
           gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","handoff-ended"))] | join(",")')" || true
+          # A closed issue frees what it blocked (fleet-ops#9278 item 6). GitHub's
+          # dependency gate skips an issue while it has an open blocker, but a close
+          # does not remove a park label, so an agent-blocked dependent stayed parked
+          # with no event left to free it (#10162, #9324: blocker closed, label still
+          # on). Requeue only when the dependency was the whole block: any park label
+          # that records a decision, or a worker's own park note, means a second
+          # reason is live and the label is not this close's to remove.
+          deps=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$ISSUE/dependencies/blocking" --jq '.[] | select(.state == "open") | .number') || echo "::warning::could not read the issues #$ISSUE blocks"
+          for d in ${deps:-}; do
+            row=$(gh api "repos/$GITHUB_REPOSITORY/issues/$d" --jq '"\(.issue_dependencies_summary.blocked_by) \(any(.labels[]; .name == "agent-blocked")) \(any(.labels[]; .name | IN("needs-split","needs-orchestrator","needs-nish-decision","needs-coordinator","handoff-ended","epic")))"') || row=
+            [ "$row" = "0 true false" ] || { [ -n "$row" ] || echo "::warning::could not read dependent #$d"; continue; }
+            notes=$(gh api --slurp --paginate "repos/$GITHUB_REPOSITORY/issues/$d/comments" --jq '[.[][].body | select(test("(^|\\n)(proposal|blocked-on|park):"))] | length') || notes=
+            [ "$notes" = 0 ] || { [ -n "$notes" ] || echo "::warning::could not read dependent #$d park notes"; continue; }
+            gh issue edit "$d" -R "$GITHUB_REPOSITORY" --remove-label agent-blocked --add-label agent-ready || echo "::warning::could not requeue dependent #$d"
+          done
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
@@ -1351,6 +1369,7 @@ jobs:
           fi
           echo "worktree=$wt" >> "$GITHUB_OUTPUT"
       - name: Run the orchestrator session
+        id: session
         if: steps.issue.outputs.go == 'true' && steps.worktree.outputs.worktree != ''
         # 75, not 50 (fleet-ops#11059): 31 of the 67 failed agent-dispatch runs in the week to 2026-10-29
         # were this step's kill, 28 of the 32 failing orchestrate jobs ran at least 45 of the 50 minutes,
@@ -1391,33 +1410,36 @@ jobs:
           if [ "$ORCH_RUNNER" = pi ]; then
             # No Claude spend and no turn cap: the step's timeout-minutes is the wall
             # (fleet-ops#10349).
-            FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" \
-              "${jail[@]}" "$HOME/.local/bin/pi" --print \
-              --provider litellm --model "${SEAT:-worker-capable}" \
-              < "$RUNNER_TEMP/orchestrator-prompt.md"
-            exit 0
+            engine=(env FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" "${jail[@]}" "$HOME/.local/bin/pi" --print --provider litellm --model "${SEAT:-worker-capable}")
+          else
+            # The repo's hooks only spend turns here; ORCHESTRATE_HOOKS=on keeps them.
+            hook_args=(--settings '{"disableAllHooks":true}')
+            [ "$HOOKS" != on ] || hook_args=()
+            # Start-up trim: 51,407 input tokens and $0.334 untrimmed, 36,440 and
+            # $0.146 trimmed (VPS, bare prompt, cold cache).
+            # shellcheck disable=SC2054 # the flag's value is the one token "project,local"
+            engine=("${jail[@]}" "$HOME/.local/bin/claude" -p --model "$MODEL" "${hook_args[@]}" --strict-mcp-config --disable-slash-commands --setting-sources project,local --output-format json --permission-mode bypassPermissions --max-turns "$TURNS")
           fi
-          # The repo's hooks only spend turns here; ORCHESTRATE_HOOKS=on keeps them.
-          hook_args=(--settings '{"disableAllHooks":true}')
-          [ "$HOOKS" != on ] || hook_args=()
-          # Start-up trim: 51,407 input tokens and $0.334 untrimmed, 36,440 and
-          # $0.146 trimmed (VPS, bare prompt, cold cache).
-          "${jail[@]}" "$HOME/.local/bin/claude" -p \
-            --model "$MODEL" \
-            "${hook_args[@]}" \
-            --strict-mcp-config \
-            --disable-slash-commands \
-            --setting-sources project,local \
-            --output-format json \
-            --permission-mode bypassPermissions \
-            --max-turns "$TURNS" \
-            < "$RUNNER_TEMP/orchestrator-prompt.md"
+          # The engine runs as its own process group, and the step kills that group
+          # once the engine returns: a dev server the session backgrounded must not
+          # outlive it (four orphaned wrangler stacks plus the job's own dev
+          # server from one orchestrator job, fleet-ops#11140). The TERM-to-KILL
+          # pair covers a child that ignores TERM.
+          setsid "${engine[@]}" < "$RUNNER_TEMP/orchestrator-prompt.md" > >(tee "$RUNNER_TEMP/orchestrator.log") 2>&1 &
+          engine_pid=$!
+          trap 'kill -TERM "-$engine_pid" 2>/dev/null || true' EXIT
+          status=0
+          wait "$engine_pid" || status=$?
+          kill -TERM "-$engine_pid" 2>/dev/null || true
+          sleep 3; kill -KILL "-$engine_pid" 2>/dev/null || true
+          exit "$status"
       - name: Clean up and mark a PR-less hand-off
         if: always()
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}  # the App token, never the runner login (fleet-ops#10949)
           # Through env: zizmor template-injection, as with WORKTREE above.
           GO: ${{ steps.issue.outputs.go }}
+          SESSION_OUTCOME: ${{ steps.session.outcome }}
         run: |
           set -euo pipefail
           # shellcheck disable=SC2153 # REPO is the job-level env, not a misspelling
@@ -1475,6 +1497,15 @@ jobs:
           # The pattern is later-sweep's own, so one line decides what "due" means in both places.
           due=$(gh issue view "$ISSUE" -R "$REPO" --json body --jq .body | jq -Rse --argjson now "$(date +%s)" '((try (capture("(?m)^due:[ \t]*(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})[ \t]+(?<t>[0-9]{2}:[0-9]{2})[ \t]+[Ii][Ss][Tt]") | .d + "T" + .t + ":00Z" | fromdateiso8601) catch null) // 0) - 19800 > $now') || due=false
           label=handoff-ended color=BFD4F2 desc="Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h" note="orchestrator hand-off ended without a PR: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+          # An ending the provider owns is no strike (fleet-ops#11166): the sweep counts
+          # only "orchestrator hand-off ended without a PR: ", so an ending with this
+          # other prefix re-queues the issue; ten of them still escalate, so a real fault
+          # or a looping issue reaches the owner. Only the last 2000 bytes of the session
+          # output are read, because a session that died on a router error ends on it,
+          # while one that merely quoted a 429 from the issue text on its way to another
+          # failure does not. Only a crash ("failure") or the job wall ("cancelled") is
+          # read: a session that ended on its own is the work's ending, whatever it said.
+          if { [ "$SESSION_OUTCOME" = failure ] || [ "$SESSION_OUTCOME" = cancelled ]; } && tail -c 2000 "${RUNNER_TEMP:-}/orchestrator.log" 2>/dev/null | grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|insufficient balance|model is unavailable|\b429\b'; then note="orchestrator hand-off ended on infrastructure: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"; fi
           if [ "$due" = true ]; then label=on-hold color=EDDEDD desc="Parked until the issue's due: date; later-sweep promotes it" note="orchestrator: on hold until the due date in this issue; nothing can be built before it, so this hand-off stops here and later-sweep promotes it then"; fi
           # These writes need issues: write, which the App token holds.
           # --force makes the label idempotent on a newly stubbed repo (drive#199).

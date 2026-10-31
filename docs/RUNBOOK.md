@@ -250,6 +250,20 @@ use instead.
   `no answer from GitHub`, `gh` lost its login or GitHub was unreachable, and
   the pin is not the problem: re-run the playbook.
 
+## The runner tree is bound per unit (fleet-ops#11484)
+
+A job on `actions.runner.Nishfleet.netcup-agent-<N>` sees only
+`~/.local/share/agent-runner/<N>` writable: the pooled
+`20-lockdown.conf` binds `agent-runner/%j` with `%j` = "the final component of
+the prefix" (systemd.unit(5)), so `20` for `-20.service`. The bind used to name
+`agent-runner` whole, and on 2026-10-31 a job overwrote all 30 runners'
+`runsvc.sh` through it, which took the pool offline until each was restored from
+its own `bin/runsvc.sh`. A runner's self-update and restarts are unaffected:
+`bin.<ver>`/`externals.<ver>` and their links live in the runner's own dir.
+`test_the_agent_pool_binds_only_each_runners_own_dir` in
+`tests/test_runner_jail_start_state.py` fails the PR if the line is widened;
+detection that catches it live is `fleet-sync`'s STUB-GUARD (fleet-ops#11483).
+
 ## Dashboards and the CI runner flip
 
 `systemctl --user is-active fleet-grafana.service` prints `active`. The service is
@@ -328,7 +342,11 @@ a file went stale and every delivery answered `401 Bad credentials` for days.
 key, asks the REST API for an installation token limited to `Nishfleet/fleet-ops` and
 `issues:write`, writes it to `$XDG_RUNTIME_DIR/fleet-grafana-github-token/token` (tmpfs,
 0700 dir, 0600 file) and starts `fleet-grafana-provisioning.service`, the stock admin-API
-reload above. The contact points read the file with Grafana's `$__file{}`, which is
+reload above — guarded, so the reload lands only when the token Grafana has loaded
+(`$__file{}` froze it) has run down to one mint interval left: Grafana drops an
+in-flight dispatch when a reload applies, and the guard reloads at every second mint
+instead of every one, with a lost or unreadable ledger reloading once more
+(fleet-ops#11441, same cause as #11426). The contact points read the file with Grafana's `$__file{}`, which is
 re-read on every provisioning load. Wire once after merge (README "Wiring a NEW unit"):
 `systemctl --user link` both files, `systemctl --user daemon-reload`, `systemctl --user
 enable --now fleet-grafana-github-token.timer`, then restart `fleet-grafana.service` once so
