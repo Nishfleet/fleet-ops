@@ -165,6 +165,15 @@ which is how two merges on 2026-10-22 reached no deploy for 40 min (fleet-ops#10
 
 ### ratchet.yml: how the rule reaches every repo
 
+Generated files (owner, 2026-10-31: "whatever pro ai devs do"): the count skips
+`.github/workflows/*.lock.yml` files that `.gitattributes` marks `linguist-generated=true`,
+the compiled output of GitHub Agentic Workflows (`gh aw compile`). GitHub's own linguist
+marker hides such files from diffs and language stats, and gh-aw's docs review the `.md`
+source instead. The `.md` source is the authored workflow and still counts. Only that one
+path pattern qualifies, so marking any other file generated does not take it out of the
+count. The self-test pins both cases.
+
+
 A repo's job `ratchet` calls this `@main` and requires `ratchet / ratchet`. The rule runs from
 main, so a PR that edits that job fails its own check. The org ruleset in
 `config/org-ruleset.json` requires this file in every repo, and a ruleset runs a file only if it
