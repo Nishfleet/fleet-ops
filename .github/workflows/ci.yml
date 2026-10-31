@@ -297,7 +297,8 @@ jobs:
           real_home=$(getent passwd "$(id -u)" | cut -d: -f6)
           test -n "$real_home"
           tmp_home=$(mktemp -d)
-          export HOME="$tmp_home" RUNNER_TEMP="$tmp_home/runner-temp" CREDENTIALS_DIRECTORY="$tmp_home/.cred-store/nishfleet-agent"; cred_flags="--tmpfs $tmp_home/.cred-store/nishfleet-agent --tmpfs $tmp_home/.cred-store"; sibling="$tmp_home/.cred-store/nishfleet-agent-2"
+          export HOME="$tmp_home" RUNNER_TEMP="$tmp_home/runner-temp" CREDENTIALS_DIRECTORY="$tmp_home/.cred-store/nishfleet-agent"; cred_flags="--tmpfs $tmp_home/.cred-store/nishfleet-agent --tmpfs $tmp_home/.cred-store"; sibling="$tmp_home/.cred-store/nishfleet-agent-2"; hermes_mask=$([ -d /run/fleet-hermes-github-token ] && printf -- '--tmpfs /run/fleet-hermes-github-token' || true)
+          # agent.yml's jails mask Hermes' token dir only where the runner unit painted it (fleet-ops#10267), so the drill runs agent.yml's own definition; a hosted runner has no such dir, so it stays empty here.
           if [ "$HOME" = "$real_home" ] || [ -z "$HOME" ]; then echo "refusing to run against the real home directory"; exit 1; fi
           # On the runner the App key is a systemd credential, so a jail must hide the
           # credential directory the same way it hides $HOME/.config/fleet-worker.
@@ -341,7 +342,7 @@ jobs:
             test -n "$line"
             # The line's own variables expand. No eval of file text. bwrap refuses
             # an unexpanded token, so a line that keeps one fails here.
-            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}; exp=${exp//\$RUNNER_TEMP/$RUNNER_TEMP}; exp=${exp//\$cred_hide/$cred_flags}
+            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}; exp=${exp//\$RUNNER_TEMP/$RUNNER_TEMP}; exp=${exp//\$cred_hide/$cred_flags}; exp=${exp//\$hermes_mask/$hermes_mask}
             read -ra jail <<< "$exp --"
             "${jail[@]}" test -r "$HOME/.config/control" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key" -a ! -e "$sibling/planted-key"
             # No engine but claude can read either Claude seat's login: the bound
@@ -366,7 +367,7 @@ jobs:
           test "$sealed" -ge 1
           # The claude lane sees its own seat and only that one.
           for v in a b; do
-            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}; l=${l//\$RUNNER_TEMP/$RUNNER_TEMP}; l=${l//\$cred_hide/$cred_flags}
+            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}; l=${l//\$RUNNER_TEMP/$RUNNER_TEMP}; l=${l//\$cred_hide/$cred_flags}; l=${l//\$hermes_mask/$hermes_mask}
             read -ra jail <<< "$l --"
             "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key" -a ! -e "$sibling/planted-key"
             "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"

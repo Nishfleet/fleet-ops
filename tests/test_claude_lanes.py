@@ -591,7 +591,7 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
         line = lines[name].replace("$HOME", str(home)).replace("$seat_a", str(jail_seat))
         for k, v in sub.items():
             line = line.replace("$" + k, v)
-        line = line.replace("$RUNNER_TEMP", str(runner_temp))
+        line = line.replace("$RUNNER_TEMP", str(runner_temp)).replace("$hermes_mask", "")  # empty in this fake home: the dir exists only where a runner unit paints it
         assert opt in line, name
         # cred_dir=None is the runner whose unit mounts no credential dir: the jail
         # hides nothing there and still starts.
