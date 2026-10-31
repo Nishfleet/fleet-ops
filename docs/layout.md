@@ -159,8 +159,8 @@
   bundled `cua` binary. Run one by hand with `systemctl --user start <unit>`: all
   three are enabled already, and a unit edit applies at that unit's next restart.
   Off switch, one unit at a time:
-  `systemctl --user disable --now tincan-listen-fleet-worker.service`
-  `systemctl --user disable --now tincan-listen-pi.service`
+  `sudo systemctl disable --now tincan-listen-fleet-worker.service`
+  `sudo systemctl disable --now tincan-listen-pi.service`
   `systemctl --user disable --now cua-desk-daemon.service`
   Delete a wake service by deleting its file here and the installed copy, then
   `systemctl --user daemon-reload`. Delete the desk daemon with
