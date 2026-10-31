@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-UNIT = ROOT / "systemd/tincan-listen-issue-desk.service"
+UNIT = ROOT / "rootfs/etc/systemd/system/tincan-listen-issue-desk.service"
 LATER_SWEEP = ROOT / "systemd/later-sweep.service"
 EXTENSION = ROOT / "pi-extensions/issue-desk"
 PROMPT = ROOT / "prompts/issue-desk.md"
