@@ -351,7 +351,11 @@ ExecStopPost=-/bin/sh -c 'r=0; [ "$$SERVICE_RESULT" = success ] || r=1; { echo "
 # 12. Last, so a failure here cannot skip the steps above it (a failed ExecStart
 #     stops the chain). The packages key of ~/.pi/agent/settings.json is
 #     repo-owned (config/pi-packages.json, fleet-ops#9302): a pin change is a
-#     PR, not a hand edit on the host. Merge, not copy: pi rewrites the file's
+#     PR, not a hand edit on the host. The five pins are a byte-copy of the
+#     live file read on 2026-10-30: the host already runs pi-runner-guard and
+#     pi-grok / pi-mcp-adapter at the pins issue #9302's four-entry snapshot
+#     predates, so the first merge installs nothing new. Merge, not copy:
+#     pi rewrites the file's
 #     own bookkeeping keys at runtime (fleet-ops#8568), so jq's object merge
 #     takes only .packages from the repo file and leaves every other key as pi
 #     wrote it. cmp guard, same as 7: a merge that changes nothing writes
@@ -360,7 +364,7 @@ ExecStopPost=-/bin/sh -c 'r=0; [ "$$SERVICE_RESULT" = success ] || r=1; { echo "
 #     keeps its mode. Every failure (a missing or unparsable file) exits
 #     non-zero and fails the unit loud; recovery is `echo '{}' >
 #     ~/.pi/agent/settings.json` and a re-run of fleet-sync.
-ExecStart=/bin/sh -c 't=%h/.pi/agent/.settings.json.sync; jq -s ".[0] * .[1]" %h/.pi/agent/settings.json %h/workspaces/tooling/fleet-ops-deploy-clone/config/pi-packages.json > "$$t" && chmod --reference=%h/.pi/agent/settings.json "$$t" && { cmp -s "$$t" %h/.pi/agent/settings.json || mv "$$t" %h/.pi/agent/settings.json; }; r=$$?; rm -f "$$t"; exit $$r'
+ExecStart=/bin/sh -c 't=%h/.pi/agent/.settings.json.sync; /usr/bin/jq -s ".[0] * .[1]" %h/.pi/agent/settings.json %h/workspaces/tooling/fleet-ops-deploy-clone/config/pi-packages.json > "$$t" && chmod --reference=%h/.pi/agent/settings.json "$$t" && { cmp -s "$$t" %h/.pi/agent/settings.json || mv "$$t" %h/.pi/agent/settings.json; }; r=$$?; rm -f "$$t"; exit $$r'
 # /etc/hosts carries a static `127.0.0.1 litellm.fleet.local` line
 # (fleet-ops#8259). An earlier fleet-sync step appended it once; it is a
 # one-time host setting, not a per-tick deploy action (fleet-ops#8584).
