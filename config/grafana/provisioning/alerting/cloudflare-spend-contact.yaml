@@ -141,9 +141,34 @@ policies:
     group_interval: 5m
     repeat_interval: 24h
     routes:
+      # fleet-ops#11497: the session-hop rules repeat at 6h, the rate rule's
+      # own window, not the tree's 1h critical default. A one-hour burst holds
+      # the rate condition true until the 6h window drains past the burst
+      # hour (~21600s after the hour starts), so at 1h one incident paged six
+      # or seven times after the leak had already been caught; the rule's own
+      # history asked for #9411's fix, not another hourly page. 6h covers
+      # that: a burst incident pages at detection and at most one echo while
+      # the window drains (a leak still firing pages every 6h, four a day).
+      # The volume rule (same signal) inherits the same repeat while it stays
+      # firing blind. Every other critical rule keeps the <=1h contract
+      # alert_routes_check.py's CRITICAL_REPEAT enforces; this route is why
+      # they carry [signal, !=, session-hop]. The walk continues to the
+      # catch-all, so the session-hop issue filing keeps its 24h cadence
+      # below.
       - receiver: hermes-urgent
         object_matchers:
           - [severity, "=", critical]
+          - [signal, "=", session-hop]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: [alertname]
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 6h
+        continue: true
+      - receiver: hermes-urgent
+        object_matchers:
+          - [severity, "=", critical]
+          - [signal, "!=", session-hop]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
         group_by: [alertname, repo, product, resource, model_id, plan, requested_model]
         group_wait: 0s

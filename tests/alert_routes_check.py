@@ -3,7 +3,8 @@
 Only a real outage, a money problem, or something only Nish can act on may reach
 hermes-urgent (Telegram); every other rule reaches the fleet as an issue. Every
 rule carries a severity label: critical for the rules in URGENT (they page again
-at least hourly until they resolve), warning for every other rule (never pages).
+at least hourly until they resolve; session-hop repeats at 6h instead, its own
+window — fleet-ops#11497), warning for every other rule (never pages).
 Every firing alert, whatever its severity, also reaches a webhook that files a
 fleet-ops issue. No rule may set its own notification_settings, which would
 bypass the policy tree. This reads the provisioning files, walks the policy tree
@@ -77,6 +78,7 @@ URGENT = {
 PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")
 CRITICAL_REPEAT = 3600
+HOP_REPEAT = 21600
 ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch", "router-dead-key-dispatch", "prometheus-alert-dispatch", "nish-ask-dispatch"}
 GENERIC_SINK = "fleet-alert-dispatch"
 ISSUE_URL = "https://api.github.com/repos/Nishfleet/fleet-ops/issues"
@@ -810,9 +812,22 @@ def main(root):
                 bad.append(f"{title} ({alertname}): no webhook that files a fleet-ops issue")
         if PAGE in reached_any:
             paging[title] = sorted(reached_any)
+        repeat_cap = HOP_REPEAT if labels.get("signal") == "session-hop" else CRITICAL_REPEAT
         pages = [rep for rc, rep in route(policy, {**labels, "alertname": title}) if rc == PAGE]
-        if severity == "critical" and (not pages or any(rep is None or rep > CRITICAL_REPEAT for rep in pages)):
-            bad.append(f"{title}: critical alert must page {PAGE} with repeat_interval <= {CRITICAL_REPEAT}s, got {pages}")
+        if severity == "critical" and (not pages or any(rep is None or rep > repeat_cap for rep in pages)):
+            bad.append(f"{title}: critical alert must page {PAGE} with repeat_interval <= {repeat_cap}s, got {pages}")
+        if labels.get("signal") == "session-hop" and severity == "critical" and pages and all(p is not None for p in pages):
+            fastest = min(pages)
+            count = 1 + repeat_cap // fastest
+            if count > 2:
+                bad.append(f"{title}: one burst pages {count} times as the {repeat_cap}s window drains "
+                           f"on the {fastest}s repeat, not <=2 (fleet-ops#11497)")
+            print(f"burst: {title} stays firing about {repeat_cap}s after the burst hour starts "
+                  f"(the rate rule's lookback); the {fastest}s repeat pages at "
+                  + ", ".join(f"+{k * fastest}s" for k in range(count))
+                  + " (the last one races the resolve) "
+                  + f"-> {count} page(s) (the shared {CRITICAL_REPEAT}s "
+                  + f"cadence was {1 + repeat_cap // CRITICAL_REPEAT}) (fleet-ops#11497)")
         sinks = {rc.removesuffix("#muted"): rep for rc, rep in route(policy, {**labels, "alertname": title})}
         want = PLAN_REPEAT if "plan" in labels else DEFAULT_REPEAT
         got = sinks.get(GENERIC_SINK)
@@ -857,7 +872,7 @@ def main(root):
         for b in bad:
             print(f"::error::{b}")
         return 1
-    print(f"{len(paging)} of {len(rules)} rules can page (critical, every <=1h); the other {len(rules) - len(paging)} are warning and reach the fleet only; every rule files a fleet-ops issue")
+    print(f"{len(paging)} of {len(rules)} rules can page (critical, default <=1h, session-hop 6h); the other {len(rules) - len(paging)} are warning and reach the fleet only; every rule files a fleet-ops issue")
     print(f"alertmanager: the options require {AM_WEB_CONFIG}, and both Prometheus paths read {AM_AUTH_FILE} from a host-only file")
     return 0
 
