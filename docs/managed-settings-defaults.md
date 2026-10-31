@@ -26,14 +26,17 @@ names the directory, and a command that reaches the same file by a relative path
 (`cd ~/.config && cat fleet-ops/seats/x`) names no denied substring. A reader that hides
 the path altogether gets past every rule that could name it: `cd ~/.config && python3 -c
 "open('fleet-ops/seats/x').read()"` reached the filesystem, so no pattern could match (fleet-ops#11114).
-Closing that hole is the file mode, not another pattern (fleet-ops#11114):
-ansible/tasks/secrets.yml keeps `~/.config/fleet-ops/seats` at 0700 and every `.env` under it
-at 0600 on every apply — 0600, not the issue's 0400, because a seat file edited by hand is
-written in place by a shell redirect as nish, and group and other are what the guard denies;
-it runs as nish, so a planted symlink cannot steer a root chmod. ansible/tasks/final-checks.yml
-fails the deploy naming any file or the directory where a group or other bit is set. The Bash
-rules stay: they deny a command that only mentions the path, and they still stop a reader whose
-file permissions let it through.
+The file mode this playbook now holds closes that hole only for the other uids — runner users,
+jailed engines outside the hides, other local accounts: ansible/tasks/secrets.yml keeps
+`~/.config/fleet-ops/seats` at 0700 and every `.env` under it at 0600 on every apply — 0600, not
+the issue's 0400, because a seat file edited by hand is written in place by a shell redirect as
+nish, and group and other are what the mode denies — and it runs as nish, so a planted symlink
+cannot steer a root chmod. ansible/tasks/final-checks.yml fails the deploy naming any file or the
+directory whose mode or owner drifts. A process already reading as nish gets past both: no string
+rule can name the built path, and no file mode binds the reader's own uid, so that hole stays open
+in Nishfleet/fleet-ops#11320, whose control is the issue's option 2, a sandbox for interactive
+sessions, or a per-seat uid. The Bash rules stay: they bind the command text, they deny a command
+that only mentions the path, and they hold the rule boundary they have held.
 
 - Verify: `cmp /etc/claude-code/managed-settings.json
   rootfs/etc/claude-code/managed-settings.json` is silent (the box copy is the
