@@ -31,10 +31,10 @@ now in `main.tf`, so the weekly apply no longer destroys it; `seo-fix-kit` is ne
 | `0509-reports` | 0509 | `CLOUDFLARE_API_TOKEN` (repo) | D1 Read, Workers Scripts Read, Account Analytics Read | none | GitHub-hosted (`e2e-scheduled.yml` backup-proof, jev-failures, soak-report; `evals.yml`) | none |
 | `0509-settings` | 0509 | `CLOUDFLARE_SETTINGS_TOKEN` (repo) | Workers R2 Storage Write | Zone Read, Email Routing Rules Write | GitHub-hosted (`cloudflare-settings.yml`) | none |
 | `0509-support-inbox` | mailbox | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
-| `siterep-public` | siterep-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
-| `TinyStudio.io-public` | TinyStudio.io-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Workers R2 Storage Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
+| `siterep-public` | siterep-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
+| `TinyStudio.io-public` | TinyStudio.io-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Workers R2 Storage Write, D1 Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
 | `inish-site` | inish-site | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`ci.yml` deploy job) | none |
-| `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, Account Settings Read | none | GitHub-hosted (`deploy.yml`) | none |
+| `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, D1 Write, Account Settings Read | none | GitHub-hosted (`deploy.yml`, `d1-export.yml`) | none |
 | `seo-fix-kit` | seo-fix-kit | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`: D1 migrations apply, `wrangler deploy` with custom domains and a queue consumer) | none |
 | `fleet_console` | fleet-console-worker | `CLOUDFLARE_API_TOKEN` (repo), plus a repo `CLOUDFLARE_ACCOUNT_ID` | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
 | `vps-grafana` | the VPS (no repo) | `CLOUDFLARE_API_TOKEN` in `~/.config/cloudflare/deploy-ci.env`, a 0600 file (no GitHub secret) | Account Analytics Read | none | the VPS host: Grafana's `fleet-cloudflare` data source, the Cloudflare cost alarm (fleet-ops#9355) | VPS addresses (`vps_only`) |
@@ -233,7 +233,26 @@ vps_cidrs = ["<ipv4>/32", "<ipv6>/128"]
 
 Read the addresses on the box with `curl -4 -s ifconfig.me` and
 `curl -6 -s ifconfig.me`. Place the file before the first apply that includes
-`vps-grafana`. The `precondition` on the token resource stays: with `vps_only =
+`vps-grafana`.
+
+**The apply checks the file against the host.** The unit's `ExecStartPre` reads
+the host's current addresses from the same two sources and fails the unit
+before the apply when a current address is not in the file: an address change
+otherwise leaves the apply succeeding with a token locked to dead addresses
+(fleet-ops#10969), and Grafana's Cloudflare queries fail while the renewal
+stays green. When the check fails, refresh the file in one command and start
+the unit again:
+
+```sh
+printf 'vps_cidrs = ["%s/32", "%s/128"]\n' "$(curl -4 -s ifconfig.me)" "$(curl -6 -s ifconfig.me)" > ~/.config/cloudflare/vps-cidrs.tfvars
+```
+
+If the host's egress address changes for good, this one command is the whole
+fix: a changed `vps_cidrs` is a change to the token resource, so the next apply
+mints `vps-grafana` locked to the fresh addresses, and an unchanged file
+changes nothing on a healthy apply.
+
+The `precondition` on the token resource stays: with `vps_only =
 true` and an empty `vps_cidrs`, the plan fails (fail-closed) instead of minting
 an unlocked token. That failure stops the whole apply, so no other token is
 renewed either; it is loud (the unit's `OnFailure=` fires the healthchecks fail

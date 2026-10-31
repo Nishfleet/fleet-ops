@@ -4,7 +4,9 @@ InaccessiblePaths= hides a path only if it exists at the moment the unit starts.
 user services create later stays visible to jobs until the runner restarts. The agent runner
 drop-in therefore starts after the user manager and creates the runtime dirs that user
 services would otherwise make later. The fleet-ci and vault runner drop-ins do the same
-(fleet-ops#10120).
+(fleet-ops#10120). A drop-in that hides `/run/user` or `/run/user/1000` whole covers
+every recreation of what sits under it instead (fleet-ops#11232), so the pre-start
+maker is gone there.
 """
 
 import re
@@ -17,6 +19,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM = ROOT / "rootfs/etc/systemd/system"
+AGENT_WORKFLOW = ROOT / ".github/workflows/agent.yml"
+DISPATCH_WORKFLOW = ROOT / ".github/workflows/agent-dispatch.yml"
+HOME = "/home/nish"
 AGENT_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-agent-.service.d"
 FLEET_CI_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-.service.d"
 VAULT_DIR = SYSTEM / "actions.runner.nish3451-nish-vault.netcup-vault-1.service.d"
@@ -30,6 +35,7 @@ POOLS = {
 pool = pytest.mark.parametrize("start_conf,lockdown_conf", POOLS.values(), ids=POOLS.keys())
 USER_UNIT_DIRS = [ROOT / "systemd", ROOT / "rootfs/etc/systemd/user"]
 USER_RUN = "/run/user/1000/"
+KEY = "nishfleet-worker.private-key.pem"
 
 
 def values(text: str, key: str) -> list[str]:
@@ -83,11 +89,20 @@ def pre_created(agent_text: str) -> dict[str, str]:
 
 
 def uncovered(lockdown_text: str, agent_text: str, unit_dirs: list[Path]) -> list[str]:
-    """Hidden user-runtime paths that a user service creates later and the runner does not pre-create."""
+    """Hidden user-runtime paths that a user service creates later and the runner does not pre-create.
+
+    A hide of `/run/user` or `/run/user/1000` whole replaces the pre-start maker: everything
+    that appears under it later, across delete + recreate, is covered by the anchor mount
+    (fleet-ops#11232), so those pools pass with no ExecStartPre= at all.
+    """
     later = runtime_dirs_of_user_units(unit_dirs)
     made = pre_created(agent_text)
+    parents = {Path(t.lstrip("-")) for v in values(lockdown_text, "InaccessiblePaths") for t in shlex.split(v)}
+    covered = Path("/run/user") in parents or Path("/run/user/1000") in parents
     bad = []
     for name in sorted(masked_user_run_names(lockdown_text) & set(later)):
+        if covered:
+            continue
         mode, preserved = later[name]
         made_mode = made.get(USER_RUN + name)
         if made_mode is None:
@@ -166,6 +181,38 @@ def pre_start_paths_under_hidden_dir(dirs: list[Path]) -> list[str]:
     return bad
 
 
+def jailed_home_paths(workflow_text: str) -> set[Path]:
+    """Every `$HOME/...` path a workflow's jails mask with an empty tmpfs, as an absolute path."""
+    masked = set()
+    for line in workflow_text.splitlines():
+        if not line.strip().startswith(("jail_base=", "claude_jail_a=", "claude_jail_b=", "jail=(bwrap")):
+            continue
+        for rel in re.findall(r'--tmpfs "?\$HOME/([^\s"]+)', line):
+            masked.add(Path(HOME) / rel)
+    return masked
+
+
+def created_on_start(lockdown_text: str) -> set[Path]:
+    """Paths the runner's own drop-in makes exist at unit start: bind mount points and tmpfs mounts."""
+    made = set()
+    for key in ("BindPaths", "BindReadOnlyPaths", "TemporaryFileSystem"):
+        for value in values(lockdown_text, key):
+            for token in shlex.split(value):
+                made.add(Path(token.lstrip("-+").split(":")[0]))
+    return made
+
+
+def unmountable_jail_paths(lockdown_text: str, masked: set[Path]) -> list[str]:
+    """Jailed home paths that do not exist when the runner starts, so bwrap's --tmpfs cannot mkdir them.
+
+    The runner's home is an empty tmpfs and every path systemd creates in it for its own mounts is
+    root-owned, so the jailed user cannot make a directory beside them (fleet-ops#11097). Ownership is
+    not modelled: a writable tmpfs at a parent of the masked path counts as unmountable, which errs safe.
+    """
+    made = created_on_start(lockdown_text)
+    return [str(p) for p in sorted(masked) if not any(m == p or p in m.parents for m in made)]
+
+
 def test_no_runner_pre_start_step_runs_under_a_directory_the_runner_hides() -> None:
     units = runner_units()
     assert len(units) >= 5, "the runner drop-in dirs were not found"
@@ -195,6 +242,22 @@ def test_gate_fails_when_a_pre_start_mkdir_sits_under_a_hidden_parent(tmp_path: 
     assert pre_start_paths_under_hidden_dir([shared, own]) == []
 
 
+def test_every_home_path_the_agent_jails_mask_can_be_mounted() -> None:
+    jails = jailed_home_paths(AGENT_WORKFLOW.read_text()) | jailed_home_paths(DISPATCH_WORKFLOW.read_text())
+    # A parser that reads no line would leave the gate green with nothing checked, so pin what it reads.
+    assert {Path(HOME, ".config", "gh"), Path(HOME, ".config", "cloudflare")} <= jails
+    assert unmountable_jail_paths((AGENT_DIR / "20-lockdown.conf").read_text(), jails) == []
+
+
+def test_gate_fails_when_the_jail_masks_a_path_the_runner_does_not_create() -> None:
+    jail = 'jail_base="bwrap --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --"\n'
+    masked = jailed_home_paths(jail)
+    assert masked == {Path(HOME, ".config", "gh"), Path(HOME, ".config", "cloudflare")}
+    lock = f"[Service]\nTemporaryFileSystem={HOME}/.config/cloudflare:ro\nBindReadOnlyPaths=-{HOME}/.config/fleet-worker\n"
+    assert unmountable_jail_paths(lock, masked) == [f"{HOME}/.config/gh"]
+    assert unmountable_jail_paths(lock + f"BindPaths=-{HOME}/.config/gh/x\n", masked) == []
+
+
 @pool
 def test_runner_starts_after_the_user_manager(start_conf: Path, lockdown_conf: Path) -> None:
     assert starts_after_user_manager(start_conf.read_text()) == []
@@ -210,6 +273,11 @@ def test_late_runtime_dirs_exist_before_the_runner_starts(start_conf: Path, lock
 @pool
 def test_the_pre_create_line_does_not_run_as_root(start_conf: Path, lockdown_conf: Path) -> None:
     lines = values(start_conf.read_text(), "ExecStartPre")
+    # A pool that covers the late dirs with a whole-parent hide (#11232) has no pre-create
+    # line left: the mkdir would sit under the hidden parent and fail the runner at start.
+    parents = {Path(t.lstrip("-")) for v in values(lockdown_conf.read_text(), "InaccessiblePaths") for t in shlex.split(v)}
+    if parents & {Path("/run/user"), Path("/run/user/1000")}:
+        return
     assert lines, "no ExecStartPre= pre-create line"
     # Check every drop-in of the pool: a "+" line anywhere would run outside the sandbox, as root.
     for conf in {start_conf, lockdown_conf}:
@@ -299,11 +367,22 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
         assert [p for p in hidden if p.startswith("/home/")] == [], name
         assert "/etc/restic" in hidden, name
     agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
-    assert [v for v in merged_values(agent, "TemporaryFileSystem")] == ["/home/nish:mode=0700,uid=1000,gid=1000,size=512M", "/home/nish/.config/cloudflare:ro"]  # the empty mount point the worker jail masks (#10934)
+    # The empty mount points the worker jail masks (#10934, #11097), named by their tail under the home tmpfs.
+    mounts = [v.removeprefix(HOME) for v in merged_values(agent, "TemporaryFileSystem")]
+    assert mounts == [":mode=0700,uid=1000,gid=1000,size=512M", "/.config/cloudflare:ro", "/.config/gh:ro", "/.config/fleet-worker:ro"]
     bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
-    # pi's library tree, the App key dir and the seat token files the unjailed steps read.
-    for tail in ("/.local/lib", "/.config/fleet-worker", "/seats", "/.local/bin"):
+    # pi's library tree and the seat token files the unjailed steps read. The App key
+    # arrives as a credential, so the key dir is not bound (fleet-ops#10957).
+    for tail in ("/.local/lib", "/seats", "/.local/bin"):
         assert tail in bound, tail
+    assert [token for token in bound.split() if "/.config/fleet-worker" in token] == []
+    loaded = merged_values(agent, "LoadCredential")
+    assert len(loaded) == 1, loaded
+    name, _, source = loaded[0].partition(":")
+    # A wrong name, directory or file is a unit that fails at start, so the whole value
+    # is checked here, and by its tail: an absolute home path in a test is the public
+    # detail this issue takes out of the repo.
+    assert name == KEY and source.endswith(f"/.config/fleet-worker/{KEY}"), loaded
 
 
 FLEET_CONFIG_READ = re.compile(r"(?:\$\{?HOME\}?[\"']?|%h|~|/home/[^/\"' ]+)/\.config/fleet-ops/([A-Za-z0-9_.*/-]+)")

@@ -66,10 +66,15 @@ regexes = ['''^home/nish/\.config/fleet-worker/nishfleet-worker\.private-key\.pe
 condition = "AND"
 
 [[allowlists]]
-description = "The Hermes sandbox drop-in must name the paths its ReadWritePaths= grants (the unit file has no %h for a system unit, and no inline comment to carry gitleaks:allow); the line is re-added whenever a path is added to it"
+description = "The Hermes sandbox drop-in and its lock test must name the paths the unit grants (ReadWritePaths) and, since fleet-ops#9981, hides (InaccessiblePaths): the unit file has no %h for a system unit, and no inline comment to carry gitleaks:allow; the list is re-added whenever a path is added to it"
 targetRules = ["private-home-path"]
-paths = ['''(^|/)rootfs/etc/systemd/system/hermes-\.service\.d/sandbox\.conf$''']
-regexes = ['''home/nish/(\.hermes|\.local/state/hermes|\.config/gh|workspaces/tooling/nish-vault/00)''']
+paths = ['''(^|/)rootfs/etc/systemd/system/hermes-\.service\.d/sandbox\.conf$''', '''^tests/test_systemd_unit_keys\.py$''']
+
+[[allowlists]]
+description = "The Beacon Hermes poll watcher names the binary it runs and the two paths its ReadWritePaths= grants (a system unit has no %h, and a unit line has no inline comment to carry gitleaks:allow), and its test reads those paths back; fleet-ops#11089"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/systemd/system/beacon-hermes-poll\.service$''', '''^tests/test_user_unit_sandboxing\.py$''']
+regexes = ['''home/nish/(\.local/bin/beacon|\.beacon|\.hermes)''']
 condition = "AND"
 
 [[allowlists]]
@@ -234,6 +239,19 @@ description = "The machine-wide Claude Code managed-settings file denies Read on
 targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = ['''(^|/)rootfs/etc/claude-code/managed-settings\.json$''']
 regexes = ['''^(home/nish/\.config/fleet-ops/seats/|home/nish/\.config/tincan/|home/nish/workspaces/tooling/fleet-ops-deploy-clone/|\.config/fleet-ops/seats)$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The managed-settings audit test and its doc spelled the two protected directories out in prose in the first two commits of fleet-ops#10567, before the test read those paths back off the file's own Read denies and the doc named the rule by what it covers. A PR scan reads every commit and history cannot be rewritten on an open PR. Only those five literals are allowed, so a new home path in either file still fails the scan"
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = ['''^tests/test_claude_managed_settings\.py$''', '''^docs/managed-settings-defaults\.md$''']
+regexes = [
+  '''^home/nish/\.config/fleet-ops/seats/claude-seat-a\.env$''',
+  '''^home/nish/\.config/fleet-ops/seats/$''',
+  '''^home/nish/\.config/tincan/inbox\.secret$''',
+  '''^home/nish/\.config/tincan/$''',
+  '''^\.config/fleet-ops/seats$''',
+]
 condition = "AND"
 
 [[allowlists]]

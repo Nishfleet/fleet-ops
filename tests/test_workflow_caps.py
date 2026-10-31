@@ -283,3 +283,44 @@ def test_the_orchestrate_session_books_its_wall_for_landing():
     assert "$(cat /tmp/orch-session-start)" in text, (
         "the prompt writes the session start but never reads it back: the budget needs the elapsed-minutes command"
     )
+
+
+def inish_daily_run():
+    steps = yaml_json(AGENT)["jobs"]["inish-daily"]["steps"]
+    step = next((s for s in steps if s.get("id") == "compile"), None)
+    assert isinstance(step, dict) and isinstance(step.get("run"), str), (
+        "agent.yml's inish-daily job has no compile step that runs shell, so this gate would pass vacuously"
+    )
+    return step["run"]
+
+
+def fresh_clone(run):
+    match = re.search(r"fresh_clone\(\) \{.*?\}", run, re.S)
+    assert match, "agent.yml's inish-daily job has no fresh_clone() helper"
+    clone = match.group(0)
+    assert clone.count("{") == clone.count("}"), (
+        f"this gate's regex cut the fresh_clone() body short at a brace inside it, so the "
+        f"credential check below would read a partial body: {clone}"
+    )
+    return clone
+
+
+CREDENTIAL_FORMS = ("extraheader", "authorization", "credential.", "x-access-token", "github.com@")
+
+
+def test_the_daily_clone_carries_no_credential_that_can_expire_mid_run():
+    clone = fresh_clone(inish_daily_run())
+    assert "inish-site.git" in clone, f"fresh_clone no longer clones inish-site: {clone}"
+    lowered = clone.lower()
+    for form in CREDENTIAL_FORMS:
+        assert form not in lowered, (
+            f"fresh_clone sends a credential with the clone ({form}), and the only one this job has "
+            f"expires after an hour: {clone}"
+        )
+
+
+def test_the_daily_names_a_failed_rebuild_clone():
+    assert re.search(r'fresh_clone "\$dst" \|\| \{ echo "[^"]+"; return 1; \}', inish_daily_run()), (
+        "checked() returns 1 with no message when the rebuild clone fails, so the only line the log has is "
+        "'left no valid edition' and the reader looks for an edition file the model wrote (fleet-ops#10876)"
+    )
