@@ -21,7 +21,8 @@ FAKE_GH = r"""#!/usr/bin/env bash
 case "$1 $2" in
   "pr list") echo 0 ;;
   "api graphql") echo 0 ;;
-  "issue view") cat "$FAKE_DIR/body" ;;
+  "issue view")
+    printf '{"body": %s, "comments": []}' "$(jq -Rs . "$FAKE_DIR/body")" | jq -r "${@: -1}" ;;
   "label create"|"issue edit"|"issue comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
 esac
