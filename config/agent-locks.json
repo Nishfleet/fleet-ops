@@ -2,6 +2,32 @@
   "description": "The agent lock contract (fleet-ops#9977). One entry per agent that runs on this host and reads text from outside the fleet. 'needs' is everything the agent must still be able to read after the lock; 'must_hide' is everything it must not read, in particular the other agents' logins and keys. tests/test_agent_locks.py resolves each unit's real settings (the unit plus every drop-in, following the symlinked shared file) and fails when a unit is not a system unit with User=, when a must_hide path is still readable, or when a need is hidden. A lock in a user unit does not count: systemd silently ignores sandbox settings there because kernel.apparmor_restrict_unprivileged_userns=1 on this box. Add an agent here before you install its unit, or the coverage check in the test fails.",
   "user": "nish",
   "agents": {
+    "claude-remote-control": {
+      "unit": "rootfs/etc/systemd/system/claude-remote-control.service",
+      "needs": [
+        "~/workspaces",
+        "~/.claude",
+        "~/.claude.json",
+        "~/.pi",
+        "~/.local/bin",
+        "/run/user/1000"
+      ],
+      "must_hide": [
+        "~/.config/fleet-ops/seats",
+        "~/.config/fleet-ops/litellm-master-key.env",
+        "~/.config/cloudflare",
+        "~/.config/gh",
+        "~/.config/systemd",
+        "~/.ssh",
+        "~/.git-credentials",
+        "~/.hermes",
+        "~/.local/share/claude-seat-backup",
+        "/run/user/1000/fleet-worker-github-token",
+        "/run/docker.sock",
+        "/var/run/docker.sock",
+        "~/.claude-vps"
+      ]
+    },
     "tincan-listen-pi": {
       "unit": "rootfs/etc/systemd/system/tincan-listen-pi.service",
       "relay_identity": "~/.config/tincan/pi.json",
@@ -297,12 +323,6 @@
       "unit": "systemd/tincan-listen-issue-desk.service",
       "reason": "Still a user unit, systemd/tincan-listen-issue-desk.service, added in #10152 after this contract was written, so its settings are ignored on this box and it can read the fleet's keys; it needs the same system unit and live ask before it can be switched.",
       "issue": "#10813"
-    },
-    {
-      "agent": "claude-remote-control",
-      "unit": "rootfs/etc/systemd/system/claude-remote-control.service",
-      "reason": "Runs an agent (claude remote-control, --permission-mode dontAsk) that reads text from the claude.ai relay, so docs/agent-lock.md puts it in the contract. It runs as a system unit with User=nish, but ProtectHome=read-only hides nothing: a session and every child it spawns can read the seats directory, ~/.config/gh, ~/.config/cloudflare, ~/.ssh and the worker App token under /run/user/1000. A locked agents entry is test-enforced to set NoNewPrivileges=yes, and 80-hardening.conf deliberately declines it because the phone-spawned sessions run sudo -n, so hardening it is the follow-up's decision, not this file's.",
-      "issue": "#11290"
     },
     {
       "agent": "GitHub self-hosted agent runners",

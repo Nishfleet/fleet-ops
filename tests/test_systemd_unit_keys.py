@@ -2150,8 +2150,13 @@ def test_remote_control_runs_the_bridge_without_a_prompt_and_pages_on_every_drop
 
 def test_remote_control_sessions_keep_what_a_session_needs_inside_the_sandbox() -> None:
     keys = effective_directives(REMOTE_CONTROL)
-    assert keys["ProtectHome"] == ["read-only"]
-    assert keys["ReadWritePaths"] == [f"{HOME} /run/user/1000"]
+    assert keys["ProtectHome"] == ["tmpfs"], "deny-by-default /home; only the bind list is mounted back (fleet-ops#11290)"
+    assert keys["BindPaths"] == [f"{HOME}/workspaces {HOME}/.claude {HOME}/.claude.json {HOME}/.pi /run/user/1000"]
+    assert keys["BindReadOnlyPaths"] == [f"{HOME}/.local/bin {HOME}/.local/share/claude {HOME}/.gitconfig -{HOME}/.config/claude/browser-use.env"]
+    assert keys["ReadWritePaths"] == [f"{HOME}/workspaces /run/user/1000"]
+    assert keys["InaccessiblePaths"] == ["-/run/user/1000/fleet-worker-github-token -/run/docker.sock -/var/run/docker.sock"], "the per-run worker App token and the container socket stay hidden while /run/user/1000 itself stays reachable"
+    assert keys["NoNewPrivileges"] == ["yes"], "phone sessions no longer run sudo (fleet-ops#11290)"
+    assert keys["PrivateTmp"] == ["yes"] and keys["ProtectSystem"] == ["strict"]
     assert keys["ProtectClock"] == ["yes"] and keys["ProtectHostname"] == ["yes"] and keys["ProtectKernelLogs"] == ["yes"]
     assert keys["ProtectKernelModules"] == ["yes"] and keys["ProtectKernelTunables"] == ["yes"] and keys["ProtectControlGroups"] == ["yes"]
     assert keys["RestrictAddressFamilies"] == ["AF_UNIX AF_INET AF_INET6 AF_NETLINK"]
@@ -2160,7 +2165,7 @@ def test_remote_control_sessions_keep_what_a_session_needs_inside_the_sandbox() 
     assert keys["SystemCallFilter"] == ["~@clock @cpu-emulation @module @obsolete @raw-io @reboot @swap"]
     assert keys["CapabilityBoundingSet"] == ["~CAP_SYS_TIME CAP_SYS_PACCT CAP_WAKE_ALARM CAP_BPF CAP_LINUX_IMMUTABLE CAP_IPC_LOCK CAP_SYS_MODULE CAP_SYS_TTY_CONFIG CAP_SYS_BOOT CAP_SYS_CHROOT CAP_BLOCK_SUSPEND CAP_LEASE CAP_MKNOD CAP_MAC_ADMIN CAP_MAC_OVERRIDE CAP_SYS_RAWIO CAP_NET_BIND_SERVICE CAP_NET_BROADCAST CAP_NET_RAW CAP_SYS_NICE CAP_SYS_RESOURCE"]
     assert keys["ProtectProc"] == ["invisible"] and keys["PrivateDevices"] == ["yes"] and keys["PrivateMounts"] == ["yes"]
-    for absent in ("NoNewPrivileges", "PrivateTmp", "ProtectSystem", "RestrictNamespaces", "ProcSubset", "RemoveIPC", "MemoryDenyWriteExecute", "UMask", "IPAddressDeny", "InaccessiblePaths"):
+    for absent in ("RestrictNamespaces", "ProcSubset", "RemoveIPC", "MemoryDenyWriteExecute", "UMask", "IPAddressDeny"):
         assert absent not in keys, f"{absent} costs a session something; 80-hardening.conf lists why it stays unset"
 
 
