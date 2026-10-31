@@ -343,7 +343,8 @@ groups:
       # per issue and not a property of the set. Until a mirror label lands, frame B is empty
       # and reads a true zero, not a broken read. Known gap (as in queue-stuck.yaml): an issue
       # untouched for over 30 days leaves the read window and the count falls to 0, so a
-      # firing alert resolves instead of staying.
+      # firing alert resolves instead of staying; the scorecard-blocked-abandoned rule below
+      # counts that class past the window.
       - uid: scorecard-blocked-stale
         title: Dependency-blocked ready work with no update for 48h
         condition: C
@@ -385,6 +386,56 @@ groups:
         annotations:
           summary: '{{ if $values }}Dependency-blocked agent-ready work has had no update for 48 hours.{{ else }}The fleet cannot read GitHub issues for the Fleet scorecard blocked-stale rule, so it is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}A dependency-blocked agent-ready issue has had no update for two days while its blocker gives no sign of life (fleet-ops#11135). Open the blocker, or unlink the dependency so the issue returns to the queue. Dashboard: Fleet scorecard.{{ else }}Check the GitHub data source in Grafana.{{ end }} Open the lists: https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aagent-ready+is%3Ablocked+NOT+%22grafana+alert%3A%22+in%3Atitle+archived%3Afalse+sort%3Aupdated-asc and https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aagent-ready+label%3Aagent-blocked-dep%2Cdependency-blocked+NOT+%22grafana+alert%3A%22+in%3Atitle+archived%3Afalse+sort%3Aupdated-asc'
+        labels: {severity: warning, signal: fleet-scorecard}
+        isPaused: false
+
+      # The abandoned-blocker minder (fleet-ops#11358, part of #11135): the blocked-stale rule
+      # above reads a 30-day window, so an issue nobody touches for over 30 days leaves the
+      # read window, the count falls to 0, and a firing alert resolves — backwards for a
+      # stuck-blocker detector, whose most abandoned cases are the ones that stop being seen
+      # (queue-stuck.yaml names the same gap for its own rules). This rule reads the same
+      # mirror-label search through a one-year window and counts only hits silent for 30
+      # days, so it takes the class over at the age the 48h rule's window ends: under 30
+      # days the blocked-stale rule counts the hit, at 30 days and past it only this rule
+      # can. One frame, the mirror labels only: the built-in is:blocked qualifier exists
+      # only on GitHub's advanced search endpoint, and the pinned grafana/github-datasource
+      # calls the legacy search, which reads it as an unrecognized token (PR #11228; live
+      # probe 2026-11-01 in #11358: with three blocked issues open, is:blocked matched
+      # nothing). Until the sweep's label mirror lands (#11228), the frame reads a true
+      # zero, not a broken read. The year is this rule's own horizon: an issue silent
+      # past it leaves the window and the count falls again — the same gap moved to a
+      # wider edge, since the window, not the rule, is the read's limit.
+      - uid: scorecard-blocked-abandoned
+        title: Dependency-blocked ready work with no update for over 30 days
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: {from: 31536000, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Issues
+              owner: Nishfleet
+              repository: ''
+              options: {query: "org:Nishfleet is:issue is:open label:agent-ready label:agent-blocked-dep,dependency-blocked NOT \"grafana alert:\" in:title archived:false", timeField: 2}
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: B
+              expression: |-
+                SELECT COUNT(*) AS abandoned
+                FROM (SELECT updated_at FROM A) AS found
+                WHERE UNIX_TIMESTAMP() - UNIX_TIMESTAMP(updated_at) >= 2592000
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}Dependency-blocked agent-ready work has had no update for over 30 days.{{ else }}The fleet cannot read GitHub issues for the Fleet scorecard abandoned-blocker rule, so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}A dependency-blocked agent-ready issue has had no update for over 30 days, past the 30-day read window the 48h blocked-stale rule can see (fleet-ops#11358), so its blocker is abandoned. Open the blocker, or unlink the dependency so the issue returns to the queue. Dashboard: Fleet scorecard.{{ else }}Check the GitHub data source in Grafana.{{ end }} Open the list: https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aagent-ready+label%3Aagent-blocked-dep%2Cdependency-blocked+NOT+%22grafana+alert%3A%22+in%3Atitle+archived%3Afalse+sort%3Aupdated-asc'
         labels: {severity: warning, signal: fleet-scorecard}
         isPaused: false
 
