@@ -915,8 +915,9 @@ def _dup_gate(tmp_path, title, open_issues, list_fail=""):
     """Runs the Gate's duplicate-alert block (fleet-ops#10348) for issue 50 against a fake gh."""
     script = _step("work", "Gate")
     start = script.index("if jq -e --argjson titles")
-    end = script.index("skip duplicate-alert; fi\n", start)
-    end = script.index("fi\n", end + len("skip duplicate-alert; fi\n")) + 3
+    end = script.index("skip duplicate-alert\n", start)
+    fi_inner = script.index("fi\n", end + len("skip duplicate-alert\n"))
+    end = script.index("fi\n", fi_inner + 2) + len("fi\n")
     b = tmp_path / "bin"
     b.mkdir()
     (b / "gh").write_text(DUP_GH)
@@ -957,18 +958,22 @@ def test_non_alert_title_skips_the_lookup(tmp_path):
 @pytest.mark.parametrize("prefix", ["alert: ", "cost alarm: ", "grafana alert: ", "router dead row: ", "router dead key: "])
 def test_every_issue_filing_prefix_reaches_the_twin_lookup(tmp_path, prefix):
     """Each prefix a contact point writes, not just "alert: " (fleet-ops#11086):
-    the other four filed one issue per firing and closed nothing.
-    A cost alarm's re-file stays open instead of closing as its older
-    twin's duplicate (fleet-ops#9859), so its case only needs the twin
-    lookup to not close it."""
+    the other four filed one issue per firing and closed nothing."""
     title = prefix + "SystemUnitFailed restic-r2-size-guard.service"
     out, log = _dup_gate(tmp_path, title, [{"number": 50, "title": title}, {"number": 41, "title": title}])
-    if prefix == "cost alarm: ":
-        assert out == "PROCEED"
-        assert "issue close" not in log
-        return
     assert out == "SKIP duplicate-alert"
     assert "gh issue close 50 -R o/r --duplicate-of 41" in log
+
+
+def test_a_cost_alarm_repeat_is_counted_on_the_open_twin(tmp_path):
+    """The spend route repeats hourly (fleet-ops#9859): each re-file still
+    closes as the open twin's duplicate, and the gate comments the page on it,
+    because the webhook cannot comment."""
+    title = "cost alarm: Cloudflare spend"
+    out, log = _dup_gate(tmp_path, title, [{"number": 50, "title": title}, {"number": 41, "title": title}])
+    assert out == "SKIP duplicate-alert"
+    assert "gh issue close 50 -R o/r --duplicate-of 41 --comment duplicate: the alert is still firing; #41 is open for it" in log
+    assert "gh issue comment 41 -R o/r" in log and "still firing" in log
 
 
 def test_the_prefix_cases_cover_the_gate_list(tmp_path):

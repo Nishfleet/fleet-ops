@@ -1575,16 +1575,16 @@ jobs:
           # A rule with no route of its own lands on the policy root,
           # fleet-alert-dispatch: its payload must be a labelled fleet issue. The
           # spend rule (fleet-ops#9859) must deliver twice, one POST per repeat:
-          # the webhook cannot comment or close and the dispatch gate exempts cost
-          # alarms from the duplicate close, so one POST per repeat is one open
-          # issue per page.
+          # design-coverage of the cap is tests/test_claude_lanes.py (the gate
+          # closes each re-file as the open issue's duplicate and counts the
+          # page on it); the drill proves only that the repeat delivers.
           for _ in $(seq 1 80); do grep -q '"title":"grafana alert: drill generic"' "$d/sink.log" && [ "$(grep -c '"title":"cost alarm: drill spend drill-db"' "$d/sink.log")" -ge 2 ] && break; sleep 3; done
           g=$(grep '"title":"grafana alert: drill generic"' "$d/sink.log" | head -n 1 || true)
           [ -n "$g" ] || { echo "::error::a rule with no route of its own did not reach fleet-alert-dispatch"; cat "$d/sink.log"; exit 1; }
-          [ "$(grep -c '"title":"cost alarm: drill spend drill-db"' "$d/sink.log")" -ge 2 ] || { echo "::error::a still-firing cost rule filed one issue, not one per page"; sort "$d/sink.log" | uniq -c; exit 1; }
+          [ "$(grep -c '"title":"cost alarm: drill spend drill-db"' "$d/sink.log")" -ge 2 ] || { echo "::error::a still-firing cost rule filed one issue, not one per repeat"; sort "$d/sink.log" | uniq -c; exit 1; }
           jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic")) and (.body | contains("drill-generic"))' <<<"${g#BODY * }" >/dev/null \
             || { echo "::error::fleet-alert-dispatch rendered an unexpected issue"; echo "$g"; exit 1; }
-          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue and a still-firing cost rule filed one issue per page"
+          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue and a still-firing cost rule delivered one POST per repeat"
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true

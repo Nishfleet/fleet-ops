@@ -292,10 +292,12 @@ Cloudflare cost alarm (fleet-ops#9355): `config/grafana/provisioning/alerting/cl
 evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy-ci
 analytics token, from `~/.config/cloudflare/deploy-ci.env`). A firing rule opens a fleet-ops
 issue labelled `agent-ready` and `priority-now` through the webhook contact point
-`cloudflare-spend-dispatch`, and that route repeats every hour, the same cadence as the page, so a
-still-firing cost rule files an open issue per page (fleet-ops#9859: the route used to repeat every
-12 hours, and the dispatch gate closed the re-files as duplicates, so a rule that stayed firing
-paged twelve times and left one issue). A read error on the rule itself still files on the catch-all's
+`cloudflare-spend-dispatch`, and that route repeats every hour, the same cadence as the page
+(fleet-ops#9859: at 12h it was slower, so a rule that stayed firing paged hourly and left an hour
+with no tracked record). The webhook cannot comment or close: the dispatch gate in agent.yml
+closes every re-file as the rule's one open issue's duplicate and comments the page on that issue,
+so one open issue carries one entry per page, and nothing opens a second issue for the same
+still-firing rule. A read error on the rule itself still files on the catch-all's
 daily cadence. The webhook
 sends a GitHub App installation token (issues:write on Nishfleet/fleet-ops only), see
 "Grafana's GitHub token" below. `grafana_alerting_notifications_failed_total` rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a rule by typing a past
@@ -313,11 +315,12 @@ rules, any new rule) is `warning`: it does not page. Every firing alert, of eith
 a fleet-ops issue labelled `agent-ready` (`fleet-alert-dispatch`, or the cost-alarm and
 router-dead-row variants; `router-dead-key-dispatch` labels its issue `needs-nish-decision`,
 because a rejected provider key is Nish's to renew); the webhook cannot comment or close, so a
-still-firing alert files a new issue per repeat. CI fails when a rule has no severity, overrides the tree, is critical
+still-firing alert files a new issue per repeat; for a cost alarm the gate closes each re-file as
+the rule's one open issue's duplicate and comments the page on it, so the open issue carries a
+counted entry per page (fleet-ops#9859). CI fails when a rule has no severity, overrides the tree, is critical
 without being on the urgent list (or the reverse), a critical alert would re-send slower than
 hourly, or a cost rule's issue route repeats slower than its page (fleet-ops#9859: the spend route
-repeated every 12h while the cost rules paged hourly, so a group that stayed firing paged twelve
-times and filed one issue), or the dispatch gate's twin check stops exempting 'cost alarm:' titles.
+repeated every 12h while the cost rules paged hourly, so a page could land with no tracked record).
 To make a new rule page, add it to the list there with the reason and
 label it critical.
 Switch off the fleet issue route: point the policy root and the last route back at `hermes-urgent`.
@@ -373,7 +376,7 @@ unit's real ExecStart under systemd against a stub that checks the JWT the way G
 "A provisioning reload re-reads the token file the contact points name" step boots the pinned
 Grafana image against a local sink, swaps the token file, calls the admin reload and reads the
 Authorization header of the next delivery: it must carry the new token with no restart
-(fleet-ops#9445), and a still-firing cost rule must file one issue per page (fleet-ops#9859). To
+(fleet-ops#9445), and a still-firing cost rule must deliver one POST per repeat (fleet-ops#9859). To
 run that step outside CI, copy its `run:` block out of `.github/workflows/ci.yml`, swap `docker`
 for `podman`, and swap `--user "$(id -u):$(id -g)"` for `--user 0:0`: rootless podman maps the
 container's grafana uid (472) to a subuid on the host, so the 0700 token dir stops being readable
