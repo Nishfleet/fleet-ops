@@ -243,8 +243,10 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
-    cooldown_time: 21600
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
+    cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -284,8 +286,10 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    # No slot count (fleet-ops#10694). Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
-    cooldown_time: 21600
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
+    cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -303,8 +307,10 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
-    cooldown_time: 21600
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
+    cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -322,8 +328,10 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
-    cooldown_time: 21600
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
+    cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -341,8 +349,10 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
-    cooldown_time: 21600
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
+    cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -360,8 +370,10 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
-    cooldown_time: 21600
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
+    cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -379,8 +391,10 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
-    cooldown_time: 21600
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
+    cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -398,8 +412,10 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    # Its 429 is the subscription wall (long note 17), not a burst: park on the first 429 for 6 h (fleet-ops#11476, the #11146 treatment).
-    cooldown_time: 21600
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
+    cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
