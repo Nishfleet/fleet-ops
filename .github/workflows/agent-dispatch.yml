@@ -1390,9 +1390,7 @@ jobs:
           HOOKS: ${{ vars.ORCHESTRATE_HOOKS }}
         run: |
           set -euo pipefail
-          cd "$WORKTREE"
-          HERMES_RUN=
-          if [ -d /run/fleet-hermes-github-token ]; then HERMES_RUN=/run/fleet-hermes-github-token; fi
+          cd "$WORKTREE"; if [ -d /run/fleet-hermes-github-token ]; then HERMES_RUN=/run/fleet-hermes-github-token; fi
           # The prompt from THIS checkout; a repo without one falls back to the fleet copy.
           prompt="prompts/orchestrator-handoff.md"
           if [ ! -f "$prompt" ]; then
