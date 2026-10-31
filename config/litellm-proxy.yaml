@@ -998,6 +998,52 @@ model_list:
     id: anthropic-sonnet55-tether
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+# Command Code DeepSeek 4.1 Flash for the worker groups (owner 2026-10-13: Command Code is unlimited on
+# ds4.1 flash, so no daily cap). Added 2026-10-31 when both GLM rows hit their caps and the fleet stalled.
+- model_name: worker-capable
+  litellm_params:
+    model: openai/deepseek/deepseek-v4.1-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-31 on api.commandcode.ai deepseek/deepseek-v4.1-flash, 3 calls on a 26034-token prefix, cached_tokens 0/25984/25984 (fleet-ops#11311)."
+    id: commandcode-ds41flash-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/deepseek/deepseek-v4.1-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-31 on api.commandcode.ai deepseek/deepseek-v4.1-flash, 3 calls on a 26034-token prefix, cached_tokens 0/25984/25984 (fleet-ops#11311)."
+    id: commandcode-ds41flash-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 # gh-aw pilot (fleet-ops#11311): a slash-free name for the only two models the owner allows it, and no fallback,
 # because gh-aw rejects a / inside the model name. The DeepSeek row is priced as the GLM row, the dearer of the two.
 - model_name: pilot
