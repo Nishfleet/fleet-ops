@@ -1,47 +1,127 @@
 # fleet-ops#11146: a z.ai or StepFun row on the 900 s burst cool. Those providers' 429s are a quota wall with a fixed reset
-# clock (the z.ai Coding Plan weekly limit, the StepFun prepaid balance, the Alibaba token cap), not a burst: with the router default of
-# allowed_fails 1 the row needs a second 429 to park and re-enters the wall every 900 s, which leaked 58.9% of worker-capable chat calls to the caller at 2026-10-30 02:28Z (19 of the 29 worker-capable rows walled). The row must park on its first 429
+# clock (the z.ai Coding Plan weekly limit, the StepFun prepaid balance), not a burst: with the row cooled on the
+# 900 s burst clock it re-enters the wall every 900 s, which leaked 58.9% of worker-capable chat calls to the caller at
+# 2026-10-30 02:28Z (19 of the 29 worker-capable rows walled). The row must park on its first 429
 # (model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0) with cooldown_time 21600, so it re-probes about 4x/day.
-# The second row is the fleet-ops#11417 minimax variant: a spent MiniMax token plan re-entered by the burst cool leaked 179 of
-# its 429s into the RouterStrongGroupFailing window on 2026-10-31.
-# Built from the live config's first z.ai worker-capable row, which passes the schema alone, so this file breaks only the
-# rule named above.
+# The rows and router_settings are the live config's judge fallback, judge paid and first
+# z.ai worker-capable rows plus its own router_settings, which pass the schema alone, so the change
+# (the z.ai row cooled to 900 s) is the only one in this file.
+# undo: model_list.2.litellm_params.cooldown_time = 21600
 model_list:
-- model_name: worker-capable
+- model_name: judge
   litellm_params:
-    model: openai/glm-5.3-flash
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    reasoning_effort: max
+    extra_headers:
+      x-opencode-session: fleet-judge
+    tags:
+    - prepaid
+    - opencode-go
+    order: 2
+    max_parallel_requests: 2
+    cooldown_time: 21600
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: 'Same gateway and model as the removed key-2 rows (88.4% cache-read
+      7d, #9357 scoreboard); this row is the monthly-quota-walled Go endpoint (#9122)
+      with little traffic of its own.'
+    id: opencodego-ds41flash-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    tags:
+    - prepaid
+    - alibaba
+    rpm: 3
+    order: 1
+    max_parallel_requests: 3
+    cooldown_time: 21600
+    extra_body:
+      enable_thinking: true
+      thinking_budget: 2048
+    additional_drop_params:
+    - reasoning_effort
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: 'Caches: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens
+      7168 of 7967 (90%); the endpoint reports prompt_tokens_details.cached_tokens.
+      Judge group: one-shot calls only, order unchanged.'
+    id: alibaba-qwen38max-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
+- litellm_params:
     api_base: https://api.z.ai/api/coding/paas/v4
     api_key: os.environ/ZAI_API_KEY
-    tags: [prepaid, zai]
-    order: 1
-    weight: 1
     cooldown_time: 900
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "fixture row: only the rule named in this file is under test (#9365)."
-    id: zai-glm53flash-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: anthropic/MiniMax-M3.1-Flash-Preview
-    api_base: https://api.minimax.io/anthropic
-    api_key: os.environ/MINIMAX_API_KEY
-    tags: [prepaid, minimax]
+    model: openai/glm-5.3-flash
     order: 1
+    tags:
+    - prepaid
+    - zai
     weight: 1
-    cooldown_time: 1800
   model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "fixture row: only the rule named in this file is under test (#9365)."
-    id: minimax-m31-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 3
+      RateLimitErrorAllowedFails: 0
+    cache_proof: 'Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache);
+      202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03)
+      while Pi''s streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM
+      v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit
+      until 2026-10-09.'
+    id: zai-glm53flashi-worker-capable
+    mode: chat
+    supports_prompt_caching: true
+  model_name: worker-capable
 router_settings:
+  routing_strategy: simple-shuffle
+  optional_pre_call_checks:
+  - prompt_caching
+  - session_affinity
   redis_host: 127.0.0.1
   redis_port: 6379
   redis_password: os.environ/REDIS_PASSWORD
+  deployment_affinity_ttl_seconds: 600
+  model_group_alias:
+    worker-capable-desk: worker-capable
+    worker-public-desk: worker-public
+  fallbacks:
+  - worker-cheap:
+    - worker-capable
+  - worker-public:
+    - worker-capable
+  - worker-public-desk:
+    - worker-capable
+  - assistant:
+    - worker-capable
+  - tether:
+    - assistant
   cooldown_time: 60
+  allowed_fails: 1
+  num_retries: 0
+  timeout: 1800
+  enable_tag_filtering: false
+  retry_policy:
+    AuthenticationErrorRetries: 1
+    RateLimitErrorRetries: 2
+    TimeoutErrorRetries: 1
+    InternalServerErrorRetries: 1
+    BadRequestErrorRetries: 1
+    ContentPolicyViolationErrorRetries: 0
+    NotFoundErrorRetries: 1
+    DefaultRetries: 1
+  allowed_fails_policy:
+    AuthenticationErrorAllowedFails: 0
+    RateLimitErrorAllowedFails: 1
+    TimeoutErrorAllowedFails: 1
+    InternalServerErrorAllowedFails: 1
+    NotFoundErrorAllowedFails: 0

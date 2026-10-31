@@ -1,0 +1,128 @@
+# fleet-ops#11417: a MiniMax row on the burst cool. The MINIMAX_API_KEY plan's 429s are a quota wall with a fixed reset
+# clock (the 'Token Plan usage limit reached (2056)' spent-plan wall), not a burst: with the router default of
+# allowed_fails 1 the row needs three 429s to park and re-entered the wall every 1800 s, which landed 179 of its 429s
+# inside the RouterStrongGroupFailing window on 2026-10-31. The row must park on its first 429
+# (model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0) with cooldown_time 21600, so it re-probes about 4x/day.
+# The rows and router_settings are the live config's judge fallback, judge paid and first
+# MiniMax worker-capable rows plus its own router_settings, which pass the schema alone, so the change
+# (the MiniMax row on the burst cool) is the only one in this file.
+# undo: model_list.2.litellm_params.cooldown_time = 21600
+# undo: model_list.2.model_info.allowed_fails_policy.RateLimitErrorAllowedFails = 0
+model_list:
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    reasoning_effort: max
+    extra_headers:
+      x-opencode-session: fleet-judge
+    tags:
+    - prepaid
+    - opencode-go
+    order: 2
+    max_parallel_requests: 2
+    cooldown_time: 21600
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: 'Same gateway and model as the removed key-2 rows (88.4% cache-read
+      7d, #9357 scoreboard); this row is the monthly-quota-walled Go endpoint (#9122)
+      with little traffic of its own.'
+    id: opencodego-ds41flash-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    tags:
+    - prepaid
+    - alibaba
+    rpm: 3
+    order: 1
+    max_parallel_requests: 3
+    cooldown_time: 21600
+    extra_body:
+      enable_thinking: true
+      thinking_budget: 2048
+    additional_drop_params:
+    - reasoning_effort
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: 'Caches: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens
+      7168 of 7967 (90%); the endpoint reports prompt_tokens_details.cached_tokens.
+      Judge group: one-shot calls only, order unchanged.'
+    id: alibaba-qwen38max-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
+- model_name: worker-capable
+  litellm_params:
+    model: anthropic/MiniMax-M3.1-Flash-Preview
+    api_base: https://api.minimax.io/anthropic
+    api_key: os.environ/MINIMAX_API_KEY
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    cache_read_input_token_cost: 6e-08
+    cache_creation_input_token_cost: 3.75e-07
+    tags: [prepaid, minimax]
+    order: 1
+    weight: 1
+    max_parallel_requests: 12
+    cooldown_time: 1800
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: '2026-10-07 #9357 scoreboard: 93.4% cache-read 7d on real router
+      traffic.'
+    id: minimax-m31-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 3
+router_settings:
+  routing_strategy: simple-shuffle
+  optional_pre_call_checks:
+  - prompt_caching
+  - session_affinity
+  redis_host: 127.0.0.1
+  redis_port: 6379
+  redis_password: os.environ/REDIS_PASSWORD
+  deployment_affinity_ttl_seconds: 600
+  model_group_alias:
+    worker-capable-desk: worker-capable
+    worker-public-desk: worker-public
+  fallbacks:
+  - worker-cheap:
+    - worker-capable
+  - worker-public:
+    - worker-capable
+  - worker-public-desk:
+    - worker-capable
+  - assistant:
+    - worker-capable
+  - tether:
+    - assistant
+  cooldown_time: 60
+  allowed_fails: 1
+  num_retries: 0
+  timeout: 1800
+  enable_tag_filtering: false
+  retry_policy:
+    AuthenticationErrorRetries: 1
+    RateLimitErrorRetries: 2
+    TimeoutErrorRetries: 1
+    InternalServerErrorRetries: 1
+    BadRequestErrorRetries: 1
+    ContentPolicyViolationErrorRetries: 0
+    NotFoundErrorRetries: 1
+    DefaultRetries: 1
+  allowed_fails_policy:
+    AuthenticationErrorAllowedFails: 0
+    RateLimitErrorAllowedFails: 1
+    TimeoutErrorAllowedFails: 1
+    InternalServerErrorAllowedFails: 1
+    NotFoundErrorAllowedFails: 0
