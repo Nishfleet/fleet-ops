@@ -209,6 +209,30 @@
       "body": "The file lives at `.github/workflows/ci.yml`."
     },
     {
+      "id": "other-repo-directory-path",
+      "want_park": true,
+      "title": "Deploy reruns the suite",
+      "body": "delete the steps in .github/workflows/deploy-production.yml"
+    },
+    {
+      "id": "other-repo-relative-path-fragment",
+      "want_park": true,
+      "title": "Deploy reruns the suite",
+      "body": "**Evidence:** workflows/deploy-production.yml:41-42 runs npm test"
+    },
+    {
+      "id": "other-repo-relative-yaml-fragment",
+      "want_park": true,
+      "title": "Tune the nightly",
+      "body": "the schedule in workflows/nightly.yaml is wrong"
+    },
+    {
+      "id": "other-repo-prose-bare-yaml",
+      "want_park": false,
+      "title": "Fix config",
+      "body": "see docs/notes.md and pnpm-lock.yaml"
+    },
+    {
       "id": "fleet-ops-names-agent-yml",
       "want_park": true,
       "repo": "Nishfleet/fleet-ops",
