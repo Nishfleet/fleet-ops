@@ -371,7 +371,7 @@ def test_the_deploy_mints_the_hermes_login_and_proves_it_before_restarting_herme
     assert argv[:3] == ["/usr/bin/gh", "issue", "view"] and argv[3] == "10267", argv
     restart = tasks["Restart Hermes onto the minted login"]
     when = str(restart["when"])
-    assert "hermes_sandbox_dropin is changed" in when, "systemd reads the drop-in only at start, so a change to it without a restart leaves the old sandbox running"
+    assert "hermes_installed_sandbox_dropin.stat.mtime" in when, "systemd reads the drop-in only at start, so a change to it without a restart leaves the old sandbox running"
     assert "hermes_login_file.stat.exists" in when, "a restart without a minted login leaves Hermes with no gh at all"
     assert "hermes_login_proof is skipped or hermes_login_proof is succeeded" in when, "the restart waits on the proof too, or it moves Hermes onto a login nothing has proven"
     assert set(restart["loop"]) == {"hermes-gateway.service", "hermes-serve.service"}
@@ -379,30 +379,35 @@ def test_the_deploy_mints_the_hermes_login_and_proves_it_before_restarting_herme
     assert not ({"Restart the Hermes units", "Restart hermes units for their sandbox"} & names), "a handler can flush before services.yml mints and proves the login (review of PR #11116)"
 
 
-def test_a_failed_first_deploy_parks_the_restart_and_the_next_deploy_fires_it() -> None:
+def test_the_hermes_restart_gates_on_the_dropin_being_newer_than_the_units_starts() -> None:
+    """The staleness is systemd's own fact, the comparison fleet-runner-sandbox-apply makes (fleet-ops#11248)."""
     tasks = _task_file("services.yml")
-    stat = tasks["Read any parked-hermes-restart marker from a failed deploy"]
-    assert stat["ansible.builtin.stat"]["path"] == "/run/hermes-sandbox-restart-pending"
+    stat = tasks["Read the installed Hermes sandbox drop-in"]
+    assert stat["ansible.builtin.stat"]["path"] == "/etc/systemd/system/hermes-.service.d/sandbox.conf"
+    for name, register in (
+        ("Read when hermes-gateway last started", "hermes_gateway_start"),
+        ("Read when hermes-serve last started", "hermes_serve_start"),
+    ):
+        task = tasks[name]
+        assert task["register"] == register
+        assert task["check_mode"] is False, "a read-only start-time lookup must answer in check mode, or the staleness read gives an undefined stdout"
     restart = tasks["Restart Hermes onto the minted login"]
     when = str(restart["when"])
-    assert "hermes_restart_pending.stat.exists" in when, "a restart that skipped on a failed deploy must fire on a later deploy's proven login, not disappear with the copy's changed flag"
-    assert "hermes_login_file.stat.exists" in when and "hermes_login_proof is skipped or hermes_login_proof is succeeded" in when
-    clear = tasks["Clear the parked-hermes-restart marker the restart fired from"]
-    assert clear["ansible.builtin.file"]["state"] == "absent"
-    assert "hermes_restart is changed" in str(clear["when"]), "the marker dies only once the restart that consumed it ran, or a later deploy parks it again"
-    park = tasks["Park the failed-deploy restart in the marker file"]
-    park_when = str(park["when"])
-    assert park["ansible.builtin.copy"]["dest"] == "/run/hermes-sandbox-restart-pending"
-    assert "not ansible_check_mode" in park_when, "check mode installs nothing, so it must park nothing"
-    assert "hermes_sandbox_dropin is changed" in park_when
-    assert "hermes_login_file.stat.exists" in park_when and "hermes_login_proof is skipped or hermes_login_proof is succeeded" in park_when, "the park waits on exactly what the restart needs, so a later deploy restarts instead of parking twice"
+    assert "hermes_gateway_start.stdout" in when and "hermes_serve_start.stdout" in when, "the restart compares the drop-in's mtime against both units' ActiveEnterTimestamp, so a natural Restart=always start after the install clears the staleness"
+    assert "hermes_installed_sandbox_dropin.stat.mtime" in when
+    assert "hermes_restart" not in when
+    assert "hermes-sandbox-restart-pending" not in str(tasks), "no state file: systemd holds the staleness (the review of PR #11116 cut the marker)"
+    assert "Install the Hermes sandbox drop-in and notice its change" not in str(_task_file("install-config.yml")), "the generic copy installs the drop-in, and the gate reads the installed mtime, so no early copy or register exists"
 
 
 def test_the_deploy_restarts_hermes_when_the_dropin_that_hides_the_login_changes() -> None:
-    task = _task_file("install-config.yml")["Install the Hermes sandbox drop-in and notice its change"]
-    assert task["ansible.builtin.copy"]["src"].endswith("hermes-.service.d/sandbox.conf")
-    assert task["register"] == "hermes_sandbox_dropin", "the restart in services.yml is gated on this copy's change"
-    assert "Restart the Hermes units" not in task["notify"], "the restart belongs after the deploy has a minted login"
+    """The drop-in reaches the box through the generic systemd copy, and the restart still sits behind the proof."""
+    install = _task_file("install-config.yml")
+    generic = install["Install systemd units, slices and drop-ins"]
+    assert generic["ansible.builtin.copy"]["src"].endswith("etc/systemd/system/")
+    assert "Reload systemd" in generic["notify"], "a copied drop-in needs a daemon-reload"
+    tasks = _task_file("services.yml")
+    assert "hermes_sandbox_dropin" not in str(tasks), "services.yml reads the installed drop-in from disk, not from a register, so a change flag cannot answer for a file a natural restart has already re-read"
 
 
 def test_the_hermes_login_unit_names_an_absolute_key_path() -> None:

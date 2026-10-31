@@ -120,23 +120,7 @@
     - Reload systemd
     - Start the runner sandbox apply
 
-# Copied here on its own, before the directory copy below installs the same
-# bytes, so that a change to this file alone is visible to tasks/services.yml:
-# the restart it needs is decided there, once the deploy has a minted login to
-# point Hermes at (fleet-ops#10267). A handler here would flush before that
-# proof runs, and a flush after it would still miss a host whose next deploy
-# reports no change.
-- name: Install the Hermes sandbox drop-in and notice its change
-  ansible.builtin.copy:
-    src: "{{ rootfs }}/etc/systemd/system/hermes-.service.d/sandbox.conf"
-    dest: /etc/systemd/system/hermes-.service.d/sandbox.conf
-    owner: root
-    group: root
-    mode: preserve
-  register: hermes_sandbox_dropin
-  notify: Reload systemd
-
-# The per-unit drop-in dirs (the review runners' 30-review-user.conf, the pilot's
+# A per-unit drop-in dirs (the review runners' 30-review-user.conf, the pilot's
 # own dir) are not covered by the agent-runner copy above, so this generic copy
 # spreads the apply unit over them too: the apply pass itself decides which runner
 # is stale, so a deploy that only changed an unrelated unit file restarts no runner.

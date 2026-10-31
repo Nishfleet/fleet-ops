@@ -376,9 +376,12 @@ not private to Hermes, so the agent lock's shared drop-in hides it too
 (`fleet-agent-lock.service.d/50-shared.conf`, `config/agent-locks.json` `must_hide`). The deploy
 enables the timer and mints once; a failed mint is reported and does not stop the rest of the
 host config, and the Hermes units restart onto the new login only once the `hosts.yml` exists
-and a `gh issue view` through it has succeeded, so a GitHub outage at deploy time leaves them
-on the login they have. A Hermes start needs the mint to have succeeded (`Requires=` and
-`After=` in the drop-in; the mint skips a token younger than 15 min, so a restart spends no
+and a `gh issue view` through it has succeeded, and also only when the sandbox drop-in on
+disk is newer than the unit's start (`ActiveEnterTimestamp`), the staleness comparison
+`fleet-runner-sandbox-apply.service` makes for the runners, so a natural restart after the
+install never re-queues a restart and no state file holds a parked restart. A Hermes start
+needs the mint to have succeeded (`Wants=` and `After=` in the drop-in; the mint skips a
+token younger than 15 min, so a restart spends no
 extra API calls), and a failed mint keeps the previous `hosts.yml`, pages through `OnFailure=`
 and is capped by the unit's `StartLimitBurst=6` per ten minutes (the timer retries in 20
 minutes). Read
@@ -386,8 +389,9 @@ it: `systemctl show fleet-hermes-github-token.service -p Result -p ExecMainStart
 the journal line `minted the nishfleet-worker App token as the Hermes gh login`.
 `sudo -u nish env GH_CONFIG_DIR=/run/fleet-hermes-github-token gh issue view 10267 --repo
 Nishfleet/fleet-ops` runs the deploy's proof by hand. Switch off: `systemctl disable --now
-fleet-hermes-github-token.timer` and `systemctl mask fleet-hermes-github-token.service` (the
-Hermes units `Requires=` it, so the mask also keeps them down), then remove the `Requires=`
+fleet-hermes-github-token.timer` and `systemctl mask fleet-hermes-github-token.service` (they only `Wants=` it, so the mask stops the refreshes and the last token dies within an
+hour; `systemctl stop hermes-gateway.service hermes-serve.service` stops them), then remove
+the `Wants=`
 and `After=` lines, `GH_CONFIG_DIR` and the `InaccessiblePaths=` line from the drop-in. CI proof: `tests/test_worker_github_token.py`, which `ci.yml` already runs, starts
 this unit under systemd against `tests/github_app_stub.py` and checks the `hosts.yml` it writes.
 
