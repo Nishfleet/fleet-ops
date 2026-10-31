@@ -78,10 +78,6 @@ URGENT = {
 PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")
 CRITICAL_REPEAT = 3600
-# fleet-ops#11497: the session-hop policy route repeats at 6h, the rate rule's
-# own window, because a one-hour burst keeps the condition true until the
-# window drains (~21600s) and at the 1h default one incident pages six or
-# seven times after it is already caught. Everything else keeps CRITICAL_REPEAT.
 HOP_REPEAT = 21600
 ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch", "router-dead-key-dispatch", "prometheus-alert-dispatch", "nish-ask-dispatch"}
 GENERIC_SINK = "fleet-alert-dispatch"
@@ -821,19 +817,16 @@ def main(root):
         if severity == "critical" and (not pages or any(rep is None or rep > repeat_cap for rep in pages)):
             bad.append(f"{title}: critical alert must page {PAGE} with repeat_interval <= {repeat_cap}s, got {pages}")
         if labels.get("signal") == "session-hop" and severity == "critical" and pages and all(p is not None for p in pages):
-            # Simulated leak incident (fleet-ops#11497): the window (repeat_cap) is
-            # how long a one-hour burst keeps the condition true after the hour it
-            # names starts, so Alertmanager pages on the fastest PAGE repeat in that
-            # window, first at detection, then every repeat_interval while it holds.
             fastest = min(pages)
             count = 1 + repeat_cap // fastest
             if count > 2:
                 bad.append(f"{title}: one burst pages {count} times as the {repeat_cap}s window drains "
                            f"on the {fastest}s repeat, not <=2 (fleet-ops#11497)")
-            print(f"burst: {title} stays firing {repeat_cap}s after the burst hour starts; "
-                  f"the {fastest}s repeat pages at "
+            print(f"burst: {title} stays firing about {repeat_cap}s after the burst hour starts "
+                  f"(the rate rule's lookback); the {fastest}s repeat pages at "
                   + ", ".join(f"+{k * fastest}s" for k in range(count))
-                  + f" -> {count} page(s) (the shared {CRITICAL_REPEAT}s "
+                  + " (the last one races the resolve) "
+                  + f"-> {count} page(s) (the shared {CRITICAL_REPEAT}s "
                   + f"cadence was {1 + repeat_cap // CRITICAL_REPEAT}) (fleet-ops#11497)")
         sinks = {rc.removesuffix("#muted"): rep for rc, rep in route(policy, {**labels, "alertname": title})}
         want = PLAN_REPEAT if "plan" in labels else DEFAULT_REPEAT

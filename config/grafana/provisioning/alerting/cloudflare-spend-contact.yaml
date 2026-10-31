@@ -148,8 +148,8 @@ policies:
       # or seven times after the leak had already been caught; the rule's own
       # history asked for #9411's fix, not another hourly page. 6h covers
       # that: a burst incident pages at detection and at most one echo while
-      # the window drains, and a leak still running pages twice a day. The
-      # volume rule (same signal) inherits the same repeat while it stays
+      # the window drains (a leak still firing pages every 6h, four a day).
+      # The volume rule (same signal) inherits the same repeat while it stays
       # firing blind. Every other critical rule keeps the <=1h contract
       # alert_routes_check.py's CRITICAL_REPEAT enforces; this route is why
       # they carry [signal, !=, session-hop]. The walk continues to the
