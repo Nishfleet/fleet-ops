@@ -63,6 +63,23 @@ PodmanArgs=--stop-timeout=45
 # against its source mtime, so an image bump just recompiles.
 Volume=fleet-litellm-pycache:/pycache
 Environment=PYTHONPYCACHEPREFIX=/pycache
+# uvicorn (>=0.37 on the pinned image, bundled 0.53.0) pings a spawned worker
+# over a pipe and SIGKILLs it if the ping is not answered within
+# timeout_worker_healthcheck, default 5 s. A litellm worker answers only after
+# multiprocessing spawn re-runs the console script, which imports all of
+# litellm — measured 8.1-23.8 s warm on this host, 24.6-26.0 s cold in the
+# container (2026-10-02, the import note above implies warm 18-21 s) — so the
+# default kills every worker at the 5.0-5.5 s cadence seen in the 2026-10-31
+# boots (fleet-ops#11372: 1 to 252 deaths per boot, outage 4-5 min).
+# 120 s = >=4x the slowest measured import, so a normal spawn always answers;
+# with num_workers=2 the surviving worker keeps serving while a hung one is
+# reaped at the 120 s bound. It reaches the uvicorn Config only from the next
+# container creation; litellm proxy_cli passes timeout_worker_healthcheck to
+# uvicorn.Config when the parameter exists (uvicorn>=0.37), and
+# uvicorn supervisors/multiprocess.py uses it for the worker pings.
+# The litellm CLI option --timeout_worker_healthcheck (same name as the env
+# var TIMEOUT_WORKER_HEALTHCHECK) applies only under num_workers > 1.
+Environment=TIMEOUT_WORKER_HEALTHCHECK=120
 # Named pass-through, not --env-host (fleet-ops#9020): --env-host copied the whole
 # systemd --user manager environment into the container. Podman 4.9.3 (Ubuntu 24.04)
 # drops a bare `Environment=NAME` line, so each name is its own PodmanArgs=--env=NAME:

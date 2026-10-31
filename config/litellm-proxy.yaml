@@ -15,6 +15,8 @@
 # OpenCode and Command Code keep paid plans, served as router rows below.
 model_list:
 # Command Code carries z-ai/glm-5.3-flash only, 10 USD/day per row (fleet-ops#9744); delete the two -b rows to drop that lane.
+# Order 2, beside Synthetic: LiteLLM v1.105 picks the lowest order before its deployment-budget filter, so a capped
+# order-1 row left the group empty instead of falling to order 2 (fleet worker groups stalled 2026-10-31).
 # That is a file edit and a restart (about 101 s, with a 30 s drain of in-flight calls): POST /model/block answers 400 for a config-file row.
 - model_name: worker-capable
   litellm_params:
@@ -24,7 +26,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
-    order: 1
+    order: 2
     weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
@@ -48,7 +50,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
-    order: 1
+    order: 2
     weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
@@ -72,7 +74,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
-    order: 1
+    order: 2
     weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
@@ -96,7 +98,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
-    order: 1
+    order: 2
     weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
@@ -241,6 +243,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -249,6 +254,7 @@ model_list:
     id: synthetic-glm53flashe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   # z.ai Coding Plan slot (fleet-ops#10566, #10608).
   litellm_params:
@@ -280,7 +286,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    # Synthetic: no slot count; the 500-req/5h pool's 429 cools the row and the window refills (fleet-ops#10694).
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -289,6 +297,7 @@ model_list:
     id: synthetic-glm53flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -298,6 +307,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -306,6 +318,7 @@ model_list:
     id: synthetic-glm53flashb-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -315,6 +328,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -323,6 +339,7 @@ model_list:
     id: synthetic-glm53flashc-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -332,6 +349,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -340,6 +360,7 @@ model_list:
     id: synthetic-glm53flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -349,6 +370,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -357,6 +381,7 @@ model_list:
     id: synthetic-glm53flashb-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -366,6 +391,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -374,6 +402,7 @@ model_list:
     id: synthetic-glm53flashc-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -383,6 +412,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -391,6 +423,7 @@ model_list:
     id: synthetic-glm53flashd-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/glm-5.3-flash
@@ -902,7 +935,8 @@ model_list:
     rpm: 3
     order: 1
     max_parallel_requests: 3
-    cooldown_time: 900
+    # 6 h park on the first 429: the token-plan 429 is a monthly cap that names its reset clock, not a burst (fleet-ops#11234).
+    cooldown_time: 21600
     # qwen3.8-max reasons until the budget caps it; DashScope reads that budget only through extra_body (fleet-ops#9405).
     extra_body:
       enable_thinking: true
@@ -917,6 +951,7 @@ model_list:
     id: alibaba-qwen38max-judge
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 # assistant: DeepSeek-V4.1-Flash on prepaid rows only, for the Hermes chat agent (Nish 2026-10-21).
 - model_name: assistant
   litellm_params:
@@ -943,7 +978,7 @@ model_list:
       RateLimitErrorAllowedFails: 0
 # Second assistant row (fleet-ops#11239): when OpenCode Go is inside its usage wall, Hermes
 # chat and the review's fallback family had no row at all. MiniMax is a flat plan already
-# serving the worker groups, and a family no other reviewer uses (agent.yml family_of).
+# serving the worker groups.
 - model_name: assistant
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview

@@ -142,6 +142,7 @@ def test_every_task_that_touches_nishs_home_runs_as_nish_not_root():
                 "Copy the review runners to the review user once",
                 "Point the review runner links at the copy",
                 "Point the review runner PATH at the bound tool directories",
+                "Read the config dirs' owner as the apply found it",
             ), task["name"]
     for name in ("Look for the agent state directories", "Keep the agent state directories private"):
         task = TASKS[name]
