@@ -14,9 +14,16 @@ engine:
   model-provider: openai
   env:
     OPENAI_BASE_URL: https://llm.nish.sh/v1
-    OPENAI_API_KEY: ${{ secrets.LITELLM_PILOT_KEY }}
+    OPENAI_API_KEY: ${{ secrets.PILOT_GATEWAY_TOKEN }}
   config: |
     {"model": {"api": "openai-completions"}}
+sandbox:
+  agent:
+    targets:
+      openai:
+        # The secret is a Cloudflare Access service token, sent raw in one header
+        # (fleet-ops#11311); the edge swaps in the pilot router key.
+        auth-header: Authorization
 network:
   allowed: [defaults, python, node, llm.nish.sh]
 timeout-minutes: 30
