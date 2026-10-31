@@ -285,6 +285,29 @@ def test_the_orchestrate_session_books_its_wall_for_landing():
     )
 
 
+def test_the_orchestrate_session_kills_what_its_engine_started():
+    job = yaml_json(DISPATCH)["jobs"]["orchestrate"]
+    step = next(s for s in job["steps"] if s.get("name") == "Run the orchestrator session")
+    run = step["run"]
+    assert re.search(r'setsid "\$\{engine\[@\]\}"', run), (
+        "the orchestrator session no longer runs its engine as its own process group: a dev server the "
+        "session backgrounded survives the session's end and stalls the runner unit at its MemoryHigh "
+        "line for minutes (four orphaned wrangler stacks, netcup-agent-19, 2026-10-30, fleet-ops#11140)"
+    )
+    assert 'wait "$engine_pid"' in run, (
+        "the orchestrate session step no longer waits on its engine, so its exit status never reaches the step"
+    )
+    for kill in ('kill -TERM "-$engine_pid"', 'kill -KILL "-$engine_pid"'):
+        assert kill in run, (
+            f"the step lost its `{kill}`: the engine's process group must die even when the engine was cut "
+            "off at the wall, because the group's backgrounded children outlive it (fleet-ops#11140)"
+        )
+    assert 'trap \'kill -TERM "-$engine_pid" 2>/dev/null || true\' EXIT' in run, (
+        "the step has no EXIT trap killing the engine's process group, so a step killed before the wait "
+        "returns leaks the group's children again (fleet-ops#11140)"
+    )
+
+
 def inish_daily_run():
     steps = yaml_json(AGENT)["jobs"]["inish-daily"]["steps"]
     step = next((s for s in steps if s.get("id") == "compile"), None)
