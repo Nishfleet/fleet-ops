@@ -87,8 +87,10 @@
   failed_when: stale_listener_units.rc > 1
 
 - name: Retire the unlocked user-scope listeners
-  when: agent_locks.stale_user_units | length > 0
+  # default([]): the list task above skips when the contract has no entries, and
+  # a skipped register carries no stdout_lines, while loop templates before when
+  # evaluates. An empty loop skips this task on its own.
   ansible.builtin.command:
     argv: [/usr/bin/systemctl, --user, --machine=nish@.host, disable, --now, "{{ item }}"]
-  loop: "{{ stale_listener_units.stdout_lines | map('split') | map('first') | select | list }}"
+  loop: "{{ stale_listener_units.stdout_lines | default([]) | map('split') | map('first') | select | list }}"
   changed_when: false
