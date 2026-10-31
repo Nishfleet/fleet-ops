@@ -146,9 +146,9 @@ def test_the_minder_files_one_issue_with_the_same_shape_as_its_48h_sibling():
 def test_the_minder_reads_a_window_wider_than_the_48h_rules_30_day_read():
     (frame,) = _github_frames(_rule(MINDER))
     assert frame["relativeTimeRange"]["to"] == 0
-    assert frame["relativeTimeRange"]["from"] > max(
-        d["relativeTimeRange"]["from"] for d in _github_frames(_rule(UID))
-    )
+    sibling = [d["relativeTimeRange"]["from"] for d in _github_frames(_rule(UID))]
+    assert sibling == [2592000, 2592000]
+    assert frame["relativeTimeRange"]["from"] > max(sibling)
 
 
 def test_the_minder_counts_the_same_label_search_the_48h_rule_reads():
