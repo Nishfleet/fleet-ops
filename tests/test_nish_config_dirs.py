@@ -42,7 +42,7 @@ def test_the_ownership_check_reads_the_pre_apply_stat() -> None:
     assert "config_dirs_found.results" in check_text
     assert "pw_name == 'nish'" in check_text and "gr_name == 'nish'" in check_text
     assert "wusr" not in check_text and "xusr" not in check_text
-    assert "systemd-tmpfiles --create" not in check_text
+    assert "ansible.builtin.command" not in check_text and "ansible.builtin.stat" not in check_text
 
 
 def test_no_task_notifies_the_retired_tmpfiles_handler() -> None:
