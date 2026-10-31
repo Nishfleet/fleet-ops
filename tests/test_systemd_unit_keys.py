@@ -13,6 +13,7 @@ import time
 from pathlib import Path, PurePosixPath
 
 import pytest
+import yaml
 import ansible_host
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,7 @@ def unit_files() -> list[Path]:
     found += sorted(INSTALLED.glob("fleet-deploy.*"))
     found += sorted(INSTALLED.glob("fleet-host-config*"))
     found += sorted(INSTALLED.glob("fleet-update.*"))
+    found += sorted(INSTALLED.glob("fleet-hermes-github-token.*"))
     found += sorted(INSTALLED.glob("tether-*"))
     found += sorted(INSTALLED.glob("tincan-listen-*"))
     found += sorted(INSTALLED.glob("claude-remote-control*"))
@@ -174,9 +176,13 @@ def test_claude_vps_listener_is_sandboxed_and_egress_capped() -> None:
 HERMES_UNITS = ("hermes-gateway", "hermes-serve")
 HERMES_DIRS = (INSTALLED / "hermes-.service.d", *(INSTALLED / f"{unit}.service.d" for unit in HERMES_UNITS))
 HERMES_FORBIDDEN = ("RestrictNamespaces", "SystemCallFilter", "MemoryDenyWriteExecute", "PrivateUsers", "PrivateNetwork")
+HERMES_GH_DIR = "/run/fleet-hermes-github-token"
+HERMES_TOKEN = INSTALLED / "fleet-hermes-github-token.service"
+HERMES_TOKEN_TIMER = INSTALLED / "fleet-hermes-github-token.timer"
 HERMES_HIDDEN = (
     "/home/nish/.config/fleet-ops",
     "/home/nish/.config/fleet-worker",
+    "/home/nish/.config/gh",
     "/home/nish/.config/cloudflare",
     "/home/nish/.config/systemd",
     "/home/nish/.ssh",
@@ -203,7 +209,6 @@ HERMES_HIDDEN = (
 HERMES_READABLE = (
     "/home/nish/.hermes",
     "/home/nish/.local/state/hermes",
-    "/home/nish/.config/gh",
     "/home/nish/.config/tincan",
     "/home/nish/.config/tincan/hermes.json",
     "/home/nish/.config/tincan/hermes-webhook.secret",
@@ -293,6 +298,117 @@ def _systemd_version() -> int:
     out = subprocess.run(["systemd-analyze", "--version"], capture_output=True, text=True, check=False)
     fields = out.stdout.split()
     return int(fields[1]) if out.returncode == 0 and len(fields) > 1 and fields[1].isdigit() else 0
+
+
+def _task_file(name: str) -> dict[str, dict]:
+    return {task["name"]: task for task in yaml.safe_load((ROOT / f"ansible/tasks/{name}").read_text())}
+
+
+def test_hermes_reads_a_minted_login_while_nishes_admin_login_is_hidden() -> None:
+    for unit in HERMES_UNITS:
+        keys = _effective(unit)
+        hidden = {entry.removeprefix("-") for values in keys["InaccessiblePaths"] for entry in values.split()}
+        assert "/home/nish/.config/gh" in hidden, f"{unit}: nish's admin gh login is still readable, and this unit reads text from strangers (fleet-ops#10267)"  # gitleaks:allow
+        env = {name: value for values in keys["Environment"] for name, value in (item.split("=", 1) for item in shlex.split(values))}
+        assert env.get("GH_CONFIG_DIR") == HERMES_GH_DIR, f"{unit}: gh must read the minted login, not ~/.config/gh: {env.get('GH_CONFIG_DIR')}"
+        assert "fleet-hermes-github-token.service" in shlex.split(" ".join(keys["Requires"])), f"{unit}: nothing makes the minted login exist before this unit starts"
+        assert "fleet-hermes-github-token.service" in shlex.split(" ".join(keys["After"])), f"{unit}: a restart could start before the token directory is written"
+
+
+def test_the_hermes_login_oneshot_mints_the_narrow_token_gh_needs() -> None:
+    keys = _unit_keys(HERMES_TOKEN)
+    assert _last(keys, "Type") == "oneshot"
+    assert _last(keys, "User") == "nish", "the App key and the token directory are nish's, not root's"
+    assert int(_last(keys, "StartLimitIntervalSec").removesuffix("min")) * 60 >= 60, "no cap on how fast the pull-ins can mint spends the worker runs' installation-token quota"
+    assert int(_last(keys, "StartLimitBurst")) > 0, "no cap on how fast the pull-ins can mint spends the worker runs' installation-token quota"
+    assert _last(keys, "RuntimeDirectory") == HERMES_GH_DIR.rsplit("/", 1)[1]
+    assert _last(keys, "RuntimeDirectoryMode") == "0700", "gh's hosts.yml carries a live token"
+    assert _last(keys, "RuntimeDirectoryPreserve") == "yes", "gh reads the file between mints, so it may not vanish when the oneshot exits"
+    assert _last(keys, "OnFailure") == "fleet-unit-failed@%n.service"  # _last() lowercases, so %N reads back as %n
+    assert not (INSTALLED / f"{HERMES_TOKEN.name}.d").is_dir(), "the deploy restarts Hermes on a change to the shared drop-in, not to a per-unit layer here"
+    script = " ".join(keys["ExecStart"]).replace("%%", "%").replace("$$", "$").replace("\\\\", "\\")
+    assert "$((now - $(stat -c %Y \"$RUNTIME_DIRECTORY/hosts.yml\")))" in script, "a pull-in must skip a still-fresh token file: every Hermes restart would otherwise spend the worker runs' installation-token quota"
+    assert "lt 900" in script, "the skip window must be shorter than the timer's refresh interval, or the token could age past its one-hour expiry"
+    assert '-d "{\\"permissions\\":{\\"actions\\":\\"read\\",\\"issues\\":\\"write\\",\\"pull_requests\\":\\"read\\"}}"' in script, (
+        "the token must grant only what config/hermes/ calls: issue reads and comments, pull request and workflow-run reads"
+    )
+    assert "repositories" not in script, "no repositories key, so gh repo list still sees every repo the App is installed on"
+    assert script.count("$tok") == 1 and 'echo "    oauth_token: $tok"' in script, "the token goes straight into the 0600 file and nowhere else: not into an argument list, not into the journal"
+    assert script.count("--config <(auth)") == 2, "the App JWT goes to curl as a config fd for the installation lookup and the token request only, so no later call can reuse it against another host"
+    assert "mv -f" in script, "a rename keeps a reader from seeing a half-written hosts.yml"
+
+
+def test_the_hermes_login_timer_refreshes_before_the_app_token_expires() -> None:
+    keys = _unit_keys(HERMES_TOKEN_TIMER)
+    minutes = int(_last(keys, "OnUnitActiveSec").removesuffix("min"))
+    assert minutes * 60 < 3600, f"an installation token lives one hour, so {minutes} min between mints leaves no room for a retry"
+    assert _last(keys, "WantedBy") == "timers.target", "a timer without WantedBy= is enabled but never runs"
+
+
+def test_the_deploy_mints_the_hermes_login_and_proves_it_before_restarting_hermes() -> None:
+    tasks = _task_file("services.yml")
+    timer = tasks["Enable the Hermes GitHub login refresh"]["ansible.builtin.systemd_service"]
+    assert timer["name"] == HERMES_TOKEN_TIMER.name and timer["enabled"] is True and timer["state"] == "started"
+    mint = tasks["Mint the Hermes GitHub login now"]
+    assert mint["ansible.builtin.systemd_service"]["name"] == HERMES_TOKEN.name
+    assert mint["ignore_errors"] is True, "a GitHub outage at deploy time must not turn the rest of the host config red"
+    assert mint["register"] == "hermes_login_mint"
+    stat = tasks["Read the login file the mint wrote"]["ansible.builtin.stat"]
+    assert stat["path"] == f"{HERMES_GH_DIR}/hosts.yml", "the restart waits on the file itself, not on the task result: an old token file may still be there"
+    proof = tasks["Prove the Hermes login reads the issue it was built for"]
+    assert proof["become_user"] == "nish"
+    assert proof["environment"]["GH_CONFIG_DIR"] == HERMES_GH_DIR, "a proof that reads nish's own ~/.config/gh proves nothing about the minted login"
+    assert set(proof["environment"]) == {"HOME", "PATH", "GH_CONFIG_DIR"}, (
+        f"gh reads HOME and GH_CONFIG_DIR only, so nothing else belongs here: a hardcoded XDG_RUNTIME_DIR would go stale on a uid change and gh would fall back to ~/.config/gh: {proof['environment']}"
+    )
+    assert "hermes_login_file.stat.exists" in str(proof["when"]), "the proof must not run when the mint wrote nothing"
+    argv = proof["ansible.builtin.command"]["argv"]
+    assert argv[:3] == ["/usr/bin/gh", "issue", "view"] and argv[3] == "10267", argv
+    restart = tasks["Restart Hermes onto the minted login"]
+    when = str(restart["when"])
+    assert "hermes_sandbox_dropin is changed" in when, "systemd reads the drop-in only at start, so a change to it without a restart leaves the old sandbox running"
+    assert "hermes_login_file.stat.exists" in when, "a restart without a minted login leaves Hermes with no gh at all"
+    assert "hermes_login_proof is skipped or hermes_login_proof is succeeded" in when, "the restart waits on the proof too, or it moves Hermes onto a login nothing has proven"
+    assert set(restart["loop"]) == {"hermes-gateway.service", "hermes-serve.service"}
+    names = {handler["name"] for handler in _play_handlers()}
+    assert not ({"Restart the Hermes units", "Restart hermes units for their sandbox"} & names), "a handler can flush before services.yml mints and proves the login (review of PR #11116)"
+
+
+def test_a_failed_first_deploy_parks_the_restart_and_the_next_deploy_fires_it() -> None:
+    tasks = _task_file("services.yml")
+    stat = tasks["Read any parked-hermes-restart marker from a failed deploy"]
+    assert stat["ansible.builtin.stat"]["path"] == "/run/hermes-sandbox-restart-pending"
+    restart = tasks["Restart Hermes onto the minted login"]
+    when = str(restart["when"])
+    assert "hermes_restart_pending.stat.exists" in when, "a restart that skipped on a failed deploy must fire on a later deploy's proven login, not disappear with the copy's changed flag"
+    assert "hermes_login_file.stat.exists" in when and "hermes_login_proof is skipped or hermes_login_proof is succeeded" in when
+    clear = tasks["Clear the parked-hermes-restart marker the restart fired from"]
+    assert clear["ansible.builtin.file"]["state"] == "absent"
+    assert "hermes_restart is changed" in str(clear["when"]), "the marker dies only once the restart that consumed it ran, or a later deploy parks it again"
+    park = tasks["Park the failed-deploy restart in the marker file"]
+    park_when = str(park["when"])
+    assert park["ansible.builtin.copy"]["dest"] == "/run/hermes-sandbox-restart-pending"
+    assert "not ansible_check_mode" in park_when, "check mode installs nothing, so it must park nothing"
+    assert "hermes_sandbox_dropin is changed" in park_when
+    assert "hermes_login_file.stat.exists" in park_when and "hermes_login_proof is skipped or hermes_login_proof is succeeded" in park_when, "the park waits on exactly what the restart needs, so a later deploy restarts instead of parking twice"
+
+
+def test_the_deploy_restarts_hermes_when_the_dropin_that_hides_the_login_changes() -> None:
+    task = _task_file("install-config.yml")["Install the Hermes sandbox drop-in and notice its change"]
+    assert task["ansible.builtin.copy"]["src"].endswith("hermes-.service.d/sandbox.conf")
+    assert task["register"] == "hermes_sandbox_dropin", "the restart in services.yml is gated on this copy's change"
+    assert "Restart the Hermes units" not in task["notify"], "the restart belongs after the deploy has a minted login"
+
+
+def test_the_hermes_login_unit_names_an_absolute_key_path() -> None:
+    # Or %u: the system manager user name, "root" in a system unit, not User=
+    # (systemd.unit 255, "Specifiers", fleet-ops#10267 review of the /home/%u
+    # spelling). Only the spelled-out path reads the key the mint signs with.
+    keys = _unit_keys(HERMES_TOKEN)
+    key = [value for value in keys["Environment"] if value.startswith("APP_KEY=")][-1].split("=", 1)[1]
+    assert key == "/home/nish/.config/fleet-worker/nishfleet-worker.private-key.pem"  # gitleaks:allow
+    assert "%h" not in str(keys["Environment"]), "%h expands to /root in a system unit"
+    assert "%u" not in str(keys["Environment"]), "%u expands to root in a system unit"
 
 
 def test_hermes_units_confine_writes_to_the_paths_hermes_uses() -> None:

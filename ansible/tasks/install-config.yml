@@ -120,20 +120,21 @@
     - Reload systemd
     - Start the runner sandbox apply
 
-# A drop-in applies at the next start, and Restart=always or the daily hermes update
-# would be the first start: unbounded. This copy runs before the generic one below
-# (which would consume the change) so the gateway takes the sandbox at the deploy
-# (fleet-ops#11185).
-- name: Install the hermes sandbox drop-in and restart the hermes units when it changes
+# Copied here on its own, before the directory copy below installs the same
+# bytes, so that a change to this file alone is visible to tasks/services.yml:
+# the restart it needs is decided there, once the deploy has a minted login to
+# point Hermes at (fleet-ops#10267). A handler here would flush before that
+# proof runs, and a flush after it would still miss a host whose next deploy
+# reports no change.
+- name: Install the Hermes sandbox drop-in and notice its change
   ansible.builtin.copy:
-    src: "{{ rootfs }}/etc/systemd/system/hermes-.service.d/"
-    dest: /etc/systemd/system/hermes-.service.d/
+    src: "{{ rootfs }}/etc/systemd/system/hermes-.service.d/sandbox.conf"
+    dest: /etc/systemd/system/hermes-.service.d/sandbox.conf
     owner: root
     group: root
     mode: preserve
-  notify:
-    - Reload systemd
-    - Restart hermes units for their sandbox
+  register: hermes_sandbox_dropin
+  notify: Reload systemd
 
 # The per-unit drop-in dirs (the review runners' 30-review-user.conf, the pilot's
 # own dir) are not covered by the agent-runner copy above, so this generic copy
