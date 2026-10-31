@@ -41,7 +41,7 @@
   `config/litellm-proxy.schema.json` must refuse: the bench block, a router
   cooldown over 60, a zero row cooldown, a row cooldown, one case per
   judge-group rule (the fallback rows back on order 1, the paid row's rpm
-  raised, its concurrency raised, a fourth judge row, the paid row doubled
+  raised, its concurrency raised, a third judge row, the paid row doubled
   as its own fallback, a fallback row renamed, both fallbacks on one key, and
   a swap of the paid row's model, host or key, or of a fallback's model or
   host), a router with no Redis pin store, a router affinity TTL below 300 and
@@ -54,8 +54,13 @@
   not 0, a router with no `allowed_fails_policy` block at all, and a row whose
   own `allowed_fails_policy` names `NotFoundErrorAllowedFails` at anything but
   0 (a row-level threshold resolves before the router policy, so a row
-  override would re-open the two-404 leak). CI validates every file in the directory against the schema
-  and each must fail, so a loosened schema goes red. A new schema rule gets a
+  override would re-open the two-404 leak). Each file is the live config's judge,
+  worker and tether rows plus its own `router_settings` with one mutation, and its
+  header carries the `# undo:` lines that reverse it.
+  `tests/test_reject_files_fail_on_their_own_rule.py` requires every file to fail
+  the schema and to pass once its own undo lines are applied (fleet-ops#10417), so
+  a loosened schema goes red and a file that drifted from the live config cannot
+  reject for the wrong reason. A new schema rule gets a
   reject file in the same PR.
 - `config/grafana/` — the fleet-view Grafana provisioning
   (`provisioning/datasources/`, `provisioning/dashboards/`,
