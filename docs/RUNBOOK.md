@@ -250,6 +250,20 @@ use instead.
   `no answer from GitHub`, `gh` lost its login or GitHub was unreachable, and
   the pin is not the problem: re-run the playbook.
 
+## The runner tree is bound per unit (fleet-ops#11484)
+
+A job on `actions.runner.Nishfleet.netcup-agent-<N>` sees only
+`~/.local/share/agent-runner/<N>` writable: the pooled
+`20-lockdown.conf` binds `agent-runner/%j` with `%j` = "the final component of
+the prefix" (systemd.unit(5)), so `20` for `-20.service`. The bind used to name
+`agent-runner` whole, and on 2026-10-31 a job overwrote all 30 runners'
+`runsvc.sh` through it, which took the pool offline until each was restored from
+its own `bin/runsvc.sh`. A runner's self-update and restarts are unaffected:
+`bin.<ver>`/`externals.<ver>` and their links live in the runner's own dir.
+`test_the_agent_pool_binds_only_each_runners_own_dir` in
+`tests/test_runner_jail_start_state.py` fails the PR if the line is widened;
+detection that catches it live is `fleet-sync`'s STUB-GUARD (fleet-ops#11483).
+
 ## Dashboards and the CI runner flip
 
 `systemctl --user is-active fleet-grafana.service` prints `active`. The service is
