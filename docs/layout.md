@@ -67,9 +67,14 @@
   `fleet-sync.service` copies into `~/.claude/agents` ([remote-control.md](remote-control.md) "Subagents on
   the Max config dir").
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
-  age-out rules `fleet-sync.service` applies on every sync: an
-  `agent-worktrees/` dir untouched for 3 days goes, and so do the dated files
-  under `.pi/agent/sessions` and `.local/state/pi-issues`.
+  age-out rule `fleet-sync.service` installs on every deploy;
+  `systemd-tmpfiles --user --create` places it there and the daily
+  `systemd-tmpfiles-clean.timer` pass deletes: an `agent-worktrees/` dir whose
+  own stamps (b/ctime/mtime, age-by bcmBCM) are 3 days old goes whole;
+  `.orch-mirror` and the parked `orch-damaged-*` save-dirs are x-spared.
+- `config/user-tmpfiles.d/pi-state.conf` — the held, uninstalled 7-day
+  age-out rules for `.pi/agent/sessions` and `.local/state/pi-issues`. No
+  issue assigned them, so no unit installs this file yet.
 - `credentials/` — `app-manifest.json`, the worker GitHub App manifest
   (`.github/workflows/agent.yml` cites it for the App's grant).
 - `.agents/skills/verify-fleet/` — the verify-fleet skill. `SKILL.md` says how
@@ -156,14 +161,15 @@
   agent runs on, with `CUA_MESH=prefer` and the seat b env file; it is
   root-owned, installed from `rootfs/etc/systemd/user/` by
   `fleet-host-config.service`, because `systemd-analyze verify` cannot stub the
-  bundled `cua` binary. Run one by hand with `systemctl --user start <unit>`: all
-  three are enabled already, and a unit edit applies at that unit's next restart.
+  bundled `cua` binary. Run one by hand with `sudo systemctl start <unit>`
+  (the desk daemon takes `systemctl --user start`): all three are enabled
+  already, and a unit edit applies at that unit's next restart.
   Off switch, one unit at a time:
-  `systemctl --user disable --now tincan-listen-fleet-worker.service`
-  `systemctl --user disable --now tincan-listen-pi.service`
+  `sudo systemctl disable --now tincan-listen-fleet-worker.service`
+  `sudo systemctl disable --now tincan-listen-pi.service`
   `systemctl --user disable --now cua-desk-daemon.service`
   Delete a wake service by deleting its file here and the installed copy, then
-  `systemctl --user daemon-reload`. Delete the desk daemon with
+  `sudo systemctl daemon-reload`. Delete the desk daemon with
   `systemctl --user disable --now cua-desk-daemon.service` (it removes the wants
   link), then remove its file under `rootfs/etc/systemd/user/` and step 2k, then
   `systemctl --user daemon-reload`.

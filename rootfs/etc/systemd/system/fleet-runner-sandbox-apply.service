@@ -1,0 +1,81 @@
+# Restarts every runner unit whose jail drop-in is deployed but has not taken
+# effect yet (fleet-ops#11248: #11241 installed InaccessiblePaths=-/run/user at
+# 18:27Z, daemon-reload included, and the probe of every job failed with
+# "/run/user is readable from this job" until a hand restart of all 28 idle
+# runner units at 18:47Z, because a running unit keeps the mount namespace it
+# started with). One pass, on two triggers:
+#   - ansible/host.yml's handler, when a runner drop-in was just deployed;
+#   - fleet-runner-sandbox-apply.timer every 5 min, which catches the units
+#     that were busy at the deploy: each job end frees one, and the next pass
+#     restarts it (a busy unit is never restarted, so no job is ever killed;
+#     the nightly drain for the whole pool is fleet-ops#10898's playbook).
+# Staleness is a drop-in file's mtime newer than the unit's
+# ExecMainStartTimestamp. The unit matches the drop-in dirs that apply to it:
+# its own <unit>.service.d and every search path *.service.d whose name ends
+# in - (the wildcard form that systemd keeps under actions.runner.*-).
+# Documentation source: systemd.exec(5), "Settings in the dependency tree's
+# drop-in files are read when the unit starts"; the deploy-side trigger is the
+# Ansible handler pattern host.yml already uses for the hermes sandbox
+# (fleet-ops#11185).
+# SYSTEMCTL, PS, STAT, DATE and DROPIN_ROOT exist so the tests run this very
+# ExecStart against stub systemctl and ps
+# (tests/test_runner_sandbox_apply.py); the host never overrides them.
+# $$ doubling ($FLOCK, $units, ...) as in fleet-provider-watch.service; a literal
+# percent is doubled for systemd (the +%%s of date, the -c %%Y of stat), and the
+# awk lookup is a cut, because inside the double quotes bash would expand awk's
+# $1 first and set -u would kill the unit. The bash is one single-quoted string
+# with no single quote or backtick inside.
+[Unit]
+Description=Restart runner units whose jail drop-in is newer than their start
+
+[Service]
+Type=oneshot
+RuntimeDirectory=fleet-runner-sandbox-apply
+# Restarts run inside this start, and a unit that picked up a job between the
+# busy check and its restart (a sub-second race, and the nightly drain carries
+# the same one) waits up to 5 min for the job to end before the runner exits
+# (fleet-ops#10898). 15 min covers two such waits plus the pool restart.
+TimeoutStartSec=15min
+Environment=LC_ALL=C
+Environment=FLOCK=/run/fleet-runner-sandbox-apply/apply.lock
+Environment=SYSTEMCTL=/usr/bin/systemctl
+Environment=PS=/usr/bin/ps
+Environment=STAT=/usr/bin/stat
+Environment=DATE=/usr/bin/date
+Environment=DROPIN_ROOT=/etc/systemd/system
+# flock -n -E 0: a second start (handler and timer, or two in a row) exits 0
+# instead of running a second pass; the run in flight covers both
+# (flock(1) --conflict-exit-code). The lock file lives in the RuntimeDirectory.
+ExecStart=/usr/bin/flock -n -E 0 "$FLOCK" /bin/bash -c 'set -euo pipefail; umask 077; \
+units=$$("$SYSTEMCTL" list-units --type=service --state=active --no-legend --plain "actions.runner.*" | cut -d " " -f1); \
+restarted=0; busy=0; n=0; \
+for u in $$units; do n=$((n+1)); \
+  pre="$${u%.service}"; start=$$("$SYSTEMCTL" show -p ExecMainStartTimestamp --value "$$u"); \
+  case "$$start" in "" | "n/a") continue ;; esac; \
+  s=$$("$DATE" -d "$$start" +%%s); \
+  newest=0; \
+  for d in "$$DROPIN_ROOT"/*.service.d "$$DROPIN_ROOT/$$pre.service.d"; do \
+    [ -d "$$d" ] || continue; \
+    base=$${d%.service.d}; bn=$${base##*/}; \
+    case "$$d" in \
+      "$$DROPIN_ROOT/$$pre.service.d") : ;; \
+      *-.service.d) [ "$${pre##"$$bn"}" != "$$pre" ] || continue ;; \
+      *) continue ;; \
+    esac; \
+    for f in "$$d"/*; do \
+      [ -f "$$f" ] || continue; \
+      m=$$("$STAT" -c %%Y "$$f"); \
+      [ "$$m" -gt "$$newest" ] && newest=$$m; \
+    done; \
+  done; \
+  [ "$$newest" -gt "$$s" ] || continue; \
+  esc=$${u//./\\.}; \
+  if "$$PS" -C Runner.Worker -o cgroup= | grep -Eq "/$$esc(/|$$)"; then \
+    echo "fleet-runner-sandbox-apply: $$u busy, restarts when its job ends (drop-in $$newest > start $$s)"; \
+    busy=$((busy+1)); continue; \
+  fi; \
+  echo "fleet-runner-sandbox-apply: $$u restarts (drop-in $$newest > start $$s, idle)"; \
+  "$$SYSTEMCTL" restart "$$u" || { echo "fleet-runner-sandbox-apply: restarting $$u failed"; exit 1; }; \
+  restarted=$((restarted+1)); \
+done; \
+echo "fleet-runner-sandbox-apply: checked $$n restarted $$restarted busy-wait $$busy"'
