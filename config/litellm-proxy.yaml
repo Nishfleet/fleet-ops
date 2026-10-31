@@ -1,7 +1,7 @@
 # Approved models: one line per router provider (API key variable lowercased, no _API_KEY), holding the row's model without its openai/ or anthropic/ prefix. A row outside this list needs Nish's yes, and tests/test_provider_watch.py fails CI on one; tests/evals/results/ holds the eval a no-row decision rests on (Nish 2026-09-28).
 # A provider in config/provider-watch.json with no row needs a line here: "# No row for <provider>, YYYY-MM-DD: <reason>".
 # Approved opencode: deepseek-v4.1-flash
-# Approved commandcode: z-ai/glm-5.3-flash
+# Approved commandcode: z-ai/glm-5.3-flash, deepseek/deepseek-v4.1-flash
 # Approved minimax: MiniMax-M3.1-Flash-Preview
 # Approved stepfun: step-5-preview
 # Approved synthetic: hf:zai-org/GLM-5.3-Flash
@@ -15,6 +15,8 @@
 # OpenCode and Command Code keep paid plans, served as router rows below.
 model_list:
 # Command Code carries z-ai/glm-5.3-flash only, 10 USD/day per row (fleet-ops#9744); delete the two -b rows to drop that lane.
+# Order 2, beside Synthetic: LiteLLM v1.105 picks the lowest order before its deployment-budget filter, so a capped
+# order-1 row left the group empty instead of falling to order 2 (fleet worker groups stalled 2026-10-31).
 # That is a file edit and a restart (about 101 s, with a 30 s drain of in-flight calls): POST /model/block answers 400 for a config-file row.
 - model_name: worker-capable
   litellm_params:
@@ -24,7 +26,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
-    order: 1
+    order: 2
     weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
@@ -48,7 +50,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
-    order: 1
+    order: 2
     weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
@@ -72,7 +74,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
-    order: 1
+    order: 2
     weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
@@ -96,7 +98,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
-    order: 1
+    order: 2
     weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
@@ -239,7 +241,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
@@ -278,7 +280,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     # Synthetic: no slot count; the 500-req/5h pool's 429 cools the row and the window refills (fleet-ops#10694).
     cooldown_time: 900
@@ -296,7 +298,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
@@ -313,7 +315,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
@@ -330,7 +332,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
@@ -347,7 +349,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
@@ -364,7 +366,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
@@ -381,7 +383,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
@@ -902,7 +904,8 @@ model_list:
     rpm: 3
     order: 1
     max_parallel_requests: 3
-    cooldown_time: 900
+    # 6 h park on the first 429: the token-plan 429 is a monthly cap that names its reset clock, not a burst (fleet-ops#11234).
+    cooldown_time: 21600
     # qwen3.8-max reasons until the budget caps it; DashScope reads that budget only through extra_body (fleet-ops#9405).
     extra_body:
       enable_thinking: true
@@ -917,6 +920,7 @@ model_list:
     id: alibaba-qwen38max-judge
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 # assistant: DeepSeek-V4.1-Flash on prepaid rows only, for the Hermes chat agent (Nish 2026-10-21).
 - model_name: assistant
   litellm_params:
@@ -941,6 +945,33 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
+# Second assistant row (fleet-ops#11239): when OpenCode Go is inside its usage wall, Hermes
+# chat and the review's fallback family had no row at all. MiniMax is a flat plan already
+# serving the worker groups, and a family no other reviewer uses (agent.yml family_of).
+- model_name: assistant
+  litellm_params:
+    model: anthropic/MiniMax-M3.1-Flash-Preview
+    api_base: https://api.minimax.io/anthropic
+    api_key: os.environ/MINIMAX_API_KEY
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    cache_read_input_token_cost: 6e-08
+    cache_creation_input_token_cost: 3.75e-07
+    tags:
+    - prepaid
+    - minimax
+    order: 2
+    weight: 1
+    max_parallel_requests: 12
+    cooldown_time: 1800
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 93.4% cache-read 7d on real router traffic."
+    id: minimax-m31-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 3
 - model_name: tether
   litellm_params:
     model: anthropic/claude-sonnet-5-5
@@ -969,6 +1000,54 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "Caches: direct probe 2026-10-23 on api.anthropic.com/v1/messages with a 23403-token system block marked cache_control, call 1 cache_creation_input_tokens 23403, call 2 cache_read_input_tokens 23403 of 23414 (99.9%)."
     id: anthropic-sonnet55-tether
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+# gh-aw pilot (fleet-ops#11311): a slash-free name for the only two models the owner allows it, and no fallback,
+# because gh-aw rejects a / inside the model name. The DeepSeek row is priced as the GLM row, the dearer of the two.
+- model_name: pilot
+  litellm_params:
+    model: openai/z-ai/glm-5.3-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-15 on api.commandcode.ai z-ai/glm-5.3-flash, 3 calls on a 19287-token prefix, cached_tokens 0/19264/19264 (fleet-ops#9744)."
+    id: commandcode-glm53flash-pilot
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: pilot
+  litellm_params:
+    model: openai/deepseek/deepseek-v4.1-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-31 on api.commandcode.ai deepseek/deepseek-v4.1-flash, 3 calls on a 26034-token prefix, cached_tokens 0/25984/25984 (fleet-ops#11311)."
+    id: commandcode-ds41flash-pilot
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 router_settings:

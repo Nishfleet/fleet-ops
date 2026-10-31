@@ -1498,6 +1498,7 @@ RUNNER_DROPINS = sorted(INSTALLED.glob("actions.runner.*.service.d"))
 CREATING_TYPES = {"d", "D", "f", "F", "L"}
 RUN_PATH_ALLOWLIST = {
     "/run/docker.sock": "created by docker.socket (enabled, started at sockets.target, before the runners)",
+    "/run/user": "made at boot by systemd's shipped tmpfiles file (/usr/lib/tmpfiles.d/systemd.conf, d /run/user 0755 root root -), before the runners; nothing unprivileged recreates it (fleet-ops#11232)",
     "/run/user/1000": "the user runtime dir comes from logind (linger), before the runners",
     "/run/user/1000/*": "entries of the user runtime dir; the dir itself comes from logind (linger)",
     "/run/podman-eval": "retired path, kept masked",
@@ -2189,8 +2190,8 @@ def test_root_tincan_listener_keeps_its_trim_flags_and_its_role_allow_list() -> 
 
 
 WAKE_UNITS = (
-    "systemd/tincan-listen-fleet-worker.service",
-    "systemd/tincan-listen-pi.service",
+    "rootfs/etc/systemd/system/tincan-listen-fleet-worker.service",
+    "rootfs/etc/systemd/system/tincan-listen-pi.service",
     "rootfs/etc/systemd/user/cua-desk-daemon.service",
 )
 # Decision (fleet-ops#10263): the permissive flags stay. These listeners run headless with nobody to answer a prompt, and the
@@ -2222,14 +2223,16 @@ def test_wake_unit_is_in_the_repo_and_carries_the_page_hook(relative: str) -> No
     assert _last(keys, "Restart") == "always"
     if relative != DESK_UNIT:
         assert _last(keys, "OnFailure") == "fleet-unit-failed@%n.service"
-    assert _last(keys, "WantedBy") == "default.target"
+    assert _last(keys, "WantedBy") == (
+        "multi-user.target" if relative.startswith("rootfs/etc/systemd/system/") else "default.target"
+    )
     if relative != DESK_UNIT:
         assert keys["ExecStart"][0].startswith("/home/nish/.local/bin/tincan listen --exec ")
 
 
 def test_each_wake_unit_is_pinned_on_its_agent_flags_and_task_id() -> None:
     for name, (binary, flags) in WAKE_AGENT.items():
-        keys = effective_directives(ROOT / "systemd" / f"{name}.service")
+        keys = effective_directives(ROOT / "rootfs/etc/systemd/system" / f"{name}.service")
         exec_start = keys["ExecStart"][0]
         assert binary in exec_start, f"{name}: ExecStart no longer runs {binary}"
         if flags:

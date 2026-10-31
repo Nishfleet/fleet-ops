@@ -128,7 +128,7 @@ jobs:
   new:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' && github.event_name == 'issues' && github.event.label.name == 'agent-ready' &&
-      ((inputs.agent_mode || vars.AGENT_MODE) == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live'
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     # issues: write is what agent.yml's work job asks for (Router wall and the
     # strike step relabel with GITHUB_TOKEN).
@@ -979,7 +979,7 @@ jobs:
           # (fleet-ops#9278 items 4 and 11). needs-nish-decision stays: it is a
           # record of a reserved call, not a queue state. An empty list makes the
           # edit fail and || true swallows it, the same net effect as skipping.
-          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","handoff-ended"))] | join(",")')" || true
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","handoff-ended"))] | join(",")')" || true
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.

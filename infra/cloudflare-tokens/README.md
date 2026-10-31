@@ -233,7 +233,26 @@ vps_cidrs = ["<ipv4>/32", "<ipv6>/128"]
 
 Read the addresses on the box with `curl -4 -s ifconfig.me` and
 `curl -6 -s ifconfig.me`. Place the file before the first apply that includes
-`vps-grafana`. The `precondition` on the token resource stays: with `vps_only =
+`vps-grafana`.
+
+**The apply checks the file against the host.** The unit's `ExecStartPre` reads
+the host's current addresses from the same two sources and fails the unit
+before the apply when a current address is not in the file: an address change
+otherwise leaves the apply succeeding with a token locked to dead addresses
+(fleet-ops#10969), and Grafana's Cloudflare queries fail while the renewal
+stays green. When the check fails, refresh the file in one command and start
+the unit again:
+
+```sh
+printf 'vps_cidrs = ["%s/32", "%s/128"]\n' "$(curl -4 -s ifconfig.me)" "$(curl -6 -s ifconfig.me)" > ~/.config/cloudflare/vps-cidrs.tfvars
+```
+
+If the host's egress address changes for good, this one command is the whole
+fix: a changed `vps_cidrs` is a change to the token resource, so the next apply
+mints `vps-grafana` locked to the fresh addresses, and an unchanged file
+changes nothing on a healthy apply.
+
+The `precondition` on the token resource stays: with `vps_only =
 true` and an empty `vps_cidrs`, the plan fails (fail-closed) instead of minting
 an unlocked token. That failure stops the whole apply, so no other token is
 renewed either; it is loud (the unit's `OnFailure=` fires the healthchecks fail
