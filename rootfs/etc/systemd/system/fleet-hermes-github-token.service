@@ -27,7 +27,7 @@ Description=Mint the short-lived GitHub App login Hermes' gh CLI reads (fleet-op
 # attributed to nishfleet-worker[bot], not to a person.
 #
 # A run whose token file is younger than 15 min mints nothing: a Hermes restart
-# pulls this unit in (Requires= in its sandbox drop-in), and without the skip
+# pulls this unit in (Wants= in its sandbox drop-in), and without the skip
 # every Hermes restart would spend two API calls on a token that still works.
 # gh 2.103.3 writes nothing to its config dir (fleet-ops#10184), so the file
 # age is the mint time.
@@ -37,11 +37,12 @@ Description=Mint the short-lived GitHub App login Hermes' gh CLI reads (fleet-op
 # directory from every locked listener (fleet-agent-lock.service.d/50-shared.conf
 # and config/agent-locks.json must_hide).
 #
-# Switch off: `systemctl disable --now fleet-hermes-github-token.timer` and
-# `systemctl mask fleet-hermes-github-token.service` (the Hermes units Requires=
-# it, so the mask also keeps them down). Remove the Requires= and After= lines,
-# GH_CONFIG_DIR and the InaccessiblePaths= line from the sandbox drop-in, or
-# hermes-gateway and hermes-serve cannot start.
+# Leave or switch back: `systemctl disable --now
+# fleet-hermes-github-token.timer` and `systemctl mask
+# fleet-hermes-github-token.service`, then remove the Wants= and After= lines,
+# GH_CONFIG_DIR and the InaccessiblePaths= line from the sandbox drop-in: the
+# pull-in is a Wants=, so a masked mint leaves Hermes running with gh
+# unauthenticated unless the drop-in also goes.
 OnFailure=fleet-unit-failed@%N.service
 # Six tries in ten minutes, then the pull-ins and the timer both report start
 # failures until the window passes: without a cap a Hermes crash loop would
@@ -49,6 +50,12 @@ OnFailure=fleet-unit-failed@%N.service
 # token quota the worker runs spend.
 StartLimitIntervalSec=10min
 StartLimitBurst=6
+# The first mint after a boot must reach GitHub while /run is fresh, so order
+# the start after the boot-wait target instead of racing DHCP and DNS
+# (systemd.special(7), "network-online.target"), and the curl retries below
+# cover a network that came up after the target fired anyway.
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=oneshot
@@ -82,7 +89,7 @@ ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
   p=$$(printf "{\\"iat\\":%%d,\\"exp\\":%%d,\\"iss\\":\\"%%s\\"}" $$((now-60)) $$((now+540)) "$$APP_ID" | b64); \
   s=$$(printf "%%s.%%s" "$$h" "$$p" | openssl dgst -sha256 -sign "$$APP_KEY" | b64); \
   auth() { printf "header = \\"Authorization: Bearer %%s.%%s.%%s\\"\\nheader = \\"Accept: application/vnd.github+json\\"\\n" "$$h" "$$p" "$$s"; }; \
-  id=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --config <(auth) "$$GITHUB_API_URL/repos/Nishfleet/fleet-ops/installation" | jq -er .id); \
+  id=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --retry-all-errors --config <(auth) "$$GITHUB_API_URL/repos/Nishfleet/fleet-ops/installation" | jq -er .id); \
   tok=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --retry-all-errors -X POST --config <(auth) -d "{\\"permissions\\":{\\"actions\\":\\"read\\",\\"issues\\":\\"write\\",\\"pull_requests\\":\\"read\\"}}" "$$GITHUB_API_URL/app/installations/$$id/access_tokens" | jq -er .token); \
   { echo "github.com:"; echo "    user: nishfleet-worker"; echo "    oauth_token: $$tok"; echo "    git_protocol: https"; } > "$$RUNTIME_DIRECTORY/hosts.yml.new"; \
   mv -f "$$RUNTIME_DIRECTORY/hosts.yml.new" "$$RUNTIME_DIRECTORY/hosts.yml"; \

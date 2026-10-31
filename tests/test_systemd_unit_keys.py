@@ -311,7 +311,8 @@ def test_hermes_reads_a_minted_login_while_nishes_admin_login_is_hidden() -> Non
         assert "/home/nish/.config/gh" in hidden, f"{unit}: nish's admin gh login is still readable, and this unit reads text from strangers (fleet-ops#10267)"  # gitleaks:allow
         env = {name: value for values in keys["Environment"] for name, value in (item.split("=", 1) for item in shlex.split(values))}
         assert env.get("GH_CONFIG_DIR") == HERMES_GH_DIR, f"{unit}: gh must read the minted login, not ~/.config/gh: {env.get('GH_CONFIG_DIR')}"
-        assert "fleet-hermes-github-token.service" in shlex.split(" ".join(keys["Requires"])), f"{unit}: nothing makes the minted login exist before this unit starts"
+        assert "fleet-hermes-github-token.service" in shlex.split(" ".join(keys["Wants"])), f"{unit}: the minted login is never pulled in on a start"
+        assert "fleet-hermes-github-token.service" not in " ".join(keys.get("Requires", [])), f"{unit}: a Requires= pull-in stops the whole start when the mint meets an outage, and a dependency failure never fires Restart=: Hermes stayed down until a deploy (fleet-ops#11502 review, 7c7c8df)"
         assert "fleet-hermes-github-token.service" in shlex.split(" ".join(keys["After"])), f"{unit}: a restart could start before the token directory is written"
 
 
@@ -325,6 +326,9 @@ def test_the_hermes_login_oneshot_mints_the_narrow_token_gh_needs() -> None:
     assert _last(keys, "RuntimeDirectoryMode") == "0700", "gh's hosts.yml carries a live token"
     assert _last(keys, "RuntimeDirectoryPreserve") == "yes", "gh reads the file between mints, so it may not vanish when the oneshot exits"
     assert _last(keys, "OnFailure") == "fleet-unit-failed@%n.service"  # _last() lowercases, so %N reads back as %n
+    assert "network-online.target" in _last(keys, "Wants") and "network-online.target" in _last(keys, "After"), (
+        "the first mint after a boot races DHCP and DNS: the start waits for network-online.target, and both curl calls retry"
+    )
     assert not (INSTALLED / f"{HERMES_TOKEN.name}.d").is_dir(), "the deploy restarts Hermes on a change to the shared drop-in, not to a per-unit layer here"
     script = " ".join(keys["ExecStart"]).replace("%%", "%").replace("$$", "$").replace("\\\\", "\\")
     assert "$((now - $(stat -c %Y \"$RUNTIME_DIRECTORY/hosts.yml\")))" in script, "a pull-in must skip a still-fresh token file: every Hermes restart would otherwise spend the worker runs' installation-token quota"
@@ -335,6 +339,7 @@ def test_the_hermes_login_oneshot_mints_the_narrow_token_gh_needs() -> None:
     assert "repositories" not in script, "no repositories key, so gh repo list still sees every repo the App is installed on"
     assert script.count("$tok") == 1 and 'echo "    oauth_token: $tok"' in script, "the token goes straight into the 0600 file and nowhere else: not into an argument list, not into the journal"
     assert script.count("--config <(auth)") == 2, "the App JWT goes to curl as a config fd for the installation lookup and the token request only, so no later call can reuse it against another host"
+    assert script.count("--retry-all-errors") == 2, "curl retries neither a DNS failure (exit 6) nor the POST without it, so a boot-time outage left the mint failed until the timer ran again: both GitHub calls retry (curl, --retry-all-errors)"
     assert "mv -f" in script, "a rename keeps a reader from seeing a half-written hosts.yml"
 
 
