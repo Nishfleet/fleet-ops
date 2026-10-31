@@ -513,7 +513,13 @@
         # matching every npm made this check fail the 2026-10-23 runs and aborted
         # the rest of the block with it.
         # The pattern takes a flag before the subcommand too (`npm -g install`,
-        # `npm --global update`) and names `rebuild` and `prune` (fleet-ops#10082).
+        # `npm --global update`) and names `rebuild` and `prune` (fleet-ops#10082),
+        # and every npm-documented alias of each global-tree-writing subcommand
+        # unconditionally (fleet-ops#10923): a missed alias deletes a staging dir
+        # under a live npm, while an extra match only skips the removal and the
+        # closing assert fails the run loudly. `link` needs no -g to write the
+        # global tree (npm docs, docs.npmjs.com CLI: `npm link` with no args
+        # creates the symlink in the global folder), so no word is flag-gated.
         - name: Find stale npm staging dirs a stopped self-update left behind
           ansible.builtin.find:
             paths: "{{ npm_global_root.stdout }}"
@@ -526,7 +532,7 @@
           become: true
           become_user: nish
           ansible.builtin.command:
-            argv: [pgrep, -u, nish, -f, '((^|/)npm|npm-cli\.js)( +-[^ ]+( +[^ -][^ ]*)?)* +(install|i|ci|update|rebuild|prune)( |$)']
+            argv: [pgrep, -u, nish, -f, '((^|/)npm|npm-cli\.js)( +-[^ ]+( +[^ -][^ ]*)?)* +(install|i|ci|update|rebuild|prune|uninstall|remove|rm|un|r|unlink|link|ln|dedupe|ddp|u|up|upgrade|udpate|add|install-test|it)( |$)']
           register: npm_running
           failed_when: npm_running.rc not in [0, 1]
           changed_when: false
