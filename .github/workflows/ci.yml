@@ -1600,10 +1600,11 @@ jobs:
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
 
-  # infra/cloudflare-tokens/ is OpenTofu config. This job holds no Cloudflare or
-  # GitHub credential and never plans or applies: it only checks that the files
-  # are formatted and the config is valid, with the provider schemas from the
-  # lock file (-backend=false, so no state is read or written).
+  # infra/cloudflare-tokens/ and infra/llm-gateway-edge/ are OpenTofu config.
+  # This job holds no Cloudflare or GitHub credential and never plans or
+  # applies: it only checks that the files are formatted and the config is
+  # valid, with the provider schemas from the lock file (-backend=false, so no
+  # state is read or written).
   cloudflare-tokens-tofu:
     name: cloudflare-tokens-tofu
     runs-on: ubuntu-latest
@@ -1618,14 +1619,20 @@ jobs:
           tofu_version: 1.13.1
           tofu_wrapper: false
       - name: tofu fmt -check
-        working-directory: infra/cloudflare-tokens
-        run: tofu fmt -check -diff -recursive
+        run: |
+          for d in infra/cloudflare-tokens infra/llm-gateway-edge; do
+            (cd "$d" && tofu fmt -check -diff -recursive)
+          done
       - name: tofu init -backend=false
-        working-directory: infra/cloudflare-tokens
-        run: tofu init -backend=false -lockfile=readonly
+        run: |
+          for d in infra/cloudflare-tokens infra/llm-gateway-edge; do
+            (cd "$d" && tofu init -backend=false -lockfile=readonly)
+          done
       - name: tofu validate
-        working-directory: infra/cloudflare-tokens
-        run: tofu validate
+        run: |
+          for d in infra/cloudflare-tokens infra/llm-gateway-edge; do
+            (cd "$d" && tofu validate)
+          done
 
   ratchet:
     uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main

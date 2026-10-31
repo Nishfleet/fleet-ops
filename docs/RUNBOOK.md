@@ -729,7 +729,10 @@ carries two router paths for the gh-aw pilot (`config/cloudflared/llm-gateway.ym
 Its credentials file is `~/.config/cloudflare/llm-gateway-tunnel.json` (0600).
 `tests/test_llm_gateway_tunnel.py` pins the ingress and the pilot rows' caps.
 
-The edge guard is in Cloudflare (account and nish.sh zone), not in this repo:
+The edge guard — the Access app, its policy and the transform rule — is
+OpenTofu-managed in `infra/llm-gateway-edge/`; its README has the import and
+apply steps, and its `access_aud` output must equal the AUD tag pinned in the
+ingress config:
 
 - **Access app "gh-aw pilot gateway"** on the pilot hostname. Its one policy is
   Service Auth for the service token "gh-aw-pilot". It reads the token from the
@@ -739,7 +742,10 @@ The edge guard is in Cloudflare (account and nish.sh zone), not in this repo:
 - **Late-transform rule** on the same hostname. It sets `x-litellm-api-key` to the
   router key `gh-aw-pilot-edge` (`models: [pilot]`, `allowed_routes: [llm_api_routes]`,
   `rpm_limit: 30`, no money budget). That key exists only in this rule. Whatever
-  key a caller sends, the router sees the pilot key.
+  key a caller sends, the router sees the pilot key. The key sits plain in the
+  zone rule, so anyone with zone-rules read can see it, and with no money budget
+  the per-row caps are the only spend limit. Give the key its own `max_budget`
+  with a router `/key/update` step (host only: it needs the master key).
 - **Connector check.** cloudflared also verifies the Access JWT itself
   (`originRequest.access`, team `nish345`, the app's AUD tag), so a deleted or
   loosened Access app still cannot open the path. An ingress edit takes effect on the
@@ -756,8 +762,10 @@ The edge guard is in Cloudflare (account and nish.sh zone), not in this repo:
   Even before the revoke, a leaked token reaches only the two pilot rows, each
   capped at 10 USD a day, at 30 requests a minute.
 - **Delete:** stop the unit and remove the link and the credentials file. In
-  Cloudflare, delete the tunnel, the `llm` DNS record, the Access app, the service
-  token and the transform rule. Then delete the router key `gh-aw-pilot-edge`.
+  Cloudflare, delete the tunnel, the `llm` DNS record, then the edge guard with
+  `tofu destroy` in `infra/llm-gateway-edge/` (the Access app, the service
+  token's policy entry and the transform rule). Then delete the router key
+  `gh-aw-pilot-edge`.
 
 ## Break-glass access (SSH is Tailscale-only)
 
