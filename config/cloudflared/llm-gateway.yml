@@ -2,8 +2,10 @@
 # cannot reach the router on loopback, so this locally managed Cloudflare Tunnel
 # publishes two router paths and nothing else: the chat call and the model list
 # gh-aw reads to check the model exists. Every other path, the admin routes
-# included, answers 404 at the connector. The router still checks the caller's
-# key, which reaches only the pilot group (config/litellm-proxy.yaml).
+# included, answers 404 at the connector. Before that, the Cloudflare edge lets
+# through only the pilot's Access service token and replaces any router key
+# with the pilot key (docs/RUNBOOK.md, "gh-aw pilot gateway"), so no other key
+# reaches the router through this hostname.
 # Docs: developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/local-management/configuration-file/
 tunnel: 6c9a41d4-9920-4565-9256-75dac2eaa350
 credentials-file: /etc/cloudflared/credentials.json
