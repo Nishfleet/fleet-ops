@@ -55,13 +55,20 @@
 # fleet-console-worker are covered from fleet-github, whose installation
 # datasources/fleet.yaml records as all Nishfleet repos; its read of these two
 # was not tested live before they were added, so a repo it cannot read files a
-# "cannot read GitHub runs" issue. seo-fix-kit is in both groups: its deploy
+# "cannot read GitHub runs" issue. TinyStudio.io-public's read was not tested
+# live either when it was added (fleet-ops#10840). seo-fix-kit is in both groups: its deploy
 # has succeeded since 2026-10-16 (newest 2026-10-23), so its 24h rule is live.
 # fleet-console-worker is in the deploy-failed group only, with no 24h rule: it
 # got its Cloudflare key on 2026-10-20 and its deploy succeeded for the first
 # time the same day, with every run since green (newest 2026-10-24), so it has
 # no red history to page on yet. Adding its 24h rule is a separate decision,
 # because a 24h rule pages Nish.
+# TinyStudio.io-public is in the deploy-failed group only, like
+# fleet-console-worker: its deploy has been red on every run since 2026-10-22
+# because its production database was deleted (fleet-ops#10830), so a 24h rule
+# would page Nish hourly about a failure only he can fix and already knows
+# (fleet-ops#10840). Its 24h rule waits until the deploy is green again
+# (fleet-ops#11414 tracks that follow-up).
 #
 # A repo with no production deploy left gets no rule, in either group. Nothing
 # here checks that, so this is the record of an intent and not a gate.
@@ -308,6 +315,31 @@ groups:
           summary: '{{ if $values }}Production deploy failing: the latest run of deploy-production.yml on main in Nishfleet/fleet-console-worker did not succeed.{{ else }}The fleet cannot read GitHub runs for Nishfleet/fleet-console-worker, so its deploy check is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}Production is not running main. A fleet issue; it does not page.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/fleet-console-worker/actions/workflows/deploy-production.yml?query=branch%3Amain'
         labels: {severity: warning, signal: deploy-failed, repo: Nishfleet/fleet-console-worker, workflow: deploy-production.yml}
+        isPaused: false
+
+      - uid: deploy-failed-tinystudio-io-public
+        title: Production deploy failed Nishfleet/TinyStudio.io-public
+        condition: C
+        data:
+          - &q-tinystudio-io-public
+            refId: A
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: "TinyStudio.io-public"
+              options: {owner: Nishfleet, repository: "TinyStudio.io-public", workflow: deploy-production.yml, branch: main}
+              refId: A
+          - *deploy-failed-latest
+        noDataState: OK
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: '{{ if $values }}Production deploy failing: the latest run of deploy-production.yml on main in Nishfleet/TinyStudio.io-public did not succeed.{{ else }}The fleet cannot read GitHub runs for Nishfleet/TinyStudio.io-public, so its deploy check is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Production is not running main. A fleet issue; it does not page.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/TinyStudio.io-public/actions/workflows/deploy-production.yml?query=branch%3Amain'
+        labels: {severity: warning, signal: deploy-failed, repo: Nishfleet/TinyStudio.io-public, workflow: deploy-production.yml}
         isPaused: false
 
   - orgId: 1

@@ -15,6 +15,8 @@
 # OpenCode and Command Code keep paid plans, served as router rows below.
 model_list:
 # Command Code carries z-ai/glm-5.3-flash only, 10 USD/day per row (fleet-ops#9744); delete the two -b rows to drop that lane.
+# Order 2, beside Synthetic: LiteLLM v1.105 picks the lowest order before its deployment-budget filter, so a capped
+# order-1 row left the group empty instead of falling to order 2 (fleet worker groups stalled 2026-10-31).
 # That is a file edit and a restart (about 101 s, with a 30 s drain of in-flight calls): POST /model/block answers 400 for a config-file row.
 - model_name: worker-capable
   litellm_params:
@@ -24,7 +26,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
-    order: 1
+    order: 2
     weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
@@ -48,7 +50,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
-    order: 1
+    order: 2
     weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
@@ -72,7 +74,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
-    order: 1
+    order: 2
     weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
@@ -96,7 +98,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
-    order: 1
+    order: 2
     weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
