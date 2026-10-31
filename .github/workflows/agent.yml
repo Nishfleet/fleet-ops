@@ -600,9 +600,9 @@ jobs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
     concurrency:
       group: review-${{ github.repository }}-${{ inputs.review_pr }}
-      # A second ask for the same PR (the stuck sweep's, a re-run) waits for the running review and
-      # then exits on its verdict; cancelling it restarted a long review every 30 min (owner 2026-10-31).
-      cancel-in-progress: false
+      # A push (synchronize) replaces the old head's review; any other ask for the PR (the stuck sweep's, a label,
+      # a re-run) waits and exits on its verdict: cancelling those restarted long reviews (owner 2026-10-31).
+      cancel-in-progress: ${{ github.event_name == 'pull_request_target' && github.event.action == 'synchronize' }}
     env:
       REPO: ${{ github.repository }}
       PR: ${{ inputs.review_pr }}
