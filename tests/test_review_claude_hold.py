@@ -102,3 +102,28 @@ def test_a_review_that_quotes_a_limit_line_is_still_a_review(tmp_path):
 def test_a_one_line_answer_that_is_not_a_limit_keeps_the_retries(tmp_path):
     out, said = limit_answer(tmp_path, "You're out of usage credits")
     assert "rc=1 calls=4" in out and "no-hold" in out and said == ""
+
+
+def test_a_seat_b_limit_with_a_seat_a_fault_still_holds(tmp_path):
+    for d in ("workspaces/tooling/fleet-ops-deploy-clone/prompts", "bin", "seats"):
+        (tmp_path / d).mkdir(parents=True)
+    (tmp_path / "workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md").write_text("")
+    (tmp_path / "AGENTS.md").write_text("")
+    (tmp_path / "in").write_text("diff")
+    (tmp_path / "seats/claude-seat-a.env").write_text("CLAUDE_CODE_OAUTH_TOKEN=tok-a\n")
+    (tmp_path / "bin/claude").write_text('#!/bin/bash\ncat > /dev/null; echo x >> "$CALLS"\nif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then echo "You\'re out of usage credits" >&2; exit 1; fi\nprintf "You\'ve hit your 5-hour limit · resets 11pm (Asia/Kolkata)"\nexit 1\n')
+    (tmp_path / "bin/claude").chmod(0o755)
+    script = hold_functions() + '''
+say() { printf "%s\\n" "$1" >> "$SAID"; }
+SHA=deadbeefcafe
+rc=0; out=$(ask_claude opus "$IN" "$RUNNER_TEMP/err" "$RUNNER_TEMP/ans") || rc=$?
+echo "rc=$rc calls=$(wc -l < "$CALLS")"
+if [ "$rc" = 2 ]; then hold_at_limit "$RUNNER_TEMP/err" "$RUNNER_TEMP/ans" "first review" opus; fi
+echo "no-hold"
+'''
+    env = {"HOME": str(tmp_path), "RUNNER_TEMP": str(tmp_path), "CREDENTIALS_DIRECTORY": str(tmp_path / "seats"), "REVIEW_BACKOFF": "0 0", "IN": str(tmp_path / "in"), "CALLS": str(tmp_path / "calls"), "SAID": str(tmp_path / "said"), "PATH": f"{tmp_path}/bin:/usr/bin:/bin"}
+    out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True).stdout
+    said = tmp_path / "said"
+    said = said.read_text() if said.exists() else ""
+    assert "rc=2 calls=2" in out and "no-hold" not in out
+    assert said.startswith("review-held: deadbeefcafe") and "resets 11pm" in said
