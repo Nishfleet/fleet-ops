@@ -222,15 +222,16 @@
   next login. The check after a fresh CLI run: `find ~/.local/state ~/.local/share
   -not -type l \( -perm -g+w -o -perm -o+w \) | wc -l` must print 0 (a symlink
   always shows mode 777, so it is excluded).
-- `systemd/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
+- `rootfs/etc/systemd/system/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
   teammate that turns one request into one queued issue (`needs-triage`, so the
   [admission job](triage-admission.md) decides whether a worker starts)
   and answers with its URL. Stock `tincan listen --exec`, and the three tools it
   may use live in `pi-extensions/issue-desk/` (its README has the allowlist, the cap, the off
   switch and the delete steps). Pi starts with no built-in tools, no other
-  extensions, no MCP and no skills, so the model cannot run anything else. Install
-  by hand from the deploy clone (link, then `enable --now`): it is not enabled by
-  `fleet-sync.service`.
+  extensions, no MCP and no skills, so the model cannot run anything else. It runs
+  as a locked system unit (#10813), installed by the host config pipeline and
+  started by `ansible/tasks/agent-lock.yml`; `systemd/tincan-listen-issue-desk.service`
+  is the retired user form, kept for rollback and deleted by #10912.
 - `pi-extensions/` — Pi extensions the fleet's own agents load through stock Pi
   (`-e <path>`), never a wrapper. `pi-extensions/issue-desk/` and
   `pi-extensions/token-redact/` so far.

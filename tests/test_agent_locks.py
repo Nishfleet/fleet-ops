@@ -204,6 +204,21 @@ def test_every_user_unit_that_runs_an_agent_is_in_the_contract() -> None:
     )
 
 
+def test_every_user_listener_unit_is_stale_or_a_gap() -> None:
+    known = set(STALE_USER_UNITS) | {gap["unit"] for gap in CONTRACT["gaps"] if gap.get("unit")}
+    unlisted = [
+        f"systemd/{path.name}"
+        for path in sorted(USER_UNITS.glob("tincan-listen-*.service"))
+        if f"systemd/{path.name}" not in known
+    ]
+    assert unlisted == [], (
+        f"{unlisted} are user units, where systemd silently ignores every sandbox setting on "
+        "this host, and no contract entry names them, so an unlocked listener could be added "
+        "without anyone noticing. List each one in stale_user_units or as a gap, or make it a "
+        "system unit under rootfs/etc/systemd/system/ and list the user file in stale_user_units."
+    )
+
+
 def test_every_gap_names_a_unit_file_that_still_exists() -> None:
     for gap in CONTRACT["gaps"]:
         unit = gap.get("unit")
