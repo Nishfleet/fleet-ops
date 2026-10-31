@@ -45,7 +45,11 @@ on:
   # The sweep below catches both, and fills free runners: every 10 minutes, so idle runners
   # never wait an hour for queued work (fleet-ops#10935).
   schedule:
-    - cron: '*/10 * * * *'
+    # GitHub delays and drops scheduled runs at the top of every hour (their docs name
+    # the start of every hour as a high-load period: 23 of 24 expected fires produced no
+    # run in 4h on 2026-10-30, fleet-ops#11271), so each fire sits 2 minutes past a
+    # ten-minute mark.
+    - cron: '2-59/10 * * * *'
 permissions: {}
 # One sweep running and one waiting per repo (15 queued behind busy runners on 2026-09-28);
 # every per-issue event gets its own group.
@@ -749,6 +753,7 @@ jobs:
             echo "#$n $ref: $class, $reason"
             case $class in
               arm)
+                if ! v=$(gh pr view "$n" -R "$GITHUB_REPOSITORY" --json autoMergeRequest,headSha 2>/dev/null); then continue; fi; jq -e '.autoMergeRequest != null and .headSha == $sha' --arg sha "$sha" <<<"$v" >/dev/null && continue  # armed on this exact head, skip the disarm: disarming opens an unarmed window until stuck-arm runs; an unreadable state skips too, the next sweep retries (fleet-ops#11271, #11129: disarmed 00:48:55Z, re-armed 01:19:13Z)
                 [ "$(jq -r .autoMergeRequest <<<"$p")" = null ] || gh pr merge "$n" -R "$GITHUB_REPOSITORY" --disable-auto || echo "::warning::#$n: disarm refused; stuck-arm arms it as it is"
                 arm=$(add "$arm" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')"); continue ;;
               review)
