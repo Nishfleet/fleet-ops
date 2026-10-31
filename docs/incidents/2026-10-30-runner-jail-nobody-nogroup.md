@@ -33,7 +33,8 @@ worker jail masks over it (`rootfs/etc/systemd/system/actions.runner.Nishfleet.n
     TemporaryFileSystem=/home/nish/.config/gh:ro
     TemporaryFileSystem=/home/nish/.config/fleet-worker:ro
 
-systemd creates `/home/nish/.config` and each mount point under it as root, at unit start.
+systemd creates `/home/nish/.config` and each mount point under it as root, at unit start
+(each point with its default 0755, whatever the parent tmpfs's `mode=0700`).
 The runner's namespace maps one uid, so the namespace's root is unmapped and every file it
 creates reads as uid 65534:
 
@@ -57,7 +58,10 @@ one-second resolution, so the second is the finest match the pair supports):
     $ systemctl show actions.runner.Nishfleet.netcup-agent-4.service -p ActiveEnterTimestamp --value
     Fri 2026-10-30 16:48:14 IST
 
-A re-check on 2026-10-31, on netcup-agent-13 after that night's update, repeats the pair:
+A re-check on 2026-10-31, on netcup-agent-13 after that night's update, repeats the pair
+and adds the journal line the ask wanted. The unit's own journal puts the listener start of
+that restart at 03:53:34.886, just after the directory's 03:53:34.849 mtime: the mount
+point is in place before the runner service starts.
 
     $ stat -c '%n %U:%G %a %y' /home/nish/.config
     /home/nish/.config nobody:nogroup 755 2026-10-31 03:53:34.849192127 +0530
@@ -65,11 +69,18 @@ A re-check on 2026-10-31, on netcup-agent-13 after that night's update, repeats 
     $ systemctl show actions.runner.Nishfleet.netcup-agent-13.service -p ActiveEnterTimestamp --value
     Sat 2026-10-31 03:53:34 IST
 
+    $ journalctl -u actions.runner.Nishfleet.netcup-agent-13.service --output short-precise | grep 03:53:34 | head -2
+    Oct 31 03:53:34.886972 netcup-rs2000 runsvc.sh[1370755]: .path=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+    Oct 31 03:53:34.917406 netcup-rs2000 runsvc.sh[1370763]: Starting Runner listener with startup type: service
+
 The 04:40 recreation on 2026-10-30 was the nightly host update, which stops and starts every
 runner. The log names each restart (`/var/lib/fleet-ops/fleet-update.log`):
 
     2026-10-30 04:36:10,349 p=3858338 u=root n=ansible | changed: [localhost] => (item=actions.runner.Nishfleet.netcup-agent-4.service)
     2026-10-30 04:36:22,106 p=3858338 u=root n=ansible | changed: [localhost] => (item=actions.runner.Nishfleet.netcup-agent-5.service)
+
+The unit journal's own lines for that restart have rotated out (the oldest agent-4 entry
+left today is 18:04 IST), so these ansible restart lines are the surviving record of it.
 
 The restart picked up the gh bind cut of fleet-ops#10949 (`d2c4980e4`, PR #11000,
 2026-10-30 00:44 IST), which removed the read-only bind that used to create
@@ -84,8 +95,8 @@ directory, which the host's own owner had. The ownership was never the thing the
 ## The fix, and where it landed
 
 The jail needs a mount point it can mount over, and the unit has to create that point. That
-is the fix in `78c5bdea9` (fleet-ops#11097, PR #11109), which added the two missing
-`TemporaryFileSystem=` lines:
+is the fix in `78c5bdea9` (fleet-ops#11097, PR #11109), which added the missing gh
+`TemporaryFileSystem=` line (the fleet-worker line came later, `a41aa761d`, PR #11057):
 
     # The same for the gh login dir the worker jail masks: fleet-ops#10949 cut the bind that used to create it here, so every worker jail died at start with "Can't mkdir /home/nish/.config/gh: Permission denied" (fleet-ops#11097).
     TemporaryFileSystem=/home/nish/.config/gh:ro
@@ -108,8 +119,11 @@ actually exists.
   the mount-point fix in PR #11109 superseded the approach, because it cannot change what
   the job sees, and #11130 stayed open, conflicting with main.
 - **A `nobody:nogroup` directory is not evidence of a foreign process.** It is the signature
-  of a file created by namespace root in a one-uid namespace, which is what every one of these
-  mount points is.
+  of a file created by namespace root in a one-uid namespace, which is what the unit's own
+  mount points are. A point a job's own bwrap has tmpfs-mounted over reads `nish:nish`
+  instead, stamped with the jail's start, not the unit's: the fresh tmpfs root is a
+  directory the job's uid created. That is the `fleet-worker` line in the stat above
+  (22:50:50, a job's jail start, not the 16:48 unit start).
 
 ## How to tell the jail starts
 
@@ -130,3 +144,7 @@ And the same probe for a path the unit does not create, which is the failure the
 
     $ bwrap --dev-bind / / --tmpfs $HOME/.config/nish-not-created --proc /proc --unshare-pid --die-with-parent -- true
     bwrap: Can't mkdir /home/nish/.config/nish-not-created: Permission denied
+
+`.config/fleet-ops` starts although the drop-in's `TemporaryFileSystem=` lines do not name
+it: the pool's read-only seats bind (`BindReadOnlyPaths=-/home/nish/.config/fleet-ops/seats`)
+creates that directory chain for every job, so the jail's mount finds a point there too.
