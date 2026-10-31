@@ -416,10 +416,10 @@ short line lives here, and the one-liner keeps the issue ref that finds it:
   --no-renames lists a guard path this head renamed away under its old name
   too. merge-tree --write-tree arrived in git 2.40, so an older runner makes
   every carry fail and a full review follows: it fails closed.
-- The third reviewer is called directly because the answering row is only in
-  the response headers (x-litellm-model-id). The key goes in the curl config,
-  never argv (#8403), and the body in a file: an argv over 128 KiB cannot start
-  curl.
+- All three risky-PR reviews run on Claude seats (Opus first, then Fable and
+  Sonnet side by side): the owner's rule of 2026-10-31. The router's judge and
+  assistant rows sat behind usage walls for hours, and every walled third
+  review filed a retry ticket.
 - A blocked `orch/issue-N` PR goes back to the orchestrator only through the
   rework block (fleet-ops#10435): its reads run on the job's token, not the
   runner login's, whose core quota other work exhausted once and reddened an
