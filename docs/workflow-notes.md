@@ -165,6 +165,27 @@ which is how two merges on 2026-10-22 reached no deploy for 40 min (fleet-ops#10
 
 ### ratchet.yml: how the rule reaches every repo
 
+Generated files (owner, 2026-10-31: "whatever pro ai devs do"): the count skips
+`.github/workflows/*.lock.yml` files that the base tree's `.gitattributes` marks `linguist-generated=true`,
+the compiled output of GitHub Agentic Workflows (`gh aw compile`). GitHub's own linguist
+marker hides such files from diffs and language stats, and gh-aw's docs review the `.md`
+source instead. The `.md` source is the authored workflow and still counts, so reviewers read
+the `.md`, not the collapsed lock-file diff. Only that one path pattern qualifies, and the
+attributes are read from the merge base (`git --attr-source`, git 2.40+), so a PR cannot mark
+its own files. The mark alone proves nothing (any repo could add it over a hand-written lock
+file), so the ratchet job itself proves every changed lock file: its `fresh()` gate fails a
+lock whose `.md` source is not in the same tree, and otherwise installs gh-aw at tag
+`v1.0.1` (commit `0627fdbe4beb5f3b71aa569f8d97150b87f2111a`) and refuses to compile unless
+the installed binary matches the pinned sha256 of that release's linux-amd64 asset
+(`746d0b41…c37652`; `gh extension install --pin` resolves through releases, so the digest,
+not the tag, pins the bytes), then runs `gh aw compile --purge`, failing if any changed lock
+path is rewritten. This runs in every repo, because the ratchet does. ci.yml's lint job runs
+the same proof over every lock file in this repo, which also catches a `.md` edit that
+leaves its untouched lock stale. The self-test pins the net cases and the gate's source
+check, including an unmarked path and a sourceless lock; the compile comparison itself is
+proven with the real compiler in the PR that introduced it.
+
+
 A repo's job `ratchet` calls this `@main` and requires `ratchet / ratchet`. The rule runs from
 main, so a PR that edits that job fails its own check. The org ruleset in
 `config/org-ruleset.json` requires this file in every repo, and a ruleset runs a file only if it
