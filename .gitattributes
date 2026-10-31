@@ -1,0 +1,2 @@
+# gh-aw compiles each .github/workflows/<name>.md into <name>.lock.yml (gh aw init writes this line).
+.github/workflows/*.lock.yml linguist-generated=true merge=ours
