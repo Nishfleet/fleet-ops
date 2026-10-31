@@ -225,4 +225,6 @@ def test_the_hold_takes_back_only_the_two_new_review_dropins() -> None:
     assert task["ansible.builtin.file"]["state"] == "absent"
     assert task["loop"] == [11, 12], "runners 9 and 10 have been review-only since they were labelled"
     assert task["ansible.builtin.file"]["path"] == "/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-{{ item }}.service.d/30-review-user.conf", "a path that names no runner number can hold any runner's drop-in back"
-    assert task["notify"] == "Reload systemd", "systemd forgets a drop-in only on a daemon-reload, and the copy reports ok once the file is on the box"
+    notify = task["notify"] if isinstance(task["notify"], list) else [task["notify"]]
+    assert "Reload systemd" in notify, "systemd forgets a drop-in only on a daemon-reload, and the copy reports ok once the file is on the box"
+    assert "Start the runner sandbox apply" in notify, "a held drop-in reaches a running runner only when the sandbox apply restarts it (fleet-ops#11248)"
