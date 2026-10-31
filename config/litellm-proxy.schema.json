@@ -163,7 +163,7 @@
       "minItems": 1,
       "allOf": [
         {
-          "$comment": "fleet-ops#10608 (Nish 2026-10-28): GLM-5.3-Flash is a worker model only and Qwen is a judge or reviewer only. A GLM-5.3-Flash row in any group but a worker group, or a Qwen row in a worker group, fails here.",
+          "$comment": "fleet-ops#10608 (Nish 2026-10-28): GLM-5.3-Flash is a worker model only and Qwen is a judge or reviewer only. A GLM-5.3-Flash row in any group but a worker group, or a Qwen row in a worker group, fails here. pilot is the gh-aw pilot's worker group (fleet-ops#11311).",
           "items": {
             "allOf": [
               { "if": { "type": "object", "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "pattern": "[Gg][Ll][Mm]-5\\.3-[Ff][Ll][Aa][Ss][Hh]" } } } } }, "then": { "required": ["model_name"], "properties": { "model_name": { "enum": ["worker-capable", "worker-cheap", "worker-public", "pilot"] } } } },
