@@ -37,7 +37,8 @@
         "~/.config/tincan/agentmail.key",
         "/run/user/1000",
         "/run/docker.sock",
-        "~/.config/tincan/claude-vps.json"
+        "~/.config/tincan/claude-vps.json",
+        "~/.config/tincan/issue-desk.json"
       ]
     },
     "tincan-listen-fleet-worker": {
@@ -75,7 +76,8 @@
         "~/.config/tincan/agentmail.key",
         "/run/user/1000",
         "/run/docker.sock",
-        "~/.config/tincan/claude-vps.json"
+        "~/.config/tincan/claude-vps.json",
+        "~/.config/tincan/issue-desk.json"
       ]
     },
     "tincan-listen-claude-vps": {
@@ -107,6 +109,8 @@
         "~/.devin",
         "~/.config/opencode",
         "~/.config/tincan/pi.json",
+        "~/.config/tincan/fleet-worker.json",
+        "~/.config/tincan/issue-desk.json",
         "/run/user/1000",
         "/run/docker.sock"
       ]
@@ -200,6 +204,44 @@
         "~/.config/tincan/instinct.json.placeholder-20261021"
       ]
     },
+    "tincan-listen-issue-desk": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-issue-desk.service",
+      "relay_identity": "~/.config/tincan/issue-desk.json",
+      "needs": [
+        "~/.pi",
+        "~/.config/gh",
+        "~/.config/tincan/prompts"
+      ],
+      "must_hide": [
+        "~/.config/fleet-ops/seats",
+        "~/.config/cloudflare",
+        "~/.config/systemd",
+        "~/.ssh",
+        "~/.git-credentials",
+        "~/.hermes",
+        "~/.claude",
+        "~/.claude-vps",
+        "~/.local/share/claude-seat-backup",
+        "~/.amp",
+        "~/.commandcode",
+        "~/.cursor",
+        "~/.devin",
+        "~/.config/opencode",
+        "~/.config/tincan/amp.json",
+        "~/.config/tincan/command-code.json",
+        "~/.config/tincan/cursor-vps.json",
+        "~/.config/tincan/devin-vps.json",
+        "~/.config/tincan/fleet-worker.json",
+        "~/.config/tincan/hermes.json",
+        "~/.config/tincan/hermes-webhook.secret",
+        "~/.config/tincan/opencode.json",
+        "~/.config/tincan/pi.json",
+        "~/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock",
+        "~/.config/tincan/claude-vps.json"
+      ]
+    },
     "hermes-serve": {
       "unit": "rootfs/etc/systemd/system/hermes-serve.service",
       "needs": [
@@ -291,15 +333,14 @@
     }
   },
   "stale_user_units": {
-    "systemd/tincan-listen-pi.service": "The unlocked user form of a listener that now runs as a system unit. It was adopted into systemd/ on main (#10220) and is disabled on the host once the system unit starts; deleting the file is #10912.",
-    "systemd/tincan-listen-fleet-worker.service": "The unlocked user form of a listener that now runs as a system unit. It was adopted into systemd/ on main (#10220) and is disabled on the host once the system unit starts; deleting the file is #10912."
+    "systemd/tincan-listen-issue-desk.service": "The unlocked user form of a listener that now runs as a system unit (#10813). The host config pipeline installs the system unit and agent-lock.yml retires this one; deleting the file is #10912."
   },
   "gaps": [
     {
-      "agent": "issue-desk",
-      "unit": "systemd/tincan-listen-issue-desk.service",
-      "reason": "Still a user unit, systemd/tincan-listen-issue-desk.service, added in #10152 after this contract was written, so its settings are ignored on this box and it can read the fleet's keys; it needs the same system unit and live ask before it can be switched.",
-      "issue": "#10813"
+      "agent": "claude-remote-control",
+      "unit": "rootfs/etc/systemd/system/claude-remote-control.service",
+      "reason": "Runs an agent (claude remote-control, --permission-mode dontAsk) that reads text from the claude.ai relay, so docs/agent-lock.md puts it in the contract. It runs as a system unit with User=nish, but ProtectHome=read-only hides nothing: a session and every child it spawns can read the seats directory, ~/.config/gh, ~/.config/cloudflare, ~/.ssh and the worker App token under /run/user/1000. A locked agents entry is test-enforced to set NoNewPrivileges=yes, and 80-hardening.conf deliberately declines it because the phone-spawned sessions run sudo -n, so hardening it is the follow-up's decision, not this file's.",
+      "issue": "#11290"
     },
     {
       "agent": "GitHub self-hosted agent runners",
