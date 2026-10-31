@@ -593,14 +593,16 @@ jobs:
   review:
     if: inputs.review_pr != '' && inputs.review_sha != '' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, review]  # netcup-agent-9 and -10 only, no agent label: a review never waits behind a build (#10587)
-    timeout-minutes: 150  # worst case 107 min: three passes (both reviewers in parallel, then a fallback for each), each 4 calls of 480 s plus 210 s of backoff (#10447)
+    timeout-minutes: 150  # worst case about 150 min: the first review, then the second and third side by side, each up to 6 calls of 600 s plus 930 s of backoff
     # The approval is a github-actions[bot] PR comment; this job runs from agent.yml@main, so the PR cannot change its reviewer; guard heads need three independent reviews (docs/workflow-notes.md); arming is the arm job's.
-    permissions: {pull-requests: write, contents: read, issues: write}  # issues: write files the loud issue when every retry fails (#10447); contents: read fetches the held head's diff: a private repo refuses an anonymous fetch, and every agent-dispatch stub already grants contents: write
+    permissions: {pull-requests: write, contents: read, issues: write}  # contents: read fetches the held head's diff: a private repo refuses an anonymous fetch, and every agent-dispatch stub already grants contents: write
     outputs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
     concurrency:
       group: review-${{ github.repository }}-${{ inputs.review_pr }}
-      cancel-in-progress: true
+      # A second ask for the same PR (the stuck sweep's, a re-run) waits for the running review and
+      # then exits on its verdict; cancelling it restarted a long review every 30 min (owner 2026-10-31).
+      cancel-in-progress: false
     env:
       REPO: ${{ github.repository }}
       PR: ${{ inputs.review_pr }}
