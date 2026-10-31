@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). A row on api.z.ai/api/coding/paas/v4 or api.stepfun.ai/step_plan/v1 must park the same way on its first 429 with a 6 h cooldown, because those 429s are a weekly quota and a drained prepaid balance with fixed reset clocks, not bursts (fleet-ops#11146). Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). A worker-group row whose supports_prompt_caching is false must set litellm_params.order: 2 so long sessions fall to it only as overflow (order filtering is applied after the cooldown filter in LiteLLM v1.98.0 router.py, proven by tests/test_router_order2_overflow.py). router_settings.redis_host, redis_port and redis_password (os.environ/REDIS_PASSWORD) are required and redis_url is forbidden (v1.98.0 drops the password when redis_url is set; the cache has requirepass): session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings. router_settings.allowed_fails_policy.NotFoundErrorAllowedFails must be 0 (fleet-ops#9469): a 404 is a withdrawn free model or a dead model id, and the per-exception threshold falls back to the router-level allowed_fails (1) for a key the policy does not name, so without it a dead lane needs two 404s to park and leaks one to the next caller. See the allowed_fails_policy property for the mechanism and for what the 404 cooldown costs on the 7 quota-walled rows.",
+  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). A row on api.z.ai/api/coding/paas/v4, api.stepfun.ai/step_plan/v1 or token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1 must park the same way on its first 429 with a 6 h cooldown, because those 429s are a weekly quota, a drained prepaid balance or a monthly token cap with fixed reset clocks, not bursts (fleet-ops#11146, #11234). A row on api.synthetic.new/openai/v1 must park on its first 429 (RateLimitErrorAllowedFails: 0) with the 900 s burst cool: its shared key answers both the 5-hour subscription pool's wall and the provider's own 'Too many concurrent requests' burst 429, LiteLLM v1.105.0 splits cooldown thresholds and lengths per exception class only so no config can tell the two kinds apart by text, and the short park keeps the burst trade bounded while the row re-probes itself (fleet-ops#11476, note 17 in docs/litellm-router-notes.md). Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). A worker-group row whose supports_prompt_caching is false must set litellm_params.order: 2 so long sessions fall to it only as overflow (order filtering is applied after the cooldown filter in LiteLLM v1.98.0 router.py, proven by tests/test_router_order2_overflow.py). router_settings.redis_host, redis_port and redis_password (os.environ/REDIS_PASSWORD) are required and redis_url is forbidden (v1.98.0 drops the password when redis_url is set; the cache has requirepass): session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings. router_settings.allowed_fails_policy.NotFoundErrorAllowedFails must be 0 (fleet-ops#9469): a 404 is a withdrawn free model or a dead model id, and the per-exception threshold falls back to the router-level allowed_fails (1) for a key the policy does not name, so without it a dead lane needs two 404s to park and leaks one to the next caller. See the allowed_fails_policy property for the mechanism and for what the 404 cooldown costs on the quota-walled rows.",
   "type": "object",
   "required": ["model_list", "router_settings"],
   "if": { "properties": { "model_list": { "contains": { "$ref": "#/$defs/tetherGroupRow" } } } },
@@ -163,10 +163,10 @@
       "minItems": 1,
       "allOf": [
         {
-          "$comment": "fleet-ops#10608 (Nish 2026-10-28): GLM-5.3-Flash is a worker model only and Qwen is a judge or reviewer only. A GLM-5.3-Flash row in any group but a worker group, or a Qwen row in a worker group, fails here.",
+          "$comment": "fleet-ops#10608 (Nish 2026-10-28): GLM-5.3-Flash is a worker model only and Qwen is a judge or reviewer only. A GLM-5.3-Flash row in any group but a worker group, or a Qwen row in a worker group, fails here. pilot is the gh-aw pilot's worker group (fleet-ops#11311).",
           "items": {
             "allOf": [
-              { "if": { "type": "object", "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "pattern": "[Gg][Ll][Mm]-5\\.3-[Ff][Ll][Aa][Ss][Hh]" } } } } }, "then": { "required": ["model_name"], "properties": { "model_name": { "enum": ["worker-capable", "worker-cheap", "worker-public"] } } } },
+              { "if": { "type": "object", "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "pattern": "[Gg][Ll][Mm]-5\\.3-[Ff][Ll][Aa][Ss][Hh]" } } } } }, "then": { "required": ["model_name"], "properties": { "model_name": { "enum": ["worker-capable", "worker-cheap", "worker-public", "pilot"] } } } },
               { "if": { "type": "object", "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "pattern": "[Qq][Ww][Ee][Nn]" } } } } }, "then": { "properties": { "model_name": { "not": { "pattern": "^worker-" } } } } }
             ]
           }
@@ -320,14 +320,14 @@
             }
           },
           {
-            "$comment": "fleet-ops#11146: a row on api.z.ai/api/coding/paas/v4 or api.stepfun.ai/step_plan/v1 sits on a quota wall with a fixed reset clock, not a burst: the z.ai Coding Plan answers 429 code 1310 'Weekly/Monthly Limit Exhausted' naming its reset time, and the Step Plan answers 429 'you have no left credit' while the prepaid balance is drained. The 900 s burst cool with allowed_fails 1 re-enters the wall every 15 min and leaks it to the caller: 58.9% of worker-capable chat calls failed at 2026-10-30 02:28Z with 19 of the 29 worker-capable rows walled. The row parks on its first 429 for 6 h and re-probes about 4x/day, so a reset is picked up within hours (the #9075/#9122 treatment).",
+            "$comment": "fleet-ops#11146: a row on api.z.ai/api/coding/paas/v4, api.stepfun.ai/step_plan/v1 or token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1 sits on a quota wall with a fixed reset clock, not a burst: the z.ai Coding Plan answers 429 code 1310 'Weekly/Monthly Limit Exhausted' naming its reset time, the Step Plan answers 429 'you have no left credit' while the prepaid balance is drained, and the Alibaba token plan answers 429 'Your token-plan 1-month quota has been exhausted' naming its reset date. The 900 s burst cool with allowed_fails 1 re-enters the wall every 15 min and leaks it to the caller: 58.9% of worker-capable chat calls failed at 2026-10-30 02:28Z with 19 of the 29 worker-capable rows walled, and on 2026-10-31 the judge group held the RouterGroupJammed alert on the token-plan row alone, 107 of its 'quota has been exhausted' 429s in the journal from 20:00Z. The row parks on its first 429 for 6 h and re-probes about 4x/day, so a reset is picked up within hours (the #9075/#9122 treatment).",
             "if": {
               "required": ["litellm_params"],
               "properties": {
                 "litellm_params": {
                   "required": ["api_base"],
                   "properties": {
-                    "api_base": { "enum": ["https://api.z.ai/api/coding/paas/v4", "https://api.stepfun.ai/step_plan/v1"] }
+                    "api_base": { "enum": ["https://api.z.ai/api/coding/paas/v4", "https://api.stepfun.ai/step_plan/v1", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"] }
                   }
                 }
               }
@@ -337,6 +337,35 @@
                 "litellm_params": {
                   "required": ["cooldown_time"],
                   "properties": { "cooldown_time": { "const": 21600 } }
+                },
+                "model_info": {
+                  "required": ["allowed_fails_policy"],
+                  "properties": {
+                    "allowed_fails_policy": {
+                      "required": ["RateLimitErrorAllowedFails"],
+                      "properties": { "RateLimitErrorAllowedFails": { "const": 0 } }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "$comment": "fleet-ops#11476: a row on api.synthetic.new/openai/v1 answers two provider 429s on the one shared SYNTHETIC_API_KEY: the 500-req/5h pool's subscription wall ('You've exceeded your subscription rate limits. Upgrade, or try again later' naming synthetic.new/billing, which Pi treats as a hard wall, fleet-ops#11268) and the provider's own 'Too many concurrent requests' burst 429 past 8 concurrent calls on the key (fleet-ops#9596 measured 12 parallel calls: 8x200 and 4x that 429). LiteLLM v1.105.0 has no way to split them in config: the cooldown threshold resolves per exception class (cooldown_handlers.py's allowed-fails policy lookup reads the exception type, never the response body) and the park length follows cooldown_handlers.py's duration rules, where a row's own cooldown_time outranks even the provider's retry-after header. One policy must bound both: RateLimitErrorAllowedFails: 0 parks the row on the FIRST 429 whatever its text, so a wall row cannot ride the same-row retry (run 41228448381 died 5 s into the hand-off on the re-hit with all 4 attempts spent in-group; 39 of the day's agent-dispatch failures), while cooldown_time stays at the 900 s burst cool so a brief concurrency 429 costs the self-healing park the #10694 trade named and a short outage or dead key never idles the row 6 h.",
+            "if": {
+              "required": ["litellm_params"],
+              "properties": {
+                "litellm_params": {
+                  "required": ["api_base"],
+                  "properties": { "api_base": { "const": "https://api.synthetic.new/openai/v1" } }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "litellm_params": {
+                  "required": ["cooldown_time"],
+                  "properties": { "cooldown_time": { "const": 900 } }
                 },
                 "model_info": {
                   "required": ["allowed_fails_policy"],
@@ -385,7 +414,7 @@
       "properties": {
         "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
         "allowed_fails_policy": {
-          "$comment": "fleet-ops#9469: a 404 is a withdrawn free model or a model id that no longer exists, and it must park the row on the FIRST one. LiteLLM v1.98.0 resolves the threshold per exception type (Router.get_allowed_fails_from_policy), and a key the policy does not name falls back to the router-level allowed_fails (1) - two 404s - so a dead lane is picked again and leaks the 404 to the next caller. NotFoundErrorAllowedFails is required and pinned to 0 for that reason. The other four keys are the ones this file already sets; additionalProperties is false so a typo (NotFoundErrorAllowedFail, NotFoundErrorFails) is a rejected config rather than a silent fallback to 1. When LiteLLM adds an exception type, add its key here too - a rejection naming an unknown key is expected friction, not a bug. A row's own cooldown_time is what the 404 cooldown lasts, which is 21600 s on the 7 rows parked for a named quota wall - see config/litellm-proxy.yaml.",
+          "$comment": "fleet-ops#9469: a 404 is a withdrawn free model or a model id that no longer exists, and it must park the row on the FIRST one. LiteLLM v1.98.0 resolves the threshold per exception type (Router.get_allowed_fails_from_policy), and a key the policy does not name falls back to the router-level allowed_fails (1) - two 404s - so a dead lane is picked again and leaks the 404 to the next caller. NotFoundErrorAllowedFails is required and pinned to 0 for that reason. The other four keys are the ones this file already sets; additionalProperties is false so a typo (NotFoundErrorAllowedFail, NotFoundErrorFails) is a rejected config rather than a silent fallback to 1. When LiteLLM adds an exception type, add its key here too - a rejection naming an unknown key is expected friction, not a bug. A row's own cooldown_time is what the 404 cooldown lasts: 21600 s on the rows parked for a named quota wall, 900 s elsewhere - the rules above pin each family, so see config/litellm-proxy.yaml.",
           "type": "object",
           "required": ["NotFoundErrorAllowedFails"],
           "additionalProperties": false,

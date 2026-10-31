@@ -2213,8 +2213,8 @@ def test_root_tincan_listener_keeps_its_trim_flags_and_its_role_allow_list() -> 
 
 
 WAKE_UNITS = (
-    "systemd/tincan-listen-fleet-worker.service",
-    "systemd/tincan-listen-pi.service",
+    "rootfs/etc/systemd/system/tincan-listen-fleet-worker.service",
+    "rootfs/etc/systemd/system/tincan-listen-pi.service",
     "rootfs/etc/systemd/user/cua-desk-daemon.service",
 )
 # Decision (fleet-ops#10263): the permissive flags stay. These listeners run headless with nobody to answer a prompt, and the
@@ -2246,14 +2246,16 @@ def test_wake_unit_is_in_the_repo_and_carries_the_page_hook(relative: str) -> No
     assert _last(keys, "Restart") == "always"
     if relative != DESK_UNIT:
         assert _last(keys, "OnFailure") == "fleet-unit-failed@%n.service"
-    assert _last(keys, "WantedBy") == "default.target"
+    assert _last(keys, "WantedBy") == (
+        "multi-user.target" if relative.startswith("rootfs/etc/systemd/system/") else "default.target"
+    )
     if relative != DESK_UNIT:
         assert keys["ExecStart"][0].startswith("/home/nish/.local/bin/tincan listen --exec ")
 
 
 def test_each_wake_unit_is_pinned_on_its_agent_flags_and_task_id() -> None:
     for name, (binary, flags) in WAKE_AGENT.items():
-        keys = effective_directives(ROOT / "systemd" / f"{name}.service")
+        keys = effective_directives(ROOT / "rootfs/etc/systemd/system" / f"{name}.service")
         exec_start = keys["ExecStart"][0]
         assert binary in exec_start, f"{name}: ExecStart no longer runs {binary}"
         if flags:
@@ -2717,6 +2719,95 @@ def test_grafana_provisioning_reload_never_spends_its_start_limit() -> None:
     assert int(token["TimeoutStartSec"][0]) > attempt, "the token unit waits on the reload from its ExecStartPost, so its own timeout must cover the reload unit's ceiling"
     assert token["ExecStartPost"][0].startswith("-"), "a reload that cannot get through pages through the reload unit's own OnFailure=, so it must not fail the mint with it"
     assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost"
+
+
+def test_grafana_mint_reload_runs_only_when_the_loaded_token_needs_it(tmp_path: Path) -> None:
+    """fleet-ops#11441: the mint fired a provisioning reload at every mint, and Grafana
+    drops an in-flight webhook dispatch when a reload applies (all three observed
+    one-off notifications failures align with an apply or restart). The guard in the
+    mint unit's ExecStartPost must reload only when the token loaded into Grafana has
+    run down to the next mint interval, count the loaded token's date from the token
+    file mtime at the reload, and never record a reload that did not happen.
+    """
+    keys = _unit_keys(GRAFANA_TOKEN)
+    line = keys["ExecStartPost"][0]
+    assert line.startswith("-"), "a reload that cannot get through pages through the reload unit's own OnFailure=, so it must not fail the mint with it"
+    command = line[1:].replace("$$", "$").replace("%%", "%")
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    token = runtime / "token"
+    token.write_text("stub-token")
+    ledger = runtime / "provisioned-token-mint"
+    log = tmp_path / "start.log"
+    stub = tmp_path / "stub-systemctl"
+    stub.write_text("#!/bin/bash\necho started >> \"" + str(log) + "\"\n")
+    stub.chmod(0o755)
+    command = command.replace(
+        "/usr/bin/systemctl --user start fleet-grafana-provisioning.service", str(stub)
+    )
+
+    def run_guard() -> subprocess.CompletedProcess:
+        log.unlink(missing_ok=True)
+        return subprocess.run(
+            ["/bin/bash", "-c", command],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={"PATH": os.environ["PATH"], "RUNTIME_DIRECTORY": str(runtime)},
+        )
+
+    # No ledger (after a boot, a first run): the loaded token's date is unknown.
+    proc = run_guard()
+    assert proc.returncode == 0, proc.stderr
+    assert log.read_text().startswith("started"), proc.stdout + proc.stderr
+    assert int(ledger.read_text()) == int(token.stat().st_mtime), "the ledger holds the mint time of the token the reload loaded"
+    # A ledger the reload just wrote: a second mint inside the token's hour is a no-op.
+    proc = run_guard()
+    assert proc.returncode == 0, proc.stderr
+    assert not log.exists(), "a loaded token inside one mint interval of its expiry must not reload"
+    assert int(ledger.read_text()) == int(token.stat().st_mtime)
+    # A loaded token run down past the guard margin: the next mint reloads it.
+    old = token.stat().st_mtime - 3600
+    ledger.write_text(str(old))
+    proc = run_guard()
+    assert proc.returncode == 0, proc.stderr
+    assert log.read_text().startswith("started"), "a loaded token past the margin must reload"
+    assert int(ledger.read_text()) == int(token.stat().st_mtime)
+    # A corrupt ledger reads as unknown and reloads (a reload is the safe direction).
+    ledger.write_text("not-a-date")
+    proc = run_guard()
+    assert proc.returncode == 0, proc.stderr
+    assert log.read_text().startswith("started")
+    # A reload that cannot get through never records itself: the next mint retries.
+    ledger.unlink()
+    failing = tmp_path / "failing-stub"
+    failing.write_text("#!/bin/bash\nexit 5\n")
+    failing.chmod(0o755)
+    proc = subprocess.run(
+        ["/bin/bash", "-c", command.replace(str(stub), str(failing))],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": os.environ["PATH"], "RUNTIME_DIRECTORY": str(runtime)},
+    )
+    assert proc.returncode != 0, "a failed reload must leave the ledger unwritten so the next mint retries"
+    assert not ledger.exists(), f"a reload that did not happen must not be recorded: {proc.stdout}"
+
+
+def test_grafana_mint_reload_guard_keeps_the_reload_wiring() -> None:
+    """The guard must stay strippable by the CI mint test and keep the reload wiring
+    the mint tests and the docs assert on.
+    """
+    keys = _unit_keys(GRAFANA_TOKEN)
+    line = keys["ExecStartPost"][0]
+    assert line.startswith("-"), "a reload that cannot get through pages through the reload unit's own OnFailure=, so it must not fail the mint with it"
+    assert "/usr/bin/systemctl --user start fleet-grafana-provisioning.service" in line, "the absolute systemctl path keeps the mint start from PATH steering"
+    assert keys["RuntimeDirectoryPreserve"] == ["yes"], "the reload guard's ledger lives in the unit's RuntimeDirectory, so it must survive a finished oneshot"
+    unit_text = (ROOT / "systemd/fleet-grafana-github-token.service").read_text()
+    timer_text = (ROOT / "systemd/fleet-grafana-github-token.timer").read_text()
+    interval = int(re.search(r"OnUnitActiveSec=(\d+)min", timer_text).group(1)) * 60
+    margin = int(re.search(r"now - (\d+)\)", unit_text).group(1))
+    assert margin == 3600 - interval, "the guard reloads while the token loaded into Grafana keeps one mint interval of slack, no token life the mint cannot hold"
 
 
 def test_grafana_provisioning_reload_fails_loud_without_a_password(tmp_path: Path) -> None:
