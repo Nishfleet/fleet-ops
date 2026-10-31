@@ -138,14 +138,16 @@ jobs:
         run: |
           shopt -s nullglob; set -o pipefail
           systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/*.service rootfs/etc/systemd/system/*.timer rootfs/etc/systemd/system/*.path 2>&1 | awk 'BEGIN { bad = 0 } { bad = 1; print } END { exit bad }'
-      - name: GitHub App token units mint and refresh (fleet-ops#9445, #9738)
+      - name: GitHub App token units mint and refresh (fleet-ops#9445, #9738, #11442)
         # Runs the unit's real ExecStart under systemd (system scope here, user
         # scope on the host: same parser) against tests/github_app_stub.py, which
         # verifies the RS256 App JWT and the token request body the way GitHub
         # does. Proves: a mint writes the token 0600 in a 0700 dir, a second run
         # replaces it, a 401 fails the unit and keeps the previous token, a
         # failed first run still leaves the empty file Grafana's $__file{}
-        # needs, and neither the token nor the JWT reaches the journal.
+        # needs, neither the token nor the JWT reaches the journal, and the
+        # ExecCondition age gate skips a fresh token and passes a missing or a
+        # 35-min-old one (fleet-ops#11442).
         if: always()
         run: |
           set -euo pipefail
@@ -160,10 +162,13 @@ jobs:
           trap 'kill $stub 2>/dev/null || true; sudo systemctl stop fleet-token-ci.service 2>/dev/null || true; sudo rm -f /etc/systemd/system/fleet-token-ci.service; sudo systemctl daemon-reload; sudo systemctl reset-failed fleet-token-ci.service 2>/dev/null || true' EXIT
           for _ in $(seq 1 20); do (echo > /dev/tcp/127.0.0.1/18795) 2>/dev/null && break; sleep 0.5; done
           # The mint is tested on its own, so the unit's own follow-up keys are
-          # dropped. `[ -]*` covers ExecStartPost=- too: systemd ignores that failure, so
-          # this sed is belt-and-braces rather than what keeps the step green.
+          # dropped. `[ -]*` covers ExecStartPost=- too: systemd ignores that
+          # failure, so this sed is belt-and-braces rather than what keeps the
+          # step green. ExecCondition= is dropped with them: the gate would
+          # skip the second mint (its token is seconds old), and it gets its
+          # own seams below.
           sed -e "s|%h/.config/fleet-worker/nishfleet-worker.private-key.pem|$d/app.pem|" \
-              -e '/^OnFailure=/d' -e '/^ExecStartPost=[ -]*/d' \
+              -e '/^OnFailure=/d' -e '/^ExecStartPost=[ -]*/d' -e '/^ExecCondition=/d' \
               -e 's|^Environment=GITHUB_API_URL=.*|Environment=GITHUB_API_URL=http://127.0.0.1:18795|' \
               -e "s|^\[Service\]|[Service]\nUser=$(id -un)|" "$u" | sudo tee /etc/systemd/system/fleet-token-ci.service >/dev/null
           sudo systemctl daemon-reload
@@ -173,6 +178,20 @@ jobs:
           [ "$(sudo stat -c %a $t)" = 600 ] && [ "$(sudo stat -c %a /run/fleet-grafana-github-token)" = 700 ] || { echo "::error::token file/dir not 0600/0700"; exit 1; }
           sudo systemctl start fleet-token-ci.service
           [ "$(sudo cat $t)" = ghs_stub_2 ] || { echo "::error::second run did not refresh the token"; exit 1; }
+          # The mint gate (fleet-ops#11442): the unit file's ExecCondition= line
+          # after the manager's $$ -> $ and %% -> % substitutions, proving the
+          # three seams: missing and old tokens pass (mint), a fresh one skips
+          # (exit 1: systemd.service "the remaining commands are skipped and the
+          # unit is not marked as failed").
+          cond=$(sed -n 's/^ExecCondition=//p' "$u" | sed -e 's/\$\$/$/g' -e 's/%%/%/g')
+          test -n "$cond" || { echo "::error::ExecCondition missing from $u"; exit 1; }
+          g=$RUNNER_TEMP/gh-gate
+          rm -rf "$g"; mkdir -p "$g"
+          if ! RUNTIME_DIRECTORY=$g sh -c "$cond"; then echo "::error::gate blocked the mint on a missing token"; exit 1; fi
+          date > "$g/token"
+          if RUNTIME_DIRECTORY=$g sh -c "$cond"; then echo "::error::gate minted on a fresh token"; exit 1; fi
+          touch -d "40 minutes ago" "$g/token"
+          if ! RUNTIME_DIRECTORY=$g sh -c "$cond"; then echo "::error::gate blocked an old token"; exit 1; fi
           echo fail > "$d/mode"
           if sudo systemctl start fleet-token-ci.service; then echo "::error::unit succeeded while GitHub answered 401"; exit 1; fi
           [ "$(sudo cat $t)" = ghs_stub_2 ] || { echo "::error::a failed mint replaced the previous token"; exit 1; }

@@ -2,9 +2,14 @@
 # itself be loud": stock Grafana cannot fall back from a failed webhook to
 # another integration, but it counts every failed notification per integration
 # (grafana_alerting_notifications_failed_total). Prometheus scrapes Grafana
-# (job grafana in rootfs/etc/prometheus/prometheus.yml), and this rule (severity critical) pages
-# hermes-urgent when the GitHub-issue webhook failed in the last hour, for
-# example the GitHub App token not being refreshed (fleet-grafana-github-token.timer). Until the first failure
+# (job grafana in rootfs/etc/prometheus/prometheus.yml), and this rule
+# (severity critical) pages
+# hermes-urgent when the GitHub-issue webhook failed in the last hour. The
+# usual cause is a send landing in the provisioning-apply window: every mint
+# reloads alerting ("Applying new configuration to Alertmanager"), the apply
+# tears the notifier down mid-send, and the send is not retried
+# (fleet-ops#11426, #11442). The token chain is a rarer cause; check
+# `systemctl --user status fleet-grafana-github-token.service` too. Until the first failure
 # the series does not exist, so `or vector(0)` keeps the rule Normal.
 apiVersion: 1
 
@@ -43,6 +48,6 @@ groups:
         for: 0s
         annotations:
           summary: The cost alarm could not open its GitHub issue.
-          description: 'Grafana failed {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} webhook deliveries to the GitHub issues API in the last hour. A cost rule fired and no priority-now issue exists; check the Grafana log and `systemctl --user status fleet-grafana-github-token.service`.'
+          description: 'Grafana failed {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} webhook deliveries to the GitHub issues API in the last hour. The usual cause is a send colliding with a provisioning-apply window (fleet-ops#11426, #11442): the delivery is thrown away and the only log hint is the debug level. Check `curl -s localhost:3001/api/alertmanager/grafana/api/v2/alerts`, then `systemctl --user status fleet-grafana-github-token.service` and finally the Grafana log with logger=ngalert.notifier.'
         labels: {severity: critical, signal: cloudflare-spend-delivery}
         isPaused: false

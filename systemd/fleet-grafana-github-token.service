@@ -7,9 +7,11 @@ Description=Mint the short-lived GitHub App token Grafana's alert webhook sends 
 # installation access token for an app"). The contact points in
 # config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml therefore
 # read `$__file{/run/secrets/github-token/token}`, which Grafana expands each
-# time provisioning loads, and this oneshot (fired every 20 min by
-# fleet-grafana-github-token.timer) writes a fresh token there and makes Grafana
-# reload. The reload is the stock admin API call that
+# time provisioning loads, and this oneshot fires every 20 min by
+# fleet-grafana-github-token.timer and refreshes both when its
+# ExecCondition= gate lets it through (about every 40 min; see the gate
+# comment next to ExecCondition=). The
+# reload is the stock admin API call that
 # fleet-grafana-provisioning.service already makes.
 #
 # The token is minted from the nishfleet-worker App key that fleet-grafana
@@ -17,8 +19,27 @@ Description=Mint the short-lived GitHub App token Grafana's alert webhook sends 
 # (the contact points only POST issues). It lives in the user runtime dir
 # (tmpfs, mode 0700), never on disk and never in argv: the App JWT goes to curl
 # as a config fd. A failed mint keeps the previous token file, pages through
-# OnFailure=, and Grafana's own delivery rule
-# (cloudflare-spend-delivery.yaml) pages hermes-urgent if a webhook still fails.
+# OnFailure= right away and reruns at the next timer tick at the latest, and
+# Grafana's own delivery
+# rule (cloudflare-spend-delivery.yaml) pages hermes-urgent if a webhook still
+# fails.
+#
+# Why the gate: the ExecStartPost= reload applies a new Alertmanager config
+# ("Applying new configuration to Alertmanager" in the Grafana journal), and
+# that apply teardown is where a concurrent webhook send dies without a retry:
+# both observed collisions (the telegram one in #11426, the webhook one filed
+# by this issue #11442) were pinned to it by PR #11431's analysis, and the
+# delivery rule's 1h window fires on every lost send, so apply frequency is
+# the lever. The gate skips a mint while the token file is
+# younger than 35 min (exit 1) and mints when it is older, missing or
+# unreadable (exit 0) — systemd.service: an ExecCondition exit of 1-254 skips
+# the remaining commands and does not fail the unit, so nothing is lost, the
+# next timer tick passes the gate, and the file keeps its mtime. Cadence:
+# about every 40 min (one skipped tick, one passing tick at the 20-min timer),
+# so the reload runs 36 times a day instead of 72. A failed mint re-runs at the
+# next tick with the gate passing, so recovery lags the timer by at most one
+# tick. The token is then always refreshed more than 20 min before its own
+# one-hour expiry, keeping a >= 25 min buffer over the loaded copy.
 #
 # Switch off: `systemctl --user disable --now fleet-grafana-github-token.timer`
 # and `systemctl --user mask fleet-grafana-github-token.service` (fleet-grafana
@@ -42,6 +63,14 @@ Environment=APP_KEY=%h/.config/fleet-worker/nishfleet-worker.private-key.pem
 # Grafana expands $__file{} at load and a missing file fails the whole
 # alerting provisioning, so the file must exist before anything can fail.
 ExecStartPre=/bin/sh -c 'rm -f "$$RUNTIME_DIRECTORY/token.new"; test -e "$$RUNTIME_DIRECTORY/token" || { umask 077; : > "$$RUNTIME_DIRECTORY/token"; }'
+# 35 min: pass on one of the pair of ticks after a mint (the 40-min one), i.e.
+# every second timer tick. stat is coreutils (present on the host and the CI
+# runner; this block also runs verbatim in tests). A nonexistent token bypasses
+# the age test through the left branch: on first boot the mint must still
+# happen before Grafana reads the file. stat failing on an existing file lands
+# in the sh arithmetic error exit (2), which systemd treats like any other
+# 1-254 skip: the mint waits one tick with the file untouched.
+ExecCondition=/bin/sh -c 'test ! -e "$$RUNTIME_DIRECTORY/token" || test $$(($$(date +%%s) - $$(stat -c %Y "$$RUNTIME_DIRECTORY/token"))) -ge 2100'
 # RS256 App JWT (docs: "Generating a JSON Web Token (JWT) for a GitHub App";
 # iat 60 s back for clock drift, exp inside the 10 min cap), then the
 # installation id of this repo, then a token limited to this repo and
