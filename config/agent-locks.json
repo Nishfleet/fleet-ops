@@ -290,16 +290,19 @@
       ]
     }
   },
-  "stale_user_units": {
-    "systemd/tincan-listen-pi.service": "The unlocked user form of a listener that now runs as a system unit. It was adopted into systemd/ on main (#10220) and is disabled on the host once the system unit starts; deleting the file is #10912.",
-    "systemd/tincan-listen-fleet-worker.service": "The unlocked user form of a listener that now runs as a system unit. It was adopted into systemd/ on main (#10220) and is disabled on the host once the system unit starts; deleting the file is #10912."
-  },
+  "stale_user_units": {},
   "gaps": [
     {
       "agent": "issue-desk",
       "unit": "systemd/tincan-listen-issue-desk.service",
       "reason": "Still a user unit, systemd/tincan-listen-issue-desk.service, added in #10152 after this contract was written, so its settings are ignored on this box and it can read the fleet's keys; it needs the same system unit and live ask before it can be switched.",
       "issue": "#10813"
+    },
+    {
+      "agent": "claude-remote-control",
+      "unit": "rootfs/etc/systemd/system/claude-remote-control.service",
+      "reason": "Runs an agent (claude remote-control, --permission-mode dontAsk) that reads text from the claude.ai relay, so docs/agent-lock.md puts it in the contract. It runs as a system unit with User=nish, but ProtectHome=read-only hides nothing: a session and every child it spawns can read the seats directory, ~/.config/gh, ~/.config/cloudflare, ~/.ssh and the worker App token under /run/user/1000. A locked agents entry is test-enforced to set NoNewPrivileges=yes, and 80-hardening.conf deliberately declines it because the phone-spawned sessions run sudo -n, so hardening it is the follow-up's decision, not this file's.",
+      "issue": "#11290"
     },
     {
       "agent": "GitHub self-hosted agent runners",
