@@ -480,7 +480,9 @@ def test_the_live_config_parks_a_quota_wall_row_on_its_first_429():
     back to the 900 s burst cool with allowed_fails 1 re-enters the wall every 15 min and leaks
     it to the caller again (58.9% of worker-capable chat calls failed on 2026-10-30
     02:28Z with 19 of the 29 worker-capable rows walled; the token-plan row alone held the
-    judge group on the RouterGroupJammed alert on 2026-10-31, fleet-ops#11234)."""
+    judge group on the RouterGroupJammed alert on 2026-10-31, fleet-ops#11234). The Synthetic
+    rows carry no max_parallel_requests or rpm cap, which is what keeps every 429 they answer
+    a wall-kind 429 (note 17); the assertions below hold that too."""
     walled_api_bases = (
         "https://api.z.ai/api/coding/paas/v4",
         "https://api.stepfun.ai/step_plan/v1",
@@ -496,6 +498,15 @@ def test_the_live_config_parks_a_quota_wall_row_on_its_first_429():
         assert row["litellm_params"]["cooldown_time"] == 21600, row["model_info"]["id"]
         policy = row.get("model_info", {}).get("allowed_fails_policy") or {}
         assert policy.get("RateLimitErrorAllowedFails") == 0, row["model_info"]["id"]
+    # Note 17's split rests on the Synthetic rows never answering the router's short
+    # slots-in-use 429: no local throttle cap, so every 429 they answer is the wall kind.
+    # Note 17's split rests on the Synthetic rows never answering the router's short
+    # slots-in-use 429: no local throttle cap, so every 429 they answer is the wall kind.
+    for row in walled:
+        if row["litellm_params"]["api_base"] != "https://api.synthetic.new/openai/v1":
+            continue
+        assert "max_parallel_requests" not in row["litellm_params"], row["model_info"]["id"]
+        assert "rpm" not in row["litellm_params"], row["model_info"]["id"]
 
 
 def test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on():
