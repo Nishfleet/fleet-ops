@@ -55,7 +55,7 @@ detector, not the leftover. It launches a system unit as nish. node_exporter
 reads only the system bus, so a failed system unit fires `SystemUnitFailed`
 and becomes a fix job. A failed user unit is not scraped: of the 212 unit
 names node_exporter exposes, not one is a user-manager unit, and
-`fleet-sync.service`, `fleet-litellm-proxy.service` and `tincan-listen-pi.service`
+`fleet-sync.service` and `fleet-litellm-proxy.service`
 are all absent from them. A user unit's one other route is
 `OnFailure=fleet-unit-failed@%N.service`, which every user unit in `systemd/`
 carries and which instantiates a system unit node_exporter does scrape. That
@@ -737,6 +737,43 @@ them under `permission_denials`). The tincan transcript is
 line of the unit and restart it. That restores today's behaviour: the role
 file is then inert and nothing else in the unit changed. Only Nish restarts
 `claude-remote-control.service`, because that cuts the phone link.
+
+## gh-aw pilot gateway (fleet-ops#11311)
+
+`containers/quadlet/fleet-llm-gateway.container` runs a Cloudflare Tunnel that
+carries two router paths for the gh-aw pilot (`config/cloudflared/llm-gateway.yml`).
+Its credentials file is `~/.config/cloudflare/llm-gateway-tunnel.json` (0600).
+`tests/test_llm_gateway_tunnel.py` pins the ingress and the pilot rows' caps.
+
+The edge guard is in Cloudflare (account and nish.sh zone), not in this repo:
+
+- **Access app "gh-aw pilot gateway"** on the pilot hostname. Its one policy is
+  Service Auth for the service token "gh-aw-pilot". It reads the token from the
+  `Authorization` header as one JSON value (`read_service_tokens_from_header`).
+  gh-aw sends it raw with `sandbox.agent.targets.openai.auth-header: Authorization`.
+  The token is the repo secret `PILOT_GATEWAY_TOKEN`, valid for one year.
+- **Late-transform rule** on the same hostname. It sets `x-litellm-api-key` to the
+  router key `gh-aw-pilot-edge` (`models: [pilot]`, `allowed_routes: [llm_api_routes]`,
+  `rpm_limit: 30`, no money budget). That key exists only in this rule. Whatever
+  key a caller sends, the router sees the pilot key.
+- **Connector check.** cloudflared also verifies the Access JWT itself
+  (`originRequest.access`, team `nish345`, the app's AUD tag), so a deleted or
+  loosened Access app still cannot open the path. An ingress edit takes effect on the
+  next `fleet-llm-gateway` restart.
+- **Checked 2026-10-31.** Each of these got 403 at the edge: no header, the master
+  key as a Bearer token, and the master key in `x-litellm-api-key`. With the service
+  token, `/v1/models` lists only `pilot` and a pilot chat call returns 200. With the service token, the master key sent in `x-api-key`, `api-key`, `x-goog-api-key` or `x-litellm-api-key` still lands on the pilot key (403 "model not available for this API key" on `worker-capable`).
+
+- **On:** link the quadlet into `~/.config/containers/systemd/` like the
+  others, then run `systemctl --user daemon-reload && systemctl --user start fleet-llm-gateway`.
+- **Off:** run `systemctl --user stop fleet-llm-gateway`.
+- **Token leak:** revoke the service token "gh-aw-pilot" in Zero Trust. Make a new one
+  and set `PILOT_GATEWAY_TOKEN` to `{"cf-access-client-id":…,"cf-access-client-secret":…}`.
+  Even before the revoke, a leaked token reaches only the two pilot rows, each
+  capped at 10 USD a day, at 30 requests a minute.
+- **Delete:** stop the unit and remove the link and the credentials file. In
+  Cloudflare, delete the tunnel, the `llm` DNS record, the Access app, the service
+  token and the transform rule. Then delete the router key `gh-aw-pilot-edge`.
 
 ## Break-glass access (SSH is Tailscale-only)
 

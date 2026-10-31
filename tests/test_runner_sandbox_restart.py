@@ -96,7 +96,8 @@ def test_every_pool_that_binds_the_deploy_clone_is_read_back() -> None:
 
 def test_a_sandbox_change_is_installed_and_the_daemon_reloaded() -> None:
     notified = copy_task()["notify"]
-    assert set(notified if isinstance(notified, list) else [notified]) == {RELOAD}
+    # The apply unit restarts only idle runners, so a change reaches them without cutting a job (fleet-ops#11248).
+    assert set(notified if isinstance(notified, list) else [notified]) == {RELOAD, "Start the runner sandbox apply"}
 
 
 def test_the_sandbox_install_restarts_no_unit() -> None:
