@@ -1021,6 +1021,8 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "Caches: direct probe 2026-10-15 on api.commandcode.ai z-ai/glm-5.3-flash, 3 calls on a 19287-token prefix, cached_tokens 0/19264/19264 (fleet-ops#9744)."
     id: commandcode-glm53flash-pilot
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: pilot
   litellm_params:
     model: openai/deepseek/deepseek-v4.1-flash
@@ -1042,6 +1044,8 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "Caches: direct probe 2026-10-31 on api.commandcode.ai deepseek/deepseek-v4.1-flash, 3 calls on a 26034-token prefix, cached_tokens 0/25984/25984 (fleet-ops#11311)."
     id: commandcode-ds41flash-pilot
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 router_settings:
   routing_strategy: simple-shuffle
   # One task = one model: Pi sends x-litellm-session-id and session_affinity pins it to a row (fleet-ops#9015).

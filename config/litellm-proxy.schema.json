@@ -166,7 +166,7 @@
           "$comment": "fleet-ops#10608 (Nish 2026-10-28): GLM-5.3-Flash is a worker model only and Qwen is a judge or reviewer only. A GLM-5.3-Flash row in any group but a worker group, or a Qwen row in a worker group, fails here.",
           "items": {
             "allOf": [
-              { "if": { "type": "object", "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "pattern": "[Gg][Ll][Mm]-5\\.3-[Ff][Ll][Aa][Ss][Hh]" } } } } }, "then": { "required": ["model_name"], "properties": { "model_name": { "enum": ["worker-capable", "worker-cheap", "worker-public"] } } } },
+              { "if": { "type": "object", "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "pattern": "[Gg][Ll][Mm]-5\\.3-[Ff][Ll][Aa][Ss][Hh]" } } } } }, "then": { "required": ["model_name"], "properties": { "model_name": { "enum": ["worker-capable", "worker-cheap", "worker-public", "pilot"] } } } },
               { "if": { "type": "object", "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "pattern": "[Qq][Ww][Ee][Nn]" } } } } }, "then": { "properties": { "model_name": { "not": { "pattern": "^worker-" } } } } }
             ]
           }
