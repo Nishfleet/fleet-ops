@@ -633,7 +633,7 @@ jobs:
           jev_env=${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}/typesafe-jev.env # gitleaks:allow
           info=$(curl -sS --max-time 30 127.0.0.1:4000/key/info --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") -H 'content-type: application/json') || { echo "::error::the /key/info probe failed with curl exit $?"; exit 1; }
           live=$(jq -er '.info | [.key_alias, .max_budget, .budget_duration] | @tsv' <<<"$info") || { echo "::error::/key/info answered without the key's own info"; exit 1; }
-          want=$(jq -er '."jev-eval" | [.key, .max_budget, .budget_duration] | map(tostring) | @tsv' "$budgets")
+          want=$(jq -er '["jev-eval", ."jev-eval".max_budget, ."jev-eval".budget_duration] | map(tostring) | @tsv' "$budgets")
           [ "$live" = "$want" ] || { echo "::error::budget-drift on jev-eval: the live key is $live but config/litellm-key-budgets.json says $want; a budget change is a reviewed PR or an owner decision, never a hand-set value"; exit 1; }
           echo "jev-eval matches the reviewed config: max_budget=$(cut -f2 <<<"$want"), budget_duration=$(cut -f3 <<<"$want")"
           # No review text goes public unscanned (fleet-ops#9528): every post runs gitleaks with the PR scan's own rules and binary, a matched line is withheld behind a note, and a scan that cannot run posts nothing at all.
