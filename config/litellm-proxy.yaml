@@ -239,7 +239,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
@@ -278,7 +278,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     # Synthetic: no slot count; the 500-req/5h pool's 429 cools the row and the window refills (fleet-ops#10694).
     cooldown_time: 900
@@ -296,7 +296,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
@@ -313,7 +313,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
@@ -330,7 +330,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
@@ -347,7 +347,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
@@ -364,7 +364,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
@@ -381,7 +381,7 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    order: 1
+    order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
     cooldown_time: 900
   model_info:
