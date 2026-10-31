@@ -4,7 +4,9 @@ InaccessiblePaths= hides a path only if it exists at the moment the unit starts.
 user services create later stays visible to jobs until the runner restarts. The agent runner
 drop-in therefore starts after the user manager and creates the runtime dirs that user
 services would otherwise make later. The fleet-ci and vault runner drop-ins do the same
-(fleet-ops#10120).
+(fleet-ops#10120). A drop-in that hides `/run/user` or `/run/user/1000` whole covers
+every recreation of what sits under it instead (fleet-ops#11232), so the pre-start
+maker is gone there.
 """
 
 import re
@@ -87,11 +89,20 @@ def pre_created(agent_text: str) -> dict[str, str]:
 
 
 def uncovered(lockdown_text: str, agent_text: str, unit_dirs: list[Path]) -> list[str]:
-    """Hidden user-runtime paths that a user service creates later and the runner does not pre-create."""
+    """Hidden user-runtime paths that a user service creates later and the runner does not pre-create.
+
+    A hide of `/run/user` or `/run/user/1000` whole replaces the pre-start maker: everything
+    that appears under it later, across delete + recreate, is covered by the anchor mount
+    (fleet-ops#11232), so those pools pass with no ExecStartPre= at all.
+    """
     later = runtime_dirs_of_user_units(unit_dirs)
     made = pre_created(agent_text)
+    parents = {Path(t.lstrip("-")) for v in values(lockdown_text, "InaccessiblePaths") for t in shlex.split(v)}
+    covered = Path("/run/user") in parents or Path("/run/user/1000") in parents
     bad = []
     for name in sorted(masked_user_run_names(lockdown_text) & set(later)):
+        if covered:
+            continue
         mode, preserved = later[name]
         made_mode = made.get(USER_RUN + name)
         if made_mode is None:
@@ -139,6 +150,37 @@ def merged_values(dirs: list[Path], key: str) -> list[str]:
         for value in values(files[name].read_text(), key):
             out = [] if value.strip() == "" else out + [value]
     return out
+
+
+def runner_bind_leaks(stem: str, bind_values: list[str]) -> list[str]:
+    """Binds a unit's own .service.d makes under the runner tree that reach past its own runner dir.
+
+    systemd.unit(5): %j is the final component of the prefix, so for
+    actions.runner.Nishfleet.netcup-agent-20.service it is 20, and the pooled
+    20-lockdown.conf's agent-runner/%j line resolves to agent-runner/20. A bind of
+    agent-runner itself, a sibling number or anything above the tree lets a job
+    write every runner's start script: the outage of 2026-10-31 overwrote all 30
+    runsvc.sh files through one such line.
+    """
+    root = Path(HOME) / ".local/share/agent-runner"
+    number = stem.removesuffix(".service.d").removesuffix(".service").rsplit("-", 1)[1]
+    own = root / number if number.isdigit() else root / "%j"
+    leaks = []
+    for value in bind_values:
+        for token in shlex.split(value):
+            source = token.lstrip("-+").split(":")[0]
+            if number.isdigit():
+                source = source.replace("%j", number)
+            path = Path(source)
+            wide = path == root or path.is_relative_to(root) or root.is_relative_to(path)
+            if wide and path != own:
+                leaks.append(token)
+    return leaks
+
+
+def agent_pool_units() -> dict[str, list[Path]]:
+    """The agent runner's unit dir -> its effective drop-ins, template and numbered instances."""
+    return {name: dirs for name, dirs in runner_units().items() if name.startswith("actions.runner.Nishfleet.netcup-agent-")}
 
 
 def runner_units() -> dict[str, list[Path]]:
@@ -262,6 +304,11 @@ def test_late_runtime_dirs_exist_before_the_runner_starts(start_conf: Path, lock
 @pool
 def test_the_pre_create_line_does_not_run_as_root(start_conf: Path, lockdown_conf: Path) -> None:
     lines = values(start_conf.read_text(), "ExecStartPre")
+    # A pool that covers the late dirs with a whole-parent hide (#11232) has no pre-create
+    # line left: the mkdir would sit under the hidden parent and fail the runner at start.
+    parents = {Path(t.lstrip("-")) for v in values(lockdown_conf.read_text(), "InaccessiblePaths") for t in shlex.split(v)}
+    if parents & {Path("/run/user"), Path("/run/user/1000")}:
+        return
     assert lines, "no ExecStartPre= pre-create line"
     # Check every drop-in of the pool: a "+" line anywhere would run outside the sandbox, as root.
     for conf in {start_conf, lockdown_conf}:
@@ -498,3 +545,31 @@ def test_the_agent_pool_binds_no_file_the_repo_ships() -> None:
     bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
     shipped = sorted(name for name in bound if (ROOT / "config" / name).is_file())
     assert not shipped, f"read from the deploy clone instead: {shipped}"
+
+
+def test_the_agent_pool_binds_only_each_runners_own_dir() -> None:
+    """The agent pool resolves %j to the unit's own number: no job reaches a sibling runner dir.
+
+    fleet-ops#11484: the pooled drop-in bound agent-runner whole, so a job on
+    runner N could overwrite runner M's runsvc.sh, and the outage of
+    2026-10-31 took all 30 runners down that way.
+    """
+    for name, dirs in agent_pool_units().items():
+        leaks = runner_bind_leaks(name.removesuffix(".service.d"), merged_values(dirs, "BindPaths"))
+        assert not leaks, leaks
+
+
+def test_gate_fails_on_a_wide_agent_runner_bind() -> None:
+    """The bind that let the 2026-10-31 outage reach every runner fails the gate."""
+    wide = [f"{HOME}/.local/share/agent-runner"]
+    above = [f"{HOME}/.local/share"]
+    own = [f"{HOME}/.local/share/agent-runner/%j"]
+    sibling = [f"-{HOME}/.local/share/agent-runner/25"]
+    retarget = [f"{HOME}/.local/share/agent-runner/20:/tmp/runner"]
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", wide) == wide
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", above) == above
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", own) == []
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", sibling) == sibling
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", retarget) == []
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", [own[0] + ":/alt"]) == []
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-.service.d", own) == []

@@ -130,14 +130,14 @@ def test_the_blocked_orch_send_back_reads_on_the_job_token_and_writes_as_the_app
     assert _y('.jobs.review.steps[] | select(.id == "rework-token") | .with."permission-issues"') == "write"
     assert _y('.jobs.review.permissions."issues"') in ("read", "write")
     assert _y('.jobs.review.permissions."pull-requests"') in ("read", "write")
-    lines = _block(*SEND).splitlines()
+    statements = [s.strip().removeprefix("then ").removeprefix("else ") for line in _block(*SEND).splitlines() for s in line.split(";")]
     for read in ("gh pr view", "gh api ", "gh issue view"):
-        assert len([line for line in lines if read in line]) == 1, read
-    reads = [line for line in lines if any(read in line for read in ("gh pr view", "gh api ", "gh issue view"))]
-    others = [line for line in lines if "gh " in line and line not in reads]
+        assert len([s for s in statements if read in s]) == 1, read
+    reads = [s for s in statements if any(read in s for read in ("gh pr view", "gh api ", "gh issue view"))]
+    others = [s for s in statements if "gh " in s and s not in reads]
     assert others
-    assert [line for line in reads if "GH_TOKEN=$ISSUE_TOKEN" in line] == []
-    assert [line for line in others if not line.strip().startswith("GH_TOKEN=$ISSUE_TOKEN gh ")] == []
+    assert [s for s in reads if "GH_TOKEN=$ISSUE_TOKEN" in s] == []
+    assert [s for s in others if not s.startswith("GH_TOKEN=$ISSUE_TOKEN gh ")] == []
 
 
 def test_a_failed_label_read_fails_the_step_instead_of_relabelling(tmp_path):

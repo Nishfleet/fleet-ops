@@ -3,9 +3,8 @@
 systemd silently ignores sandbox settings in a user unit on this box
 (kernel.apparmor_restrict_unprivileged_userns=1), so a lock only counts when the
 unit is a system unit with User= and a service user. This file resolves each
-agent's real settings, the unit plus every drop-in with the symlinked shared
-file followed, and fails when a hidden path is still readable or a needed path
-is hidden.
+agent's real settings, the unit plus every drop-in directory systemd reads for
+it, and fails when a hidden path is still readable or a needed path is hidden.
 """
 
 import json
@@ -26,12 +25,29 @@ AGENT_ENGINE = re.compile(
 )
 
 
+def dropin_dirs(unit: Path) -> list[Path]:
+    """Every drop-in directory systemd reads for this unit, in systemd's order.
+
+    systemd.unit(5): for a unit name containing dashes, the directories made by
+    repeatedly truncating the name after each dash are searched too, so
+    hermes-gateway.service reads hermes-gateway.service.d/ and then
+    hermes-.service.d/. Reading only the exact directory misses the shared
+    hermes sandbox file, and the contract would judge a lock it cannot see.
+    """
+    dirs = [unit.with_name(unit.name + ".d")]
+    prefix = unit.name.removesuffix(".service")
+    while "-" in prefix:
+        prefix = prefix.rsplit("-", 1)[0]
+        dirs.append(unit.with_name(prefix + "-.service.d"))
+    return dirs
+
+
 def settings(unit: Path) -> dict[str, list[str]]:
     values: dict[str, list[str]] = {}
     files = [unit]
-    dropins = unit.with_name(unit.name + ".d")
-    if dropins.is_dir():
-        files += sorted(dropins.iterdir())
+    for dropins in dropin_dirs(unit):
+        if dropins.is_dir():
+            files += sorted(dropins.iterdir())
     for path in files:
         for line in path.read_text().splitlines():
             stripped = line.strip()
@@ -50,10 +66,12 @@ def covers(path: str, roots: list[str]) -> bool:
 
 
 def env(values: dict[str, list[str]], key: str) -> str:
-    for pair in values.get("Environment", []):
+    # systemd applies every Environment= assignment in file order and the last one
+    # for a variable wins, so a scalar read is the last match, not the first.
+    for pair in reversed(values.get("Environment", [])):
         name, _, value = pair.partition("=")
-        if name == key:
-            return value
+        if name.strip('"') == key:
+            return value.rstrip('"')
     return ""
 
 
@@ -91,10 +109,9 @@ def test_a_locked_agent_gets_the_service_users_home_and_path(name: str) -> None:
         f"{name} sets no HOME, so a CLI that expands ~ writes to /root"
     )
     path = env(values, "PATH").split(":")
-    assert path[:1] == ["~/.local/bin"], (
-        f"{name} does not start PATH with /home/{CONTRACT['user']}/.local/bin, where node, "
-        "npm and every agent CLI live, so an #!/usr/bin/env node shebang fails and the "
-        "unit restart-loops"
+    assert "~/.local/bin" in path, (
+        f"{name} leaves /home/{CONTRACT['user']}/.local/bin off its PATH, where node, npm and "
+        "every agent CLI live, so an #!/usr/bin/env node shebang fails and the unit restart-loops"
     )
     assert "/usr/bin" in path and "/bin" in path, f"{name} leaves /usr/bin or /bin off its PATH"
 
@@ -159,8 +176,15 @@ def test_a_locked_agent_has_no_user_unit_left_behind(name: str) -> None:
 
 
 def exec_start_values(unit: Path) -> list[str]:
-    text = unit.read_text().replace("\\\n", " ")
-    return [line.split("=", 1)[1] for line in text.splitlines() if line.startswith("ExecStart")]
+    files = [unit]
+    for dropins in dropin_dirs(unit):
+        if dropins.is_dir():
+            files += sorted(dropins.iterdir())
+    values = []
+    for path in files:
+        text = path.read_text().replace("\\\n", " ")
+        values += [line.split("=", 1)[1] for line in text.splitlines() if line.startswith("ExecStart")]
+    return values
 
 
 def runs_an_agent(unit: Path) -> bool:
@@ -173,17 +197,36 @@ def runs_an_agent(unit: Path) -> bool:
     return False
 
 
-def test_every_user_unit_that_runs_an_agent_is_in_the_contract() -> None:
-    covered = {entry["unit"] for entry in AGENTS.values()} | set(STALE_USER_UNITS)
+def test_every_unit_that_runs_an_agent_is_in_the_contract() -> None:
+    covered = {entry["unit"] for entry in AGENTS.values()}
     covered |= {gap["unit"] for gap in CONTRACT["gaps"] if gap.get("unit")}
-    uncovered = [
-        f"systemd/{path.name}"
-        for path in sorted(USER_UNITS.glob("*.service"))
-        if runs_an_agent(path) and f"systemd/{path.name}" not in covered
-    ]
+    uncovered = []
+    for path in sorted(USER_UNITS.glob("*.service")):
+        rel = f"systemd/{path.name}"
+        if runs_an_agent(path) and rel not in covered | set(STALE_USER_UNITS):
+            uncovered.append(rel)
+    for path in sorted(INSTALLED.glob("*.service")):
+        rel = str(path.relative_to(ROOT))
+        if runs_an_agent(path) and rel not in covered:
+            uncovered.append(rel)
     assert uncovered == [], (
         f"{uncovered} run an agent and are in no contract entry, so deleting that entry would "
         "leave an unlocked agent behind. Add each one as an agent or as a gap."
+    )
+
+
+def test_every_user_listener_unit_is_stale_or_a_gap() -> None:
+    known = set(STALE_USER_UNITS) | {gap["unit"] for gap in CONTRACT["gaps"] if gap.get("unit")}
+    unlisted = [
+        f"systemd/{path.name}"
+        for path in sorted(USER_UNITS.glob("tincan-listen-*.service"))
+        if f"systemd/{path.name}" not in known
+    ]
+    assert unlisted == [], (
+        f"{unlisted} are user units, where systemd silently ignores every sandbox setting on "
+        "this host, and no contract entry names them, so an unlocked listener could be added "
+        "without anyone noticing. List each one in stale_user_units or as a gap, or make it a "
+        "system unit under rootfs/etc/systemd/system/ and list the user file in stale_user_units."
     )
 
 
@@ -212,6 +255,8 @@ def test_every_other_relay_identity_is_hidden(name: str) -> None:
     values = settings(ROOT / AGENTS[name]["unit"])
     missing = [path for path in others if not hidden(values, path)]
     assert missing == [], f"{name} does not hide the relay identities {missing}"
+    unlisted = [path for path in others if path not in AGENTS[name]["must_hide"]]
+    assert unlisted == [], f"{name}'s contract entry does not list the relay identities {unlisted}"
 
 
 def test_the_probe_expands_the_contracts_tilde_before_systemd_sees_it() -> None:

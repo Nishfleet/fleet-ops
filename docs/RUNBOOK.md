@@ -55,7 +55,7 @@ detector, not the leftover. It launches a system unit as nish. node_exporter
 reads only the system bus, so a failed system unit fires `SystemUnitFailed`
 and becomes a fix job. A failed user unit is not scraped: of the 212 unit
 names node_exporter exposes, not one is a user-manager unit, and
-`fleet-sync.service`, `fleet-litellm-proxy.service` and `tincan-listen-pi.service`
+`fleet-sync.service` and `fleet-litellm-proxy.service`
 are all absent from them. A user unit's one other route is
 `OnFailure=fleet-unit-failed@%N.service`, which every user unit in `systemd/`
 carries and which instantiates a system unit node_exporter does scrape. That
@@ -250,6 +250,20 @@ use instead.
   `no answer from GitHub`, `gh` lost its login or GitHub was unreachable, and
   the pin is not the problem: re-run the playbook.
 
+## The runner tree is bound per unit (fleet-ops#11484)
+
+A job on `actions.runner.Nishfleet.netcup-agent-<N>` sees only
+`~/.local/share/agent-runner/<N>` writable: the pooled
+`20-lockdown.conf` binds `agent-runner/%j` with `%j` = "the final component of
+the prefix" (systemd.unit(5)), so `20` for `-20.service`. The bind used to name
+`agent-runner` whole, and on 2026-10-31 a job overwrote all 30 runners'
+`runsvc.sh` through it, which took the pool offline until each was restored from
+its own `bin/runsvc.sh`. A runner's self-update and restarts are unaffected:
+`bin.<ver>`/`externals.<ver>` and their links live in the runner's own dir.
+`test_the_agent_pool_binds_only_each_runners_own_dir` in
+`tests/test_runner_jail_start_state.py` fails the PR if the line is widened;
+detection that catches it live is `fleet-sync`'s STUB-GUARD (fleet-ops#11483).
+
 ## Dashboards and the CI runner flip
 
 `systemctl --user is-active fleet-grafana.service` prints `active`. The service is
@@ -328,8 +342,25 @@ a file went stale and every delivery answered `401 Bad credentials` for days.
 key, asks the REST API for an installation token limited to `Nishfleet/fleet-ops` and
 `issues:write`, writes it to `$XDG_RUNTIME_DIR/fleet-grafana-github-token/token` (tmpfs,
 0700 dir, 0600 file) and starts `fleet-grafana-provisioning.service`, the stock admin-API
-reload above. The contact points read the file with Grafana's `$__file{}`, which is
-re-read on every provisioning load. Wire once after merge (README "Wiring a NEW unit"):
+reload above — guarded, so the reload lands only when the token Grafana has loaded
+(`$__file{}` froze it) has run down to one mint interval left: Grafana drops an
+in-flight dispatch when a reload applies, and the guard reloads at every second mint
+instead of every one, with a lost or unreadable ledger reloading once more
+(fleet-ops#11441, same cause as #11426). The contact points read the file with Grafana's
+`$__file{}`, which Grafana re-reads at every provisioning reload: the token a webhook sends
+is what the file held at the last load. So a token file swap needs no Grafana restart —
+replace the file by rename — the quadlet mounts the token's directory, not the file
+(containers/quadlet/fleet-grafana.container comment line 48), so the rename lands — and POST
+the stock admin reload (`api/admin/provisioning/<target>/reload`, admin basic auth; in
+practice `fleet-grafana-provisioning.service` sends it): the next delivery carries the new
+token. The reload changes only what `$__file{}` expands to; nothing here makes any
+claim about how often a cost alarm pages or re-files its issue (the dispatch gate closes
+same-title re-files). CI holds the behaviour for real: .github/workflows/ci.yml step "A
+provisioning reload re-reads the token file the contact points name (fleet-ops#9445)"
+boots the pinned Grafana image with the real contact-point file against a local webhook
+sink, waits for a delivery carrying the first token, replaces the token file by rename,
+POSTs the admin reload, and fails the run unless the next delivery carries the second
+token. Wire once after merge (README "Wiring a NEW unit"):
 `systemctl --user link` both files, `systemctl --user daemon-reload`, `systemctl --user
 enable --now fleet-grafana-github-token.timer`, then restart `fleet-grafana.service` once so
 the quadlet's new mount takes effect. Do it right after the merge deploys: until Grafana restarts, the
@@ -365,7 +396,8 @@ that changed nothing running, because nothing read it (fleet-ops#9670).
 
 Warning: a green drive monitor does not mean drive works. The site sits behind Cloudflare
 Access until launch (Nish, 2026-10-01), so nothing outside can reach drive's own routes and
-the monitor below only proves the wall answered. The app-level check is fleet-ops#10226.
+the monitor below only proves the wall answered. The app-level check is decided
+(fleet-ops#10226, option 1) and lands at launch, not before: see "At launch" below.
 
 Sentry is the fleet's up/down detector for the product sites (fleet-ops#9014): no VPS probe,
 no agent in the loop. The token is in `~/.config/sentry/env` (0600, org read plus write on
@@ -409,7 +441,8 @@ included, and `/.well-known/cloudflare-access-protected-resource/...` is the one
 so no public monitor can reach drive's own routes. The "Drive health check" monitor (10494404)
 was deleted on 2026-10-24 for that reason: it pointed at `/api/health`, whose 404 the wall
 turned into a 302, so its last checks read green on the wall's answer rather than drive's.
-The app-level check it pretended to be is fleet-ops#10226.
+The app-level check it pretended to be is fleet-ops#10226, decided as option 1 on
+2026-10-29: it lands at launch, when the wall comes down, and not before.
 
 10494402 watches the wall instead, with a header only the Access login page sends. A PUT body
 merges into the monitor, so send only the fields you change:
@@ -424,6 +457,42 @@ stops sending that header, or if the hostname stops answering. Proven both ways 
 2026-10-24: the same assertion against `x-fleet-absent-header` failed the 07:43:47Z check
 with `assertionFailureData` naming that header, and `cf-access-domain` passed every check
 from 07:42:47Z on.
+
+### At launch: retarget the wall monitor at drive's own health endpoint
+
+Decided on 2026-10-29 (fleet-ops#10226, option 1): nothing to do before launch. When the
+Access wall comes down, drive's own routes become reachable from outside and the
+`cf-access-domain` assertion above starts failing, because that header exists only on the
+Access login page. That red is the trigger, so do not send the retarget before it fires.
+
+The monitor's target field is `url`, and a PUT body merges, so one PUT carries both fields:
+
+    PUT /api/0/projects/0509-gg/drive/uptime/10494402/
+    {"url":"https://storagebun.com/api/health",
+     "assertion":{"root":{"op":"status_code_check","value":200,"operator":{"cmp":"equals"}}}}
+
+Both are shapes already proven on this project's uptime monitors: `url` is the field the GET
+returns, and `status_code_check` with `value` and `operator` is what was measured on
+2026-10-24 (`value: 999` failed, 302 passed). The retarget is not complete until the body
+assertion below is in too.
+
+A 200 is not yet the check the issue asked for, because a 200 HTML error page from the edge
+passes it. drive's `/api/health` answers `{"ok":true}` only when its three D1s, its asset
+bucket, its nine rate limiters and its branch snapshots all answer, so the assertion has to
+reach the body with the `json_path` op. This runbook has not read that op's operand shape
+back from the API, so read it the way `header_check` was read on 2026-10-24: send the body
+and let the API's own 400 name the fields it wants.
+
+Probed on 2026-10-30 at 00:07Z, so the wall was still up and the retarget was not due:
+
+    $ curl -sSI --max-time 15 https://storagebun.com/api/health | grep -E '^HTTP|www-authenticate'
+    HTTP/2 302
+    www-authenticate: Cloudflare-Access resource_metadata="https://storagebun.com/.well-known/cloudflare-access-protected-resource/api/health"
+
+The same probe on `/` followed to a 200 carrying `cf-access-domain: storagebun.com`, which
+is what keeps the monitor green while the wall is up. The table row above is a 2026-10-24
+snapshot and names the workers.dev hostname drive later switched off; fleet-ops#10827 owns
+that row.
 
 ### The assertion shape
 
@@ -683,6 +752,43 @@ them under `permission_denials`). The tincan transcript is
 line of the unit and restart it. That restores today's behaviour: the role
 file is then inert and nothing else in the unit changed. Only Nish restarts
 `claude-remote-control.service`, because that cuts the phone link.
+
+## gh-aw pilot gateway (fleet-ops#11311)
+
+`containers/quadlet/fleet-llm-gateway.container` runs a Cloudflare Tunnel that
+carries two router paths for the gh-aw pilot (`config/cloudflared/llm-gateway.yml`).
+Its credentials file is `~/.config/cloudflare/llm-gateway-tunnel.json` (0600).
+`tests/test_llm_gateway_tunnel.py` pins the ingress and the pilot rows' caps.
+
+The edge guard is in Cloudflare (account and nish.sh zone), not in this repo:
+
+- **Access app "gh-aw pilot gateway"** on the pilot hostname. Its one policy is
+  Service Auth for the service token "gh-aw-pilot". It reads the token from the
+  `Authorization` header as one JSON value (`read_service_tokens_from_header`).
+  gh-aw sends it raw with `sandbox.agent.targets.openai.auth-header: Authorization`.
+  The token is the repo secret `PILOT_GATEWAY_TOKEN`, valid for one year.
+- **Late-transform rule** on the same hostname. It sets `x-litellm-api-key` to the
+  router key `gh-aw-pilot-edge` (`models: [pilot]`, `allowed_routes: [llm_api_routes]`,
+  `rpm_limit: 30`, no money budget). That key exists only in this rule. Whatever
+  key a caller sends, the router sees the pilot key.
+- **Connector check.** cloudflared also verifies the Access JWT itself
+  (`originRequest.access`, team `nish345`, the app's AUD tag), so a deleted or
+  loosened Access app still cannot open the path. An ingress edit takes effect on the
+  next `fleet-llm-gateway` restart.
+- **Checked 2026-10-31.** Each of these got 403 at the edge: no header, the master
+  key as a Bearer token, and the master key in `x-litellm-api-key`. With the service
+  token, `/v1/models` lists only `pilot` and a pilot chat call returns 200. With the service token, the master key sent in `x-api-key`, `api-key`, `x-goog-api-key` or `x-litellm-api-key` still lands on the pilot key (403 "model not available for this API key" on `worker-capable`).
+
+- **On:** link the quadlet into `~/.config/containers/systemd/` like the
+  others, then run `systemctl --user daemon-reload && systemctl --user start fleet-llm-gateway`.
+- **Off:** run `systemctl --user stop fleet-llm-gateway`.
+- **Token leak:** revoke the service token "gh-aw-pilot" in Zero Trust. Make a new one
+  and set `PILOT_GATEWAY_TOKEN` to `{"cf-access-client-id":…,"cf-access-client-secret":…}`.
+  Even before the revoke, a leaked token reaches only the two pilot rows, each
+  capped at 10 USD a day, at 30 requests a minute.
+- **Delete:** stop the unit and remove the link and the credentials file. In
+  Cloudflare, delete the tunnel, the `llm` DNS record, the Access app, the service
+  token and the transform rule. Then delete the router key `gh-aw-pilot-edge`.
 
 ## Break-glass access (SSH is Tailscale-only)
 
