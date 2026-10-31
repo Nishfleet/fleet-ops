@@ -44,21 +44,17 @@
 - name: Apply pending handlers before the Grafana credential check
   ansible.builtin.meta: flush_handlers
 
-# After the flush, so the tmpfiles lines have applied first (fleet-ops#11120).
-- name: Look up nish's config dir ownership
-  ansible.builtin.stat:
-    path: "{{ item }}"
-  loop:
-    - "{{ nish_home }}/.config"
-    - "{{ nish_home }}/.config/cloudflare"
-  register: config_dir_stats
-
-- name: Fail when nish's config dir is not owned by nish
+# Reads what the apply found, recorded in tasks/system.yml before tmpfiles ran, so it
+# still fails when the repair has already fixed the directory on disk (fleet-ops#11120).
+# Ownership only: the .config d line takes mode '-', so tmpfiles repairs an owner and
+# never a mode, and a demand for owner-write bits would stay red on a mode the repair
+# does not touch.
+- name: Fail when a config dir was not nish-owned when the apply started
   ansible.builtin.assert:
-    that: item.stat.exists and item.stat.isdir and item.stat.pw_name == 'nish' and item.stat.gr_name == 'nish' and item.stat.wusr and item.stat.xusr
-    fail_msg: "{{ item.item }} is missing, not owned nish:nish or not writable by its owner (stat says {{ item.stat.pw_name | default('none') }}:{{ item.stat.gr_name | default('none') }} mode {{ item.stat.mode | default('none') }}), so nish's own processes cannot create config dirs under it. The d lines in /etc/tmpfiles.d/nish-config-dirs.conf own the repair and tasks/system.yml runs them on every apply; fix the cause, then rerun host-config."
+    that: item.stat.exists and item.stat.isdir and item.stat.pw_name == 'nish' and item.stat.gr_name == 'nish'
+    fail_msg: "nish's {{ item.item }} was not nish-owned when this apply started (stat says {{ item.stat.pw_name | default('none') }}:{{ item.stat.gr_name | default('none') }}), so nish's own processes could not create config dirs under it. The apply ran systemd-tmpfiles --create after the reading, so on a real run the directory on disk is nish:nish now; find what recreated or re-owned it before trusting the next jailed run. A missing or non-directory path never repairs mid-run: systemd-tmpfiles creates it at boot."
     quiet: true
-  loop: "{{ config_dir_stats.results }}"
+  loop: "{{ config_dirs_found.results }}"
   loop_control:
     label: "{{ item.item }}"
 

@@ -21,22 +21,24 @@ def test_dirs_get_owner_only_repairs() -> None:
     ]
 
 
-def test_the_apply_runs_the_lines_before_the_ownership_check() -> None:
+def test_the_apply_reads_the_dirs_before_it_applies_tmpfiles() -> None:
     play = ansible_host.text()
-    run = play.index("- name: Run the config-dir tmpfiles lines on every apply")
-    command = play.index("/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/nish-config-dirs.conf")
-    flush = play.index("Apply pending handlers before the Grafana credential check")
-    check = play.index("- name: Fail when nish's config dir is not owned by nish")
-    assert run < command and flush < check and command < flush
+    found = play.index("- name: Read the config dirs' owner as the apply found it")
+    stat_text = play[found:play.index("- name: Apply tmpfiles on every run")]
+    for tail in (".config", ".config/cloudflare"):
+        assert f"- {tail}\n" in stat_text, tail
+    assert "follow: false" in stat_text
+    applied = play.index("- name: Apply tmpfiles on every run")
+    check = play.index("- name: Fail when a config dir was not nish-owned when the apply started")
+    assert found < applied < check
 
 
-def test_the_ownership_check_names_the_owner_and_the_repair() -> None:
+def test_the_ownership_check_reads_the_pre_apply_stat() -> None:
     play = ansible_host.text()
-    check = play.index("- name: Look up nish's config dir ownership")
+    check = play.index("- name: Fail when a config dir was not nish-owned when the apply started")
     end = play.index("- name: Work out which Grafana credentials could not be read")
     check_text = play[check:end]
-    for tail in ("/.config", "/.config/cloudflare"):
-        assert f"{{{{ nish_home }}}}{tail}" in check_text, tail
+    assert "config_dirs_found.results" in check_text
     assert "pw_name == 'nish'" in check_text and "gr_name == 'nish'" in check_text
-    assert "wusr" in check_text and "xusr" in check_text
-    assert "nish-config-dirs.conf" in check_text
+    assert "wusr" not in check_text and "xusr" not in check_text
+    assert "systemd-tmpfiles --create" in check_text
