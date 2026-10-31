@@ -10,6 +10,8 @@ in /proc/self/mountinfo are the paths the running sandbox actually hides, the
 same read-back update.yml runs against a runner it restarted (fleet-ops#10866).
 """
 
+import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -45,3 +47,21 @@ def test_the_summary_line_and_the_no_path_branch_stay() -> None:
     step = probe_step()
     assert "checked=$n readable=$bad" in step
     assert "hides no paths" in step
+
+
+def test_the_extraction_reads_the_mount_root_and_point_on_a_fixture(tmp_path) -> None:
+    step = probe_step()
+    prog = re.search(r"awk '([^']*)' /proc/self/mountinfo", step)
+    assert prog, "the probe no longer extracts the hidden list with awk over /proc/self/mountinfo"
+    fixture = "\n".join(
+        [
+            "42 35 0:40 / /run ro - tmpfs . rw",
+            "43 35 0:40 /systemd/inaccessible/dir /run/user ro - tmpfs . rw",
+            "44 35 0:40 /systemd/inaccessible/sock /run/docker.sock ro - tmpfs . rw",
+            "45 35 0:41 /etc/hosts /etc/hosts ro - ext4 /dev/sda1 rw",
+        ]
+    )
+    path = tmp_path / "mountinfo"
+    path.write_text(fixture + "\n")
+    out = subprocess.run(["awk", prog.group(1), str(path)], capture_output=True, text=True, check=True)
+    assert out.stdout.splitlines() == ["/run/user", "/run/docker.sock"]
