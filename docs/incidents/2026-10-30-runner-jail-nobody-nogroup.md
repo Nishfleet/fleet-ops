@@ -46,7 +46,8 @@ host's `/home/nish` is not the directory the job sees. The runner's home is a tm
 unit makes for itself.
 
 The `mtime` of the directory is the proof that the unit creates it. The runner pool restarted
-at 16:48:14 IST and the directory carries the same timestamp to the microsecond:
+at 16:48:14 IST and the directory carries the same second (`ActiveEnterTimestamp` has
+one-second resolution, so the second is the finest match the pair supports):
 
     $ stat -c '%n %U:%G %a %y' /home/nish/.config /home/nish/.config/gh /home/nish/.config/fleet-worker
     /home/nish/.config nobody:nogroup 755 2026-10-30 16:48:14.674181386 +0530
@@ -56,16 +57,26 @@ at 16:48:14 IST and the directory carries the same timestamp to the microsecond:
     $ systemctl show actions.runner.Nishfleet.netcup-agent-4.service -p ActiveEnterTimestamp --value
     Fri 2026-10-30 16:48:14 IST
 
+A re-check on 2026-10-31, on netcup-agent-13 after that night's update, repeats the pair:
+
+    $ stat -c '%n %U:%G %a %y' /home/nish/.config
+    /home/nish/.config nobody:nogroup 755 2026-10-31 03:53:34.849192127 +0530
+
+    $ systemctl show actions.runner.Nishfleet.netcup-agent-13.service -p ActiveEnterTimestamp --value
+    Sat 2026-10-31 03:53:34 IST
+
 The 04:40 recreation on 2026-10-30 was the nightly host update, which stops and starts every
 runner. The log names each restart (`/var/lib/fleet-ops/fleet-update.log`):
 
     2026-10-30 04:36:10,349 p=3858338 u=root n=ansible | changed: [localhost] => (item=actions.runner.Nishfleet.netcup-agent-4.service)
     2026-10-30 04:36:22,106 p=3858338 u=root n=ansible | changed: [localhost] => (item=actions.runner.Nishfleet.netcup-agent-5.service)
 
-The restart picked up the bind cuts of fleet-ops#10826 (`c6d0ec2dd`, 2026-10-30 02:51 IST),
-which removed the binds that used to create `/home/nish/.config/gh` on the host. With the bind
-gone, only the unit's own `TemporaryFileSystem=` mount point is left, and that one is a
-directory the job's own uid cannot write into.
+The restart picked up the gh bind cut of fleet-ops#10949 (`d2c4980e4`, PR #11000,
+2026-10-30 00:44 IST), which removed the read-only bind that used to create
+`/home/nish/.config/gh` on the host. (fleet-ops#10826 cut two read-only fleet-config paths
+the same night, `c6d0ec2dd` at 02:51 IST; it never touched the gh bind.) With the bind gone,
+only the unit's own `TemporaryFileSystem=` mount point is left, and that one is a directory
+the job's own uid cannot write into.
 
 The directory was `nish:nish` before that only by accident: the bind mounted the host's real
 directory, which the host's own owner had. The ownership was never the thing the jail needed.
@@ -93,8 +104,9 @@ actually exists.
 
 - **Host ownership of `/home/nish/.config`.** Ansible `file:` tasks and a `tmpfiles.d` entry
   change the host's directory. The job never reads the host's directory: the unit replaces
-  `/home/nish` with its own tmpfs before the job starts. PR #11130 proposed exactly this and
-  it was superseded, because it cannot change what the job sees.
+  `/home/nish` with its own tmpfs before the job starts. PR #11130 proposed exactly this;
+  the mount-point fix in PR #11109 superseded the approach, because it cannot change what
+  the job sees, and #11130 stayed open, conflicting with main.
 - **A `nobody:nogroup` directory is not evidence of a foreign process.** It is the signature
   of a file created by namespace root in a one-uid namespace, which is what every one of these
   mount points is.
