@@ -192,13 +192,13 @@
     },
     {
       "id": "bare-workflows-path",
-      "want_park": false,
+      "want_park": true,
       "title": "fix the button",
       "body": "See workflows/ci.yml for the pattern."
     },
     {
       "id": "other-dotgithub-path",
-      "want_park": false,
+      "want_park": true,
       "title": "issue template",
       "body": "Add .github/ISSUE_TEMPLATE/bug.yml."
     },
