@@ -328,7 +328,11 @@ a file went stale and every delivery answered `401 Bad credentials` for days.
 key, asks the REST API for an installation token limited to `Nishfleet/fleet-ops` and
 `issues:write`, writes it to `$XDG_RUNTIME_DIR/fleet-grafana-github-token/token` (tmpfs,
 0700 dir, 0600 file) and starts `fleet-grafana-provisioning.service`, the stock admin-API
-reload above. The contact points read the file with Grafana's `$__file{}`, which is
+reload above — guarded, so the reload lands only when the token Grafana has loaded
+(`$__file{}` froze it) has run down to one mint interval left: Grafana drops an
+in-flight dispatch when a reload applies, and the guard reloads at every second mint
+instead of every one, with a lost or unreadable ledger reloading once more
+(fleet-ops#11441, same cause as #11426). The contact points read the file with Grafana's `$__file{}`, which is
 re-read on every provisioning load. Wire once after merge (README "Wiring a NEW unit"):
 `systemctl --user link` both files, `systemctl --user daemon-reload`, `systemctl --user
 enable --now fleet-grafana-github-token.timer`, then restart `fleet-grafana.service` once so
