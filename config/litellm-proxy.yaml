@@ -243,6 +243,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -251,6 +254,7 @@ model_list:
     id: synthetic-glm53flashe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   # z.ai Coding Plan slot (fleet-ops#10566, #10608).
   litellm_params:
@@ -282,7 +286,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
-    # Synthetic: no slot count; the 500-req/5h pool's 429 cools the row and the window refills (fleet-ops#10694).
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -291,6 +297,7 @@ model_list:
     id: synthetic-glm53flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -300,6 +307,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -308,6 +318,7 @@ model_list:
     id: synthetic-glm53flashb-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -317,6 +328,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -325,6 +339,7 @@ model_list:
     id: synthetic-glm53flashc-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -334,6 +349,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -342,6 +360,7 @@ model_list:
     id: synthetic-glm53flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -351,6 +370,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -359,6 +381,7 @@ model_list:
     id: synthetic-glm53flashb-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -368,6 +391,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -376,6 +402,7 @@ model_list:
     id: synthetic-glm53flashc-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -385,6 +412,9 @@ model_list:
     - prepaid
     order: 2  # behind the other plans: its 429 names a billing URL, which Pi treats as a hard wall (fleet-ops#11268)
     weight: 1
+    # No slot cap of ours (fleet-ops#10694): the key answers both a "Too many concurrent requests"
+    # burst 429 and the subscription wall, and no config can tell them apart (note 17); each parks
+    # the row once for the 900 s burst cool (fleet-ops#11476, the #10694 trade).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -393,6 +423,7 @@ model_list:
     id: synthetic-glm53flashd-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/glm-5.3-flash

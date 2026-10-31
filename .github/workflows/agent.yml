@@ -371,11 +371,14 @@ jobs:
           gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
           echo wall=true >> "$GITHUB_OUTPUT"
-      # Close the issue through a keyword, then arm unless the diff leaves the safe allowlist (fleet-ops#9315); a red required check disarms and fails this step, feeding the strike below.
+      # Close the issue through a keyword, then arm; a red required check disarms and fails this
+      # step, which is what feeds the strike below (fleet-ops#9315).
       - name: Arm auto-merge as the App
         if: steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
+          RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
+          RISKY_RULES_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/workflows/agent-dispatch.yml
         run: |
           if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
             i=${REF#claim/issue-}; i=${i%%-*}
@@ -383,34 +386,25 @@ jobs:
             grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
               gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
             n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
-            changed=$(gh pr view "$REF" -R "$REPO" --json changedFiles --jq .changedFiles)
-            files=$(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)')
-            safe='^(app/(routes|components)/|app/lib/(competitor|feeds|hiring|mentions|site|onboarding)/|tests/.*\.test\.tsx?$|e2e/[^/]+\.spec\.ts$|docs/)'; case "${REPO,,}" in nishfleet/drive) safe="$safe"'|^(src/|test/.*\.(test|spec)\.m?[jt]sx?$)' ;; esac
-            policy='^docs/(REBUILD-|engines/|quality-bar\.md)'
-            if [ "$changed" -ge 3000 ] || [ -z "$files" ] || grep -qvE "$safe" <<<"$files" || grep -qE "$policy" <<<"$files"; then
-              gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a path outside the arm allowlist: the coordinator reviews and arms it"
-              gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
-            else
-              # Pending required checks still arm: nothing re-arms a head that later goes green, and the required checks hold the merge (fleet-ops#9315).
-              q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
-              red=$(gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
-                8) ;; # gh's pending exit: --jq still printed any red names, empty if none
-                *) case ${red,,} in
-                     *"no required checks reported"*)
-                       red=$(gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] ||
-                         case ${red,,} in *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;;
-                     *"no checks reported"*) red= ;;
-                     *) red="unreadable ($red)" ;;
-                   esac ;;
-              esac
-              if [ -n "$red" ]; then
-                gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true  # errors when it was not armed
-                echo "::error::claim PR #$n not armed, red required checks on its head: $red"
-                exit 1
-              else
-                gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
-              fi
+            # Classify before arming, against the one list and the one program that hold-risky and the merge-queue gate
+            # run; both are read the way hold-risky reads them, from fleet-ops main by URL, so the check cannot drift
+            # from the hold (fleet-ops#9278 item 1, #11164). A claim PR the classifier calls risky is not armed here:
+            # the label (created first, because hold-risky adds it through the labels API, which fails in a repo that
+            # does not have it yet) fires hold-risky, whose review arms the head once an approval lands on it.
+            hold() { echo "::notice::claim PR #$n not armed here: $*"; gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "a path config/risky-paths.json marks risky: the coordinator approves and arms it"; gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator; gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true; exit 0; }  # the disarm drops an arm a previous head of this PR still holds
+            if ! curl -fsSL --max-time 20 --retry 2 "$RISKY_RULES_URL" > "$RUNNER_TEMP/arm-rules.yml" || ! classify=$(yq '.env.CLASSIFY' "$RUNNER_TEMP/arm-rules.yml") || ! cfg=$(curl -fsSL --max-time 20 --retry 2 "$RISKY_PATHS_URL" | jq -c .) || ! gh pr view "$n" -R "$REPO" --json labels,changedFiles > "$RUNNER_TEMP/arm-pr.json" || ! gh api --paginate "repos/$REPO/pulls/$n/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/arm-files.txt"; then hold 'a read of the rules, the list, the PR or its diff failed'
+            elif ! verdict=$(jq -sc --arg repo "$REPO" '{repo: $repo, labels: [.[0].labels[].name], files: [.[1:][] | .f, (.p // empty)] | unique, patches: [.[1:][] | {file: .f, patch}], changed_files: (.[0].changedFiles // 0)}' "$RUNNER_TEMP/arm-pr.json" "$RUNNER_TEMP/arm-files.txt" | jq -c --argjson cfg "$cfg" --arg label needs-coordinator "$classify") || [ "$(jq -e .risky <<<"$verdict" 2>/dev/null)" != false ]; then hold "why $verdict (a read that fails, an unread verdict or a risky verdict holds, so an outage cannot arm a risky head, and neither can hold-risky's absence on a repo without a merge queue)"
             fi
+            # Pending required checks still arm: nothing re-arms a head that later goes green, and the required checks hold the merge (fleet-ops#9315).
+            q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
+            # gh's pending exit (8) means only pending checks: --jq still printed any red names, empty if none
+            red=$(gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in 8) ;; *) case ${red,,} in *"no required checks reported"*) red=$(gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] || case ${red,,} in *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;; *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;; esac
+            if [ -n "$red" ]; then
+              gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true  # errors when it was not armed
+              echo "::error::claim PR #$n not armed, red required checks on its head: $red"
+              exit 1
+            fi
+            gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
           fi
       - name: Deliverable
         if: steps.gate.outputs.go == 'true'
@@ -565,8 +559,12 @@ jobs:
             else $regular_free || continue
             fi
             if grep -qxF -- "$(jq -r .title <<<"$issue")" <<<"$waiting"; then echo "skip #$n: its dispatch run already waits"; continue; fi
-            gh issue edit "$n" -R "$REPO" --remove-label agent-ready
-            gh issue edit "$n" -R "$REPO" --add-label agent-ready
+            # Removing and re-adding agent-ready fires two issues events, and the
+            # run the second one starts displaces the run the first one started in
+            # the agent-<repo>-<ref> group: the step cancelled what it meant to
+            # start (fleet-ops#9278 item 3). Dispatch the issue by number instead,
+            # so a pick leaves no label event behind and one run carries one target.
+            GH_TOKEN=$SWEEP_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" -f "issue=$n" || echo "::warning::dispatch of #$n failed"
             echo "next: #$n"
             exit 0
           done
@@ -694,8 +692,10 @@ jobs:
           first_model=$FIRST_MODEL_CLAUDE_BUILT; [ -z "$built" ] || grep -qw claude <<<"${built//,/ }" || first_model=$FIRST_MODEL_OTHER; echo "first review: built by '${built:-unknown}', model $first_model"
           # The model gets the diff as text and no tools (--tools ""): a tool could open the
           # runner's key files and the review is posted publicly (claude honors an empty --tools,
-          # checked 2026-10-10). A call that fails or answers nothing did not finish: retry. No fallback
-          # to another family, no approval without this review. The guard head's second review (Fable) is the same call.
+          # checked 2026-10-10). A call that fails or answers nothing did not finish: the next seat is
+          # asked (seat b answers with this run's env, seat a with the credential-store token), and the
+          # same two seats again after each backoff delay. No fallback to another family, no approval
+          # without this review. The guard head's second review (Fable) is the same call.
           # A Claude usage limit is not a non-answer: claude writes one line such as "You've hit your 5-hour limit · resets 11pm"
           # and gives no review until the window resets, so the retry ladder would sleep through a window that lasts hours.
           # A call whose whole output is that one line, on stdout or on stderr, ends the ladder and holds the head with no
@@ -707,7 +707,7 @@ jobs:
           # $1 = the failed calls' stderr, $2 = a call's whole answer, $3 = which review, $4 = model.
           hold_at_limit() { local lim; cat "$1" "$2" >&2 2>/dev/null || true; lim=$(grep -hm 1 -iE "$lim_re" "$1" "$2" 2>/dev/null | head -n 1 | cut -c 1-200 || true); [ -z "$lim" ] || { say "$(printf 'review-held: %s\n\nThe %s (%s) is at its Claude usage limit (%s). Nothing was approved or blocked. The stuck-review sweep asks again an hour after a hold, and the hold does not count toward its three tries.' "$SHA" "$3" "$4" "$lim")"; exit 0; }; }
           # A call answers 0, answers nothing 1, or answers only a usage limit 2, read from the answer first and then its stderr, so a limit line on a failed call's stdout still holds. $3 = its stderr, $4 = its whole answer.
-          ask_claude() { local d out rc; for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do sleep "$d"; out=$(timeout 600 claude -p --model "$1" --tools "" --no-session-persistence --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2" 2> "$3"); rc=$?; if [ -n "${out//[[:space:]]/}" ]; then printf '%s' "$out" > "$4"; lim_only "$4" && return 2; [ "$rc" -eq 0 ] && { printf '%s' "$out"; return 0; }; fi; lim_only "$3" && return 2; done; return 1; }
+          ask_claude() { local d s out rc; for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do sleep "$d"; for s in b a; do out=$([ "$s" = b ] || { t=$(sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' "${CREDENTIALS_DIRECTORY:-/nonexistent}/claude-seat-a.env" 2>/dev/null) && [ -n "$t" ] && export CLAUDE_CODE_OAUTH_TOKEN="$t"; } || exit 1; timeout 600 claude -p --model "$1" --tools "" --no-session-persistence --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2" 2> "$3"); rc=$?; if [ -n "${out//[[:space:]]/}" ]; then printf '%s' "$out" > "$4"; lim_only "$4" && return 2; [ "$rc" -eq 0 ] && { printf '%s' "$out"; return 0; }; fi; lim_only "$3" && return 2; done; done; return 1; }
           rc=0; review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt" "$RUNNER_TEMP/first.err" "$RUNNER_TEMP/first.ans") || rc=$?; case $rc in 2) hold_at_limit "$RUNNER_TEMP/first.err" "$RUNNER_TEMP/first.ans" "first review" "$first_model" ;; 0) ;; *) review=; cat "$RUNNER_TEMP/first.err" >&2 2>/dev/null || true ;; esac
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest", state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},

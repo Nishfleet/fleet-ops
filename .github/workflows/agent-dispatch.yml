@@ -569,6 +569,7 @@ jobs:
       # Ten infra endings (the provider's 429s and walls, fleet-ops#11166) escalate too, so a real fault reaches the owner.
       # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran
       # for an hour). The sweep runs hourly, so a quiet priority item re-fires within the hour.
+      # Strikes count from the sweep's last escalation comment: clearing needs-nish-decision resets them.
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -580,7 +581,7 @@ jobs:
           REQUEUE: |
             [.[] | (.labels | map(.name)) as $l
               | select((any($l[]; IN("needs-nish-decision", "agent-blocked")) | not) and (.updatedAt | fromdateiso8601) < $now - (if ($l | index("priority-now")) != null then 1800 else 21600 end)
-                and (($l | index("handoff-ended") != null) != ($l | index("needs-orchestrator") != null)) and ("orch/issue-\(.number)" | IN($prs[]) | not))
+                and (($l | index("handoff-ended") != null) != ($l | index("needs-orchestrator") != null)) and ("orch/issue-\(.number)" | IN($prs[]) | not)) | .comments |= .[([to_entries[] | select((.value.author.login | IN("github-actions", "github-actions[bot]")) and (.value.body | test("^orchestrator: needs Nish\\."))) | .key] | max // -1) + 1:]
               | {number, ended: ($l | index("handoff-ended") != null), prio: (($l | index("priority-now")) != null), runs: [.comments[]
                 | select((((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login == "nishfleet-worker")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
                   or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body],
@@ -982,6 +983,21 @@ jobs:
           # record of a reserved call, not a queue state. An empty list makes the
           # edit fail and || true swallows it, the same net effect as skipping.
           gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","handoff-ended"))] | join(",")')" || true
+          # A closed issue frees what it blocked (fleet-ops#9278 item 6). GitHub's
+          # dependency gate skips an issue while it has an open blocker, but a close
+          # does not remove a park label, so an agent-blocked dependent stayed parked
+          # with no event left to free it (#10162, #9324: blocker closed, label still
+          # on). Requeue only when the dependency was the whole block: any park label
+          # that records a decision, or a worker's own park note, means a second
+          # reason is live and the label is not this close's to remove.
+          deps=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$ISSUE/dependencies/blocking" --jq '.[] | select(.state == "open") | .number') || echo "::warning::could not read the issues #$ISSUE blocks"
+          for d in ${deps:-}; do
+            row=$(gh api "repos/$GITHUB_REPOSITORY/issues/$d" --jq '"\(.issue_dependencies_summary.blocked_by) \(any(.labels[]; .name == "agent-blocked")) \(any(.labels[]; .name | IN("needs-split","needs-orchestrator","needs-nish-decision","needs-coordinator","handoff-ended","epic")))"') || row=
+            [ "$row" = "0 true false" ] || { [ -n "$row" ] || echo "::warning::could not read dependent #$d"; continue; }
+            notes=$(gh api --slurp --paginate "repos/$GITHUB_REPOSITORY/issues/$d/comments" --jq '[.[][].body | select(test("(^|\\n)(proposal|blocked-on|park):"))] | length') || notes=
+            [ "$notes" = 0 ] || { [ -n "$notes" ] || echo "::warning::could not read dependent #$d park notes"; continue; }
+            gh issue edit "$d" -R "$GITHUB_REPOSITORY" --remove-label agent-blocked --add-label agent-ready || echo "::warning::could not requeue dependent #$d"
+          done
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
