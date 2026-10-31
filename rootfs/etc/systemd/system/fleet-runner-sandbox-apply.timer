@@ -1,0 +1,15 @@
+# Passes fleet-runner-sandbox-apply.service every 5 min, so a runner unit that
+# was busy when its drop-in deployed (the handler skips busy units, so no job
+# is killed) is restarted within five minutes of its job ending
+# (fleet-ops#11248). Persistent=false: a missed pass is not owed anything, the
+# nightly drain (fleet-ops#10898) restarts the whole pool anyway. Enabled by
+# ansible/tasks/services.yml.
+[Unit]
+Description=Apply runner jail drop-ins to idle runners every 5 min
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
