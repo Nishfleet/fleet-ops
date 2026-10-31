@@ -624,7 +624,7 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
-# MiniMax Yearly Plus: the plan's quota is the cap, so no max_budget, and no slot count (fleet-ops#10694): the plan's own 429s and the 6 h park hold the key, and the first 429 parks a row 6 h (fleet-ops#11417).
+# MiniMax token plan (the portal's Yearly Plus flat plan): the plan's quota is the cap, so no max_budget, and no slot count (fleet-ops#10694): the plan's own 429s and the 6 h park hold the key, and the first 429 parks a row 6 h (fleet-ops#11417).
 - model_name: worker-capable
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview

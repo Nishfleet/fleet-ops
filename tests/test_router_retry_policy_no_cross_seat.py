@@ -586,14 +586,18 @@ def test_schema_rejects_the_minimax_quota_wall_fixture_on_its_three_deltas():
         doc = yaml.safe_load(fh)
     errors = list(validator.iter_errors(doc))
     paths = [list(e.absolute_path) for e in errors]
+    assert all(p[:2] == ["model_list", 2] for p in paths), paths
+    # The fixture must not be picked up by the retry-policy gate above.
+    assert fixture not in sorted(glob.glob(REJECTS_GLOB))
     # The cooldown and allowed-fails deltas fail at their own leaf keys.
     for key in ("cooldown_time", "RateLimitErrorAllowedFails"):
         assert any(p[:2] == ["model_list", 2] and p[-1] == key for p in paths), (key, paths)
     # The no-slot-cap delta is a row-level `not` violation: its path stops at the
     # row's litellm_params, and the message names the key.
     assert any(p == ["model_list", 2, "litellm_params"]
-               and any("max_parallel_requests" in e.message for e in errors
-                       if list(e.absolute_path) == p) for p in paths), paths
+               and any("max_parallel_requests" in e.message
+                       for e in errors if list(e.absolute_path) == p)
+               for p in paths), paths
 
 
 def test_authentication_error_gets_one_retry():
