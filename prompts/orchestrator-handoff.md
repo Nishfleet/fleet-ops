@@ -37,7 +37,11 @@ Two things eat this wall and prove nothing: a test run wider than the change (a 
 
 ## 3. Build
 
+Pro-dev way first (AGENTS.md): check the vendor's docs and how well-run teams solve it before choosing, within this run's wall, and name the source in the PR body.
+
 The issue's acceptance bullets are your spec, and `AGENTS.md` is your contract: quality bar, tests, no new `scripts/`/`bin/` files, secrets never in argv or output, and `main` is protected. Build the smallest change that meets every bullet. Run the checks that cover what you changed yourself (the tests for the changed paths, and the workflow gates below), never the whole suite: CI runs every test on the PR, and on 2026-10-28 a local full run (about 9 minutes) started at minute 45 hit the step's wall with a finished change unpushed (fleet-ops#10349). A claim without run output is not a deliverable. Commit and push as soon as those checks pass (step 4.1): a push survives the wall, a working tree does not.
+
+A background dev server the proof needs (`wrangler dev`, `vite`, any preview server) is yours to own and yours to kill (fleet-ops#11140): start it as its own process group — `setsid <server> >"${RUNNER_TEMP:?}/dev-server.log" 2>&1 & pgid=$(ps -o pgid= -p $! 2>/dev/null || echo $!)` — and when the proof ends, kill the group: `kill -TERM -- -$pgid`, then `kill -KILL -- -$pgid` if it is still alive 3 s later. Never end the turn with the server up: a stalled server eats the runner unit's memory the whole time you work, and four orphaned `wrangler dev` stacks held netcup-agent-19 at 4097M of its 4G line for 20+ minutes on 2026-10-30, until the only move left was killing the whole runner.
 
 If the deliverable touches `.github/workflows/**`, run every offline workflow gate the target repo's CI runs, before you push and before you read the diff as a reviewer: `actionlint`, `uvx zizmor@<CI's version> --offline .github/workflows`, and `shellcheck` on changed shell (fleet-ops lists the exact commands in `AGENTS.md`). Paste each result into `Verification:`, and name a gate that did not run as `not run: <reason>`. actionlint alone missed a zizmor template-injection finding that turned the required `ci` check red after a merge was claimed (fleet-ops#9214). Your push is allowed to carry workflow changes; a worker's was not, so your run is where the proof has to land.
 

@@ -4,7 +4,9 @@ InaccessiblePaths= hides a path only if it exists at the moment the unit starts.
 user services create later stays visible to jobs until the runner restarts. The agent runner
 drop-in therefore starts after the user manager and creates the runtime dirs that user
 services would otherwise make later. The fleet-ci and vault runner drop-ins do the same
-(fleet-ops#10120).
+(fleet-ops#10120). A drop-in that hides `/run/user` or `/run/user/1000` whole covers
+every recreation of what sits under it instead (fleet-ops#11232), so the pre-start
+maker is gone there.
 """
 
 import re
@@ -87,11 +89,20 @@ def pre_created(agent_text: str) -> dict[str, str]:
 
 
 def uncovered(lockdown_text: str, agent_text: str, unit_dirs: list[Path]) -> list[str]:
-    """Hidden user-runtime paths that a user service creates later and the runner does not pre-create."""
+    """Hidden user-runtime paths that a user service creates later and the runner does not pre-create.
+
+    A hide of `/run/user` or `/run/user/1000` whole replaces the pre-start maker: everything
+    that appears under it later, across delete + recreate, is covered by the anchor mount
+    (fleet-ops#11232), so those pools pass with no ExecStartPre= at all.
+    """
     later = runtime_dirs_of_user_units(unit_dirs)
     made = pre_created(agent_text)
+    parents = {Path(t.lstrip("-")) for v in values(lockdown_text, "InaccessiblePaths") for t in shlex.split(v)}
+    covered = Path("/run/user") in parents or Path("/run/user/1000") in parents
     bad = []
     for name in sorted(masked_user_run_names(lockdown_text) & set(later)):
+        if covered:
+            continue
         mode, preserved = later[name]
         made_mode = made.get(USER_RUN + name)
         if made_mode is None:
@@ -262,6 +273,11 @@ def test_late_runtime_dirs_exist_before_the_runner_starts(start_conf: Path, lock
 @pool
 def test_the_pre_create_line_does_not_run_as_root(start_conf: Path, lockdown_conf: Path) -> None:
     lines = values(start_conf.read_text(), "ExecStartPre")
+    # A pool that covers the late dirs with a whole-parent hide (#11232) has no pre-create
+    # line left: the mkdir would sit under the hidden parent and fail the runner at start.
+    parents = {Path(t.lstrip("-")) for v in values(lockdown_conf.read_text(), "InaccessiblePaths") for t in shlex.split(v)}
+    if parents & {Path("/run/user"), Path("/run/user/1000")}:
+        return
     assert lines, "no ExecStartPre= pre-create line"
     # Check every drop-in of the pool: a "+" line anywhere would run outside the sandbox, as root.
     for conf in {start_conf, lockdown_conf}:

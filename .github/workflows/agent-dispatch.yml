@@ -1,9 +1,9 @@
 name: agent-dispatch
 on:
+  # issue_comment fired ≈7,000 all-skipped runs in 30 days here and no job
+  # consumes it, so the trigger is gone; fleet-ops#10944.
   issues:
     types: [labeled, closed, reopened]
-  issue_comment:
-    types: [created]
   # issue=<number> dispatches only that issue's ref, for a caller that
   # relabels or closes with GITHUB_TOKEN: that fires no workflow, and
   # workflow_dispatch is the documented trigger GITHUB_TOKEN may start.
@@ -36,7 +36,9 @@ on:
   # conflict. Invariant: nothing in this file checks out PR code. ejected runs only for
   # same-repo heads; hold-risky only calls the API and never runs the head.
   pull_request_target:
-    types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
+    # closed and auto_merge_disabled consume nothing below (ejected and hold-risky
+    # are the only pull_request_target consumers; fleet-ops#10944).
+    types: [dequeued, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
   workflow_run: {workflows: [CI], types: [completed], branches: ['claim/issue-*']}
   # GitHub emits no event when a job queued for a self-hosted runner expires
   # after 24h, or when a claim PR turns DIRTY outside the merge queue (0509#4373).
@@ -126,7 +128,7 @@ jobs:
   new:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' && github.event_name == 'issues' && github.event.label.name == 'agent-ready' &&
-      ((inputs.agent_mode || vars.AGENT_MODE) == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live'
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     # issues: write is what agent.yml's work job asks for (Router wall and the
     # strike step relabel with GITHUB_TOKEN).
@@ -524,13 +526,22 @@ jobs:
             for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '.[].number'); do
               gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json isDraft --jq '[.[] | select(.isDraft | not)] | length' | grep -qx 0 || continue
               body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
-              [[ $body =~ actions/runs/([0-9]+) ]] || continue
-              # A failed read is not proof the run died: skip, never requeue a live worker.
-              rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
-              if [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ]; then
-                gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
-                echo "requeued #$n: claimed with no live run and no claim PR"
+              if [[ $body =~ actions/runs/([0-9]+) ]]; then
+                # A failed read is not proof the run died: skip, never requeue a live worker.
+                rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
+                [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ] || continue
+              else
+                # agent.yml's Gate labels the issue and posts "agent run started:" one line apart, so
+                # a live worker carries the comment within seconds and a label without one is a run
+                # that died between the two lines (fleet-ops#10903: 0509#7070 held the label 24 days
+                # with no branch, no PR and no comment). The label's own age is then the proof, read
+                # at the 15-minute idle cutoff stuck-prs uses; no label event at all is no proof
+                # either way, so it is skipped.
+                labelled=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/events?per_page=100" --paginate --jq '.[] | select(.event == "labeled" and .label.name == "agent-in-progress") | .created_at' | tail -n1) || { echo "::warning::#$n: label event read failed, skip"; continue; }
+                [ -n "$labelled" ] && [ "$(date -u -d "$labelled" +%s)" -lt "$(( $(date +%s) - 900 ))" ] || { echo "::warning::#$n: no agent-in-progress label event over 15 minutes old, skip"; continue; }
               fi
+              gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
+              echo "requeued #$n: claimed with no live run and no claim PR"
             done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
           fi
@@ -538,11 +549,7 @@ jobs:
           pages=''
           for n in $nums; do
             rc=0; i=$(issue_json "$n") || rc=$?
-            case $rc in
-              0) ;;
-              3) echo "#$n: issue gone, skipping" >&2; continue ;;
-              *) exit 1 ;;
-            esac
+            case $rc in 0) ;; 3) echo "#$n: issue gone, skipping" >&2; continue ;; *) exit 1 ;; esac
             pages="$pages$i"$'\n'
             # A closed blocker releases a parked hand-off: re-label it as the worker App so the label event starts it (fleet-ops#10489, #10949); at most 12 a sweep (fleet-ops#11010).
             if [ -n "$CLOSED" ] && [ "${released:-0}" -lt 12 ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "needs-orchestrator")' <<<"$i" >/dev/null; then
@@ -963,7 +970,7 @@ jobs:
           # (fleet-ops#9278 items 4 and 11). needs-nish-decision stays: it is a
           # record of a reserved call, not a queue state. An empty list makes the
           # edit fail and || true swallows it, the same net effect as skipping.
-          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","handoff-ended"))] | join(",")')" || true
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","handoff-ended"))] | join(",")')" || true
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
@@ -1164,7 +1171,10 @@ jobs:
     concurrency:
       group: orchestrate-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
-    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
+    # Bounded concurrency (fleet-ops#11167): the `handoff` label is held by 5 runners, so a sixth hand-off
+    # waits for a free runner at GitHub, with no API calls. 5 is the plans' measured carry of 4 to 6 on
+    # 2026-10-30 (#11146, #11160). Raise it only when router capacity grows. Runner labels live at GitHub.
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops","handoff"]') || fromJSON('["self-hosted","agent","handoff"]') }}  # fleet-ops#10717
     # Above the session step's wall and the cleanup after it. Measured on 40942864011: 9 seconds from
     # job start to the session step, 4 seconds from its kill to the job's last step, so the 10-minute
     # margin here is slack, not the budget the session runs in (fleet-ops#11059).

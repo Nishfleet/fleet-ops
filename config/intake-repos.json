@@ -5,7 +5,6 @@
     "agent-ready",
     "agent-in-progress",
     "agent-blocked",
-    "agent-failed",
     "needs-orchestrator",
     "strong-only"
   ],
@@ -83,19 +82,19 @@
       "name": "claude-mods",
       "product": false,
       "deferred_by": "orchestrator, 2026-10-28 (fleet-ops#10653, PR #10771 review)",
-      "reason": "control plane, not product. It ships the model-lanes plugin, which denies subagents and model overrides for every fleet agent, so a worker editing it can loosen the gate that holds the fleet's own lanes. The stub PR, the six labels and the checkout are in place. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
+      "reason": "control plane, not product. It ships the model-lanes plugin, which denies subagents and model overrides for every fleet agent, so a worker editing it can loosen the gate that holds the fleet's own lanes. The stub PR, the five labels and the checkout are in place. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
     },
     {
       "name": "fleet-console-worker",
       "product": false,
       "deferred_by": "orchestrator, 2026-10-28 (fleet-ops#10653, PR #10771 review)",
-      "reason": "control plane, not product. The fleet console Worker holds the board's read-only GitHub token and the enrolled signing keys, so a PR in this repo reaches credentials and the console that audits the fleet. The stub PR, the six labels and the checkout are in place. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
+      "reason": "control plane, not product. The fleet console Worker holds the board's read-only GitHub token and the enrolled signing keys, so a PR in this repo reaches credentials and the console that audits the fleet. The stub PR, the five labels and the checkout are in place. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
     },
     {
       "name": "pi-runner-guard",
       "product": false,
       "deferred_by": "orchestrator, 2026-10-28 (fleet-ops#10653, PR #10771 review)",
-      "reason": "control plane, not product. It is a pi extension that decides what a worker's own tools may do, so a worker editing it can widen its own sandbox. The stub PR, the six labels and the checkout are in place. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
+      "reason": "control plane, not product. It is a pi extension that decides what a worker's own tools may do, so a worker editing it can widen its own sandbox. The stub PR, the five labels and the checkout are in place. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
     },
     {
       "name": "fleet-ops",
@@ -117,13 +116,13 @@
       "name": "nish-vault",
       "product": false,
       "deferred_by": "orchestrator, 2026-10-28 (fleet-ops#10653)",
-      "reason": "fleet-ops#10653: control plane, not product. The vault holds the standing rules, the shared memory and the decisions ledger that every other agent is judged against, so a repo a worker can edit is one that can loosen the gate that judges it. The stub PR (Nishfleet/nish-vault#102) is merged and the six labels and the checkout are in place, so the only missing precondition is AGENT_MODE=live, which the hand-off lane may not set. Its Skills Library checks also failed on runner netcup-vault-1 on 2026-10-28 at the runner-probe step, which reported /run/user/1000/fleet-worker-github-token readable from the job. That runner instance had started before the user manager created the dir, so the unit's InaccessiblePaths entry over it was skipped. The runner restarted at 2026-10-29 04:34:46 IST, the mask now applies (checked in /proc/1726495/mountinfo), and a re-run of the same head reports checked=11 readable=0 in all four jobs. The probe reports the path only and opens no file, so the check printed no token value. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
+      "reason": "fleet-ops#10653: control plane, not product. The vault holds the standing rules, the shared memory and the decisions ledger that every other agent is judged against, so a repo a worker can edit is one that can loosen the gate that judges it. The stub PR (Nishfleet/nish-vault#102) is merged and the five labels and the checkout are in place, so the only missing precondition is AGENT_MODE=live, which the hand-off lane may not set. Its Skills Library checks also failed on runner netcup-vault-1 on 2026-10-28 at the runner-probe step, which reported /run/user/1000/fleet-worker-github-token readable from the job. That runner instance had started before the user manager created the dir, so the unit's InaccessiblePaths entry over it was skipped. The runner restarted at 2026-10-29 04:34:46 IST, the mask now applies (checked in /proc/1726495/mountinfo), and a re-run of the same head reports checked=11 readable=0 in all four jobs. The probe reports the path only and opens no file, so the check printed no token value. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
     },
     {
       "name": "owner-gate",
       "product": false,
       "deferred_by": "orchestrator, 2026-10-28 (fleet-ops#10653)",
-      "reason": "fleet-ops#10653: the stub PR (Nishfleet/owner-gate#6) is open and mergeable but blocked by the active freeze-main ruleset, and lifting that is a GitHub admin action the hand-off lane cannot take. It is also control plane, not product: this repo is the approval gate for owner-level API calls and holds the owner's full-power token as the OWNER_TOKEN environment secret, so a repo a worker can edit is one that can edit the gate that holds it. The six labels and the checkout are in place. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
+      "reason": "fleet-ops#10653: the stub PR (Nishfleet/owner-gate#6) is open and mergeable but blocked by the active freeze-main ruleset, and lifting that is a GitHub admin action the hand-off lane cannot take. It is also control plane, not product: this repo is the approval gate for owner-level API calls and holds the owner's full-power token as the OWNER_TOKEN environment secret, so a repo a worker can edit is one that can edit the gate that holds it. The five labels and the checkout are in place. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
     }
   ]
 }
