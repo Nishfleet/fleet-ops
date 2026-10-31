@@ -28,9 +28,19 @@ network:
   allowed: [defaults, python, node, llm.nish.sh]
 timeout-minutes: 30
 safe-outputs:
+  # The fleet worker App, not GITHUB_TOKEN: its PRs start CI and review, and its
+  # comments are not an approver's (fleet-ops#11311).
+  github-app:
+    client-id: "4728578"
+    private-key: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
   create-pull-request:
     title-prefix: "[pilot] "
   add-comment:
+    target: triggering
+  # gh-aw runs pi's threat detection on the Copilot CLI, which this fleet does not
+  # use. The PR still passes CI and the fleet's own review before any merge.
+  threat-detection:
+    engine: false
 ---
 
 # Fix the labelled issue
