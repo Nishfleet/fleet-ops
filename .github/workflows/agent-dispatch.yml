@@ -1232,14 +1232,7 @@ jobs:
       - name: App token
         id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
-          permission-contents: write
-          permission-issues: write
-          permission-pull-requests: write
-          permission-workflows: write
-          permission-actions: read
+        with: {app-id: '4728578', private-key: '${{ steps.app-key.outputs.pem }}', permission-contents: write, permission-issues: write, permission-pull-requests: write, permission-workflows: write, permission-actions: read}
       - name: Check the issue is still parked
         id: issue
         env:

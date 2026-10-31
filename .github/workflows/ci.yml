@@ -5,8 +5,7 @@ on:
     types: [opened, synchronize, reopened]
   merge_group:
 
-permissions:
-  contents: read
+permissions: {contents: read}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -26,8 +25,7 @@ jobs:
         with: {persist-credentials: false}
       - name: Every needed job is green
         if: always()
-        env:
-          NEEDS: ${{ toJSON(needs) }}
+        env: {NEEDS: '${{ toJSON(needs) }}'}
         run: |
           set -euo pipefail
           # Pin: every job except ci must be in ci's needs.
@@ -57,10 +55,7 @@ jobs:
       - name: No agent attribution in the PR's commits or body
         # pull_request only: GitHub's squash adds a Co-authored-by line, failing merge_group (#9205, #9240).
         if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_BODY: ${{ github.event.pull_request.body }}
+        env: {BASE_SHA: '${{ github.event.pull_request.base.sha }}', HEAD_SHA: '${{ github.event.pull_request.head.sha }}', PR_BODY: '${{ github.event.pull_request.body }}'}
         shell: bash
         run: |
           log=$(git log --format=%B "$BASE_SHA..$HEAD_SHA")
@@ -102,13 +97,11 @@ jobs:
         # shebang, so neither one sees a run block in an action (fleet-ops#10723).
         if: always()
         uses: docker://ghcr.io/zizmorcore/zizmor:1.30.1@sha256:a2eb396d886c053073405c7a980f2139ba2248ec172243cfa3841e57196e8101
-        with:
-          args: --offline --format plain .github/workflows .github/actions
+        with: {args: '--offline --format plain .github/workflows .github/actions'}
       - name: shellcheck over shell files (extension + shebang discovery)
         if: always()
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
-        with:
-          version: v0.11.0
+        with: {version: v0.11.0}
 
   systemd-verify:
     runs-on: ubuntu-latest
@@ -235,8 +228,7 @@ jobs:
       - name: Node 22 (>= 22.12) for the pi-extension vitest suites; they fail, never skip, on an older node
         if: always()
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
+        with: {node-version: 22}
       - name: gitleaks for the review-comment scan test (fleet-ops#9528)
         # The real binary and the real rules run the review step's scanner in tests/test_review_scan.py.
         if: always()
@@ -1371,10 +1363,7 @@ jobs:
         with: {persist-credentials: false, fetch-depth: 0}
       - name: Path gate (pull requests only)
         id: gate
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        env: {EVENT: '${{ github.event_name }}', BASE_SHA: '${{ github.event.pull_request.base.sha }}', HEAD_SHA: '${{ github.event.pull_request.head.sha }}'}
         run: |
           run=true
           if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|tests/test_(deploy_failed_(rule|engine)|grafana_fixture_drift)\.py$|\.github/workflows/ci\.yml$)'; then
@@ -1618,9 +1607,7 @@ jobs:
         with: {persist-credentials: false}
       - name: Install OpenTofu
         uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
-        with:
-          tofu_version: 1.13.1
-          tofu_wrapper: false
+        with: {tofu_version: 1.13.1, tofu_wrapper: false}
       - name: tofu fmt -check
         working-directory: infra/cloudflare-tokens
         run: tofu fmt -check -diff -recursive
