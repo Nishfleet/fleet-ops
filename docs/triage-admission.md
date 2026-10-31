@@ -5,12 +5,20 @@ An open issue labelled `needs-triage` in an enrolled **product** repo
 instead of waiting for a person to add `agent-ready`. The `admit` job in
 `.github/workflows/agent-dispatch.yml` runs on the hourly sweep, on the
 `needs-triage` label event and on `workflow_dispatch` (`task=admit`, optionally
-`issue=<N>`). It asks the router `/jev` the same way `agent.yml` does: "Admit
-this issue for an automated worker now?", with the title, body and labels as
-state.
+`issue=<N>`). It asks the router `/jev` the same way `agent.yml` does: "Admit this issue for
+an automated worker now?" and "Could one coding agent finish the described
+change in a single session in under 45 minutes?", with the title, body and
+labels as state. The second question is the size gate (fleet-ops#9288): a
+worker session's wall is 55 minutes, so an issue whose own estimate does not
+fit never reaches a worker; the orchestrator lane it parks on can split it.
 
-- p >= 0.9: `agent-ready` added, `needs-triage` removed.
-- otherwise: `needs-orchestrator` added, `needs-triage` removed, for a person to decide.
+- p >= 0.9 on **both** the admit and the wall question: `agent-ready` added,
+  `needs-triage` removed.
+- otherwise: `needs-orchestrator` added, `needs-triage` removed. The comment
+  carries both probabilities, so a wall fit under 0.9 names size as the
+  reason. A later sweep re-asks the same way.
+- if Jev gives no number on either question: the label stays and the next
+  sweep retries.
 
 Only the issue author `nish3451` is admitted. The newest `needs-triage` label
 event must also come from `nish3451`. Non-owner issues are skipped with a notice
@@ -24,7 +32,8 @@ also stops after `ADMIT_BUDGET_SEC` (default 780): at a 90 s router timeout each
 wrapped in `<ISSUE_TEXT>` fences so the model treats them as data, never as
 instructions.
 
-Every issue gets one comment with p, the model and the run link. An issue whose
+Every issue gets one comment with the two probabilities, the model and the run
+link. An issue whose
 title, body or labels touch secrets, money or payments, or customer-data
 deletion, or that carries `nish-reserved` or `needs-nish-decision`, never reaches
 Jev and never gets `agent-ready`: it goes to

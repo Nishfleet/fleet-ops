@@ -110,11 +110,11 @@ def test_exclusion(title, body, labels, want):
 
 
 @pytest.mark.parametrize(
-    "p,want",
-    [(0.95, "admit"), (0.9, "admit"), (0.89, "orchestrator"), (0.5, "orchestrator"), (0.11, "orchestrator"), (0.1, "orchestrator"), (0.0, "orchestrator")],
+    "p,wall,want",
+    [(0.95, 0.97, "admit"), (0.9, 0.9, "admit"), (0.95, 0.89, "orchestrator"), (0.95, 0.0, "orchestrator"), (0.89, 0.97, "orchestrator"), (0.5, 0.5, "orchestrator"), (0.1, 0.0, "orchestrator"), (0.0, 0.0, "orchestrator")],
 )
-def test_bands(p, want):
-    assert _jq(_env_var("BAND"), None, p=p) == want
+def test_bands(p, wall, want):
+    assert _jq(_env_var("BAND"), None, p=p, wall=wall) == want
 
 
 def test_request_shape_fences_the_untrusted_text():
@@ -125,6 +125,8 @@ def test_request_shape_fences_the_untrusted_text():
     req = json.loads(out)
     assert req["model"] == "jev-latest"
     assert req["questions"]["admit"]["type"] == "boolean"
+    assert req["questions"]["wall"]["type"] == "boolean"
+    assert "45 minutes" in req["questions"]["wall"]["instructions"]
     assert "data" in req["state"]["issue"]["note"]
     assert req["state"]["issue"]["title"] == "<ISSUE_TEXT>\nFix the footer link colour\n</ISSUE_TEXT>"
     assert req["state"]["issue"]["body"].startswith("<ISSUE_TEXT>\n") and req["state"]["issue"]["body"].endswith("\n</ISSUE_TEXT>")
@@ -175,15 +177,15 @@ def _run(tmp_path, *, repo="Nishfleet/0509", iss=None, actor="nish3451", resp=No
     return r, writes, calls
 
 
-def _answer(p, model="jev-1.13.0"):
-    return {"model": model, "answers": {"admit": {"probability": p}}}
+def _answer(p, wall=0.97, model="jev-1.13.0"):
+    return {"model": model, "answers": {"admit": {"probability": p}, "wall": {"probability": wall}}}
 
 
 def test_admit_adds_agent_ready_and_masks_the_jev_key(tmp_path):
     r, w, calls = _run(tmp_path, resp=_answer(0.96))
     assert r.returncode == 0, r.stderr
     assert "--add-label agent-ready --remove-label needs-triage" in w
-    assert "p=0.96 (model jev-1.13.0)" in w and "actions/runs/4242" in w
+    assert "p=0.96, wall fit p=0.97 (model jev-1.13.0)" in w and "actions/runs/4242" in w
     assert calls == 1
     assert "::add-mask::LITELLM_JEV_KEY=test-jev-key-abc" in r.stdout
     assert "::add-mask::test-jev-key-abc" in r.stdout
@@ -203,6 +205,21 @@ def test_middle_goes_to_orchestrator(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "--add-label needs-orchestrator --remove-label needs-triage" in w
     assert "--add-label agent-ready" not in w
+
+
+def test_wall_fit_blocked_goes_to_orchestrator_and_names_the_reason(tmp_path):
+    r, w, _ = _run(tmp_path, resp=_answer(0.96, wall=0.2))
+    assert r.returncode == 0, r.stderr
+    assert "--add-label needs-orchestrator --remove-label needs-triage" in w
+    assert "--add-label agent-ready" not in w
+    assert "wall fit p=0.2" in w and "split the issue" in w
+
+
+def test_wall_without_a_number_is_no_answer(tmp_path):
+    r, w, _ = _run(tmp_path, resp={"model": "jev-1.13.0", "answers": {"admit": {"probability": 0.96}}})
+    assert r.returncode == 0, r.stderr
+    assert w == ""
+    assert "no usable answer" in r.stdout
 
 
 def test_exclusion_never_asks_jev_and_never_admits(tmp_path):
