@@ -10,15 +10,15 @@ permissions:
   pull-requests: read
 engine:
   id: pi
-  model: openai/glm-5.3-flash
+  model: openai/pilot
   model-provider: openai
   env:
-    OPENAI_BASE_URL: https://api.commandcode.ai/provider/v1
-    OPENAI_API_KEY: ${{ secrets.COMMANDCODE_PILOT_KEY }}
+    OPENAI_BASE_URL: https://llm.nish.sh/v1
+    OPENAI_API_KEY: ${{ secrets.LITELLM_PILOT_KEY }}
   config: |
     {"model": {"api": "openai-completions"}}
 network:
-  allowed: [defaults, python, node, api.commandcode.ai]
+  allowed: [defaults, python, node, llm.nish.sh]
 timeout-minutes: 30
 safe-outputs:
   create-pull-request:
