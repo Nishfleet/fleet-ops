@@ -947,7 +947,7 @@ model_list:
       RateLimitErrorAllowedFails: 0
 # Second assistant row (fleet-ops#11239): when OpenCode Go is inside its usage wall, Hermes
 # chat and the review's fallback family had no row at all. MiniMax is a flat plan already
-# serving the worker groups, and a family no other reviewer uses (agent.yml family_of).
+# serving the worker groups.
 - model_name: assistant
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
