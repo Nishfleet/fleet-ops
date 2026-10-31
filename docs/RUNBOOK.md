@@ -346,8 +346,21 @@ reload above — guarded, so the reload lands only when the token Grafana has lo
 (`$__file{}` froze it) has run down to one mint interval left: Grafana drops an
 in-flight dispatch when a reload applies, and the guard reloads at every second mint
 instead of every one, with a lost or unreadable ledger reloading once more
-(fleet-ops#11441, same cause as #11426). The contact points read the file with Grafana's `$__file{}`, which is
-re-read on every provisioning load. Wire once after merge (README "Wiring a NEW unit"):
+(fleet-ops#11441, same cause as #11426). The contact points read the file with Grafana's
+`$__file{}`, which Grafana re-reads at every provisioning reload: the token a webhook sends
+is what the file held at the last load. So a token file swap needs no Grafana restart —
+replace the file by rename — the quadlet mounts the token's directory, not the file
+(containers/quadlet/fleet-grafana.container comment line 48), so the rename lands — and POST
+the stock admin reload (`api/admin/provisioning/<target>/reload`, admin basic auth; in
+practice `fleet-grafana-provisioning.service` sends it): the next delivery carries the new
+token. The reload changes only what `$__file{}` expands to; nothing here makes any
+claim about how often a cost alarm pages or re-files its issue (the dispatch gate closes
+same-title re-files). CI holds the behaviour for real: .github/workflows/ci.yml step "A
+provisioning reload re-reads the token file the contact points name (fleet-ops#9445)"
+boots the pinned Grafana image with the real contact-point file against a local webhook
+sink, waits for a delivery carrying the first token, replaces the token file by rename,
+POSTs the admin reload, and fails the run unless the next delivery carries the second
+token. Wire once after merge (README "Wiring a NEW unit"):
 `systemctl --user link` both files, `systemctl --user daemon-reload`, `systemctl --user
 enable --now fleet-grafana-github-token.timer`, then restart `fleet-grafana.service` once so
 the quadlet's new mount takes effect. Do it right after the merge deploys: until Grafana restarts, the
