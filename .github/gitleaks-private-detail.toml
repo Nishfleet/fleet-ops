@@ -52,6 +52,13 @@ targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = ['''(^|/)rootfs/etc/systemd/system/tincan-listen-.*\.service(\.d/.*)?$''', '''(^|/)rootfs/etc/systemd/system/fleet-agent-lock\.service\.d/''', '''(^|/)config/agent-locks\.json$''']
 
 [[allowlists]]
+description = "The llm-gateway edge-guard stack's state path in infra/llm-gateway-edge/versions.tf, the same absolute-path pattern infra/cloudflare-tokens/versions.tf already carries: a tofu backend block cannot expand ~, and the stack's first commit (#11371) wrote the path before the inline gitleaks:allow landed, so the range keeps the finding"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)infra/llm-gateway-edge/(versions\.tf|README\.md)$''']
+regexes = ['''home/nish/\.local/state/fleet-ops/llm-gateway-edge/terraform\.tfstate''']
+condition = "AND"
+
+[[allowlists]]
 description = "The pre-existing prometheus-reload and blacksmith-flip retirement lines in fleet-sync.service, touched by earlier commits of #9697 (a PR scan reads every commit, and history cannot be rewritten on an open PR)"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)systemd/fleet-sync\.service$''']
