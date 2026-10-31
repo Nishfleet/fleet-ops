@@ -290,3 +290,10 @@ targetRules = ["private-home-path"]
 paths = ['''(^|/)rootfs/etc/tmpfiles\.d/nish-config-dirs\.conf$''']
 regexes = ['''^home/nish/\.config(/cloudflare)?$''']
 condition = "AND"
+
+[[allowlists]]
+description = "The nish config dirs test reads the tmpfiles lines back, so its expected conf text compares against the same two absolute paths the shipped file spells out (a battery assert compares the conf's split lines, and the test has no own comment slot to carry gitleaks:allow, fleet-ops#11120). Only those paths are allowed, so a new one in this file still fails the scan"
+targetRules = ["private-home-path"]
+paths = ['''^tests/test_nish_config_dirs\.py$''']
+regexes = ['''^home/nish/\.config(/cloudflare)?$''']
+condition = "AND"
