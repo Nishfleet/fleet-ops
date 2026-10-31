@@ -1473,7 +1473,7 @@ jobs:
           # the issue in the product repo and never writes to that repo, so the mark below is
           # only for a run with no deliverable anywhere. Trusted at the sweep's own bar; a read
           # that fails marks nothing, like the check above.
-          link=$(gh issue view "$ISSUE" -R "$REPO" --json comments --jq '[.comments[] | select((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator: deliverable filed in "))) | .body | sub("^orchestrator: deliverable filed in "; "") | split(";")[0]] | last // empty') || { echo "orchestrate: #$ISSUE comment read failed; nothing to mark"; exit 0; }; if [ -n "$link" ]; then echo "orchestrate: #$ISSUE deliverable filed in another repo: $link; nothing to mark"; exit 0; fi
+          link=$(gh issue view "$ISSUE" -R "$REPO" --json comments --jq '[.comments[] | select((((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login == "nishfleet-worker")) and (.body | startswith("orchestrator: deliverable filed in ")))) | .body | sub("^orchestrator: deliverable filed in "; "") | split(";")[0]] | last // empty') || { echo "orchestrate: #$ISSUE comment read failed; nothing to mark"; exit 0; }; if [ -n "$link" ]; then echo "orchestrate: #$ISSUE deliverable filed in another repo: $link; nothing to mark"; exit 0; fi
           # A `due:` line still in the future is work nothing can build yet (fleet-ops#11014).
           # handoff-ended is what the sweep re-fires and what later-sweep skips, so such an
           # issue could never reach its date and a person had to clear the label. on-hold is not

@@ -113,6 +113,14 @@ def test_no_marker_still_marks_ended(tmp_path):
     assert "orchestrator hand-off ended without a PR:" in writes
 
 
+def test_marker_from_the_worker_app_is_accepted(tmp_path):
+    env = _setup(tmp_path, [_comment(MARKER, association="CONTRIBUTOR", login="nishfleet-worker")])
+    r = _cleanup(env)
+    assert r.returncode == 0, r.stderr
+    assert "deliverable filed in another repo" in r.stdout
+    assert not (tmp_path / "writes.log").exists()
+
+
 def test_marker_from_a_stranger_still_marks_ended(tmp_path):
     env = _setup(tmp_path, [_comment(MARKER, association="NONE", login="stranger")])
     r = _cleanup(env)
