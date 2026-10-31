@@ -109,12 +109,15 @@ def test_every_npm_documented_alias_of_the_global_writing_subcommands_stops_the_
                     "npm un -g tincan", "npm r -g tincan", "npm unlink -g tincan",
                     "npm link", "npm ln", "npm dedupe -g", "npm ddp -g",
                     "npm u", "npm up -g", "npm upgrade", "npm udpate",
-                    "npm add -g tincan", "npm install-test", "npm it"):
+                    "npm add -g tincan", "npm in -g tincan", "npm ins -g tincan",
+                    "npm inst -g tincan", "npm insta -g tincan", "npm instal -g tincan",
+                    "npm isnt -g tincan", "npm isnta -g tincan", "npm isntal -g tincan",
+                    "npm isntall -g tincan", "npm rb -g", "npm install-test", "npm it"):
         assert matches(cmdline), cmdline
 
 
 def test_a_script_or_exec_subcommand_word_is_still_not_install_activity():
-    for cmdline in ("npm run uninstall", "npm run ddp",
+    for cmdline in ("npm run uninstall", "npm run ddp", "npm run rb",
                     "npm exec @modelcontextprotocol/server-filesystem /srv/notes"):
         assert not matches(cmdline), cmdline
 

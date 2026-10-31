@@ -213,6 +213,16 @@
           npm upgrade
           npm udpate
           npm add -g tincan
+          npm in -g tincan
+          npm ins -g tincan
+          npm inst -g tincan
+          npm insta -g tincan
+          npm instal -g tincan
+          npm isnt -g tincan
+          npm isnta -g tincan
+          npm isntal -g tincan
+          npm isntall -g tincan
+          npm rb -g
           npm install-test
           npm it
       register: npm_install_lines
@@ -238,13 +248,13 @@
           - npm_check.argv[1] == '-u'
           - npm_check.argv[2] == 'nish'
           - npm_check.argv[3] == '-f'
-          - npm_install_lines.stdout | trim == "26"
+          - npm_install_lines.stdout | trim == "36"
           - npm_exec_lines.rc == 1
         fail_msg: >-
           The npm check in ansible/update.yml no longer separates install
           activity from a long-lived `npm exec`, so the MCP file servers on
           this box fail the run again (grep counted
-          {{ npm_install_lines.stdout | trim }} of 26 install lines and exited
+          {{ npm_install_lines.stdout | trim }} of 36 install lines and exited
           {{ npm_exec_lines.rc }} on the two exec lines).
 
     - name: Read the removal guard out of ansible/update.yml
