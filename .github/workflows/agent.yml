@@ -109,10 +109,10 @@ jobs:
             case $labels in *",$l,"*) skip "$l" ;; esac
           done
 
-          # A worker token cannot push .github/workflows/**, so route that work to the orchestrator (fleet-ops#8900). Substring, not a parse: an over-match costs one orchestrator run, a "parse it properly" fix brings the wall burn back (#8877).
+          # A worker token cannot push .github/workflows/**, so route that work to the orchestrator (fleet-ops#8900). Substring, not a parse: an over-match costs one orchestrator run, a "parse it properly" fix brings the wall burn back (#8877). fleet-ops issues name its own workflows by bare file name (#9275), other repos' by a path fragment ("workflows/deploy-production.yml"; 0509#7004); a bare name with no directory stays undetectable, and the worker prompt routes the push refusal itself when detection misses (prompts/worker.md 5a).
           fleet_ops=false
           case $REPO in */fleet-ops) fleet_ops=true ;; esac
-          if jq -e --arg p '.github/workflows/' --argjson fo "$fleet_ops" '((.title // "") + "\n" + (.body // "")) as $t | ($t | contains($p)) or ($fo and ($t | test("(^|[^A-Za-z0-9_.-])(agent|agent-dispatch|ci|deploy-box|lighthouse|ratchet|secret-scan)\\.yml($|[^A-Za-z0-9_-])")))' <<<"$issue" >/dev/null; then
+          if jq -e --arg p '.github/workflows/' --argjson fo "$fleet_ops" '((.title // "") + "\n" + (.body // "")) as $t | ($t | contains($p)) or ((($fo | not)) and ($t | test("(^|[^A-Za-z0-9_.-])[\\w.-]+/[\\w.-]+\\.ya?ml($|[^A-Za-z0-9_-])"))) or ($fo and ($t | test("(^|[^A-Za-z0-9_.-])(agent|agent-dispatch|ci|deploy-box|lighthouse|ratchet|secret-scan)\\.yml($|[^A-Za-z0-9_-])")))' <<<"$issue" >/dev/null; then
             gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "routed: the deliverable edits .github/workflows/**, which the worker App cannot push; handed to the orchestrator"
             skip workflow-files
