@@ -57,6 +57,11 @@
     state: started
     daemon_reload: true
   loop: "{{ agent_locks.agents | dict2items | map(attribute='key') | map('regex_replace', '$', '.service') | list }}"
+  # A check-mode plan never really installed the unit files above, so the
+  # runner run of the plan (the ci.yml preview step) reads units that are not
+  # there yet; the real deploy run keeps this guard at full strength
+  # (fleet-ops#10931).
+  ignore_errors: "{{ ansible_check_mode }}"
 
 # Restart=on-failure with RestartSec=30 means a start job can succeed and the
 # process still die seconds later, so "started" is not the proof. is-active

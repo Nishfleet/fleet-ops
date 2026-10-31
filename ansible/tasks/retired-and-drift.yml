@@ -45,6 +45,11 @@
       /etc/prometheus/alertmanager.yml is the only copy of the Telegram chat
       id (/etc/prometheus/telegram_chat_id is missing). Copy the id into the
       id file, then rerun; the old config is left in place until then.
+    # A check-mode plan also runs against non-box machines (the ci.yml plan step's
+    # runner), whose package manager ships /etc/prometheus/alertmanager.yml with
+    # no chat id file; the box's hand-placed copy is what this guards. A real
+    # deploy run keeps this guard (fleet-ops#10931).
+    ignore_errors: "{{ ansible_check_mode }}"
 
 # The bridge was disabled and inactive when the audit found it, but stop it
 # first anyway, so a box that still had it running loses the listener before
@@ -269,6 +274,10 @@
     that: unmanaged | length == 0
     fail_msg: "Hand-installed, not in fleet-ops rootfs/ (add it to the repo, delete it, or list it in /etc/fleet-ops/box-only): {{ unmanaged | join(', ') }}"
     quiet: true
+    # A check-mode plan runs against non-box machines (the ci.yml plan step's runner),
+    # whose owned dirs hold stock files no rootfs ships; a real deploy run keeps the
+    # guard (fleet-ops#10931).
+    ignore_errors: "{{ ansible_check_mode }}"
   vars:
     shipped_paths: "{{ shipped.files | rejectattr('isdir') | map(attribute='path') | map('replace', rootfs, '') | list }}"
     unmanaged: >-

@@ -217,21 +217,31 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false, fetch-depth: 2}
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap ansible-core prometheus prometheus-alertmanager
-      - name: ansible/host.yml parses (ansible-playbook --syntax-check)
-        # fleet-host-config.service runs this playbook as root on every merge;
-        # a parse error would stop every root config change at deploy time.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap ansible-core prometheus prometheus-alertmanager acl
+        # acl brings setfacl: check-mode tasks that become_user nish hand their temp
+        # files to nish by ACL first, and without setfacl the chown fallback fails even
+        # as root (fleet-ops#10931).
+      - name: ansible plays parse, pass the report test and show their host-config plan (fleet-ops#10931)
+        # The three parse/runner gates below were one step each; the host-config plan needs the
+        # same always-run gate. fleet-host-config.service runs ansible/host.yml as root on every
+        # merge; a parse error would stop every root config change at deploy time, the report
+        # test replays a skipped non-looped registration (fleet-ops#9340), and a merge-queue PR
+        # touching host config shows its plan here before merge: the play's own
+        # `--check --diff` (Ansible check mode and diff mode) runs as root on this
+        # GitHub-hosted runner and every mutation stays in check mode, so no PR code
+        # reaches the live box — this workflow never runs there, and deploy-box.yml
+        # applies origin/main only (the standard named in fleet-ops#10931).
+        # Box-only state is stubbed so box-owned asserts can hold: the fleet-reviewer
+        # credential file must be a root-owned plain 0600 file, and the nish user answers
+        # the play's become_user reads. The runner ships a stock /etc, so the play's
+        # sandbox-only drift and alertmanager asserts tolerate check mode (ansible/tasks/),
+        # and a real deploy run keeps the full guard.
         if: always()
-        run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
-      - name: ansible/update.yml parses (fleet-ops#10075, #10079)
-        # fleet-update.service runs this playbook as root every day. Its test files were on no pytest list, so a stale one stayed red on main with no signal (fleet-ops#10073).
-        if: always()
-        run: ansible-playbook --syntax-check -i localhost, ansible/update.yml
-      - name: The report survives a skipped registration (fleet-ops#9340)
-        # Replays a skipped non-looped registration: the old (x | default({'results': []})).results
-        # pattern has no 'results' key to render and killed the run's last task.
-        if: always()
-        run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
+        run: |
+          test -n "${RUNNER_ENVIRONMENT:-}" && sudo sh -c 'id -u nish &>/dev/null || useradd -m nish; install -D -m 600 /dev/null /etc/credstore/nishfleet-reviewer.private-key.pem'
+          ansible-playbook --syntax-check -i localhost, ansible/host.yml ansible/update.yml
+          ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
+          sudo -E bash -o pipefail -c 'ansible-playbook --check --diff -i localhost, ansible/host.yml | tee "$GITHUB_STEP_SUMMARY"'
       - name: Node 22 (>= 22.12) for the pi-extension vitest suites; they fail, never skip, on an older node
         if: always()
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
