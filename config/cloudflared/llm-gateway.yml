@@ -1,0 +1,29 @@
+# The gh-aw pilot's way into the router (fleet-ops#11311). GitHub-hosted runners
+# cannot reach the router on loopback, so this locally managed Cloudflare Tunnel
+# publishes two router paths and nothing else: the chat call and the model list
+# gh-aw reads to check the model exists. Every other path, the admin routes
+# included, answers 404 at the connector. Before that, the Cloudflare edge lets
+# through only the pilot's Access service token and replaces any router key
+# with the pilot key (docs/RUNBOOK.md, "gh-aw pilot gateway"), so no other key
+# reaches the router through this hostname.
+# Docs: developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/local-management/configuration-file/
+tunnel: 6c9a41d4-9920-4565-9256-75dac2eaa350
+credentials-file: /etc/cloudflared/credentials.json
+no-autoupdate: true
+# From this box QUIC (UDP 7844) times out and IPv6 has no route out, while
+# TCP 7844 over IPv4 answers: use the documented http2 transport over IPv4.
+protocol: http2
+edge-ip-version: "4"
+ingress:
+  - hostname: llm.nish.sh
+    path: ^/v1/(chat/completions|models)$
+    service: http://127.0.0.1:4000
+    # The connector checks the Access token itself, so a loosened or deleted
+    # Access app cannot open this path (fleet-ops#11371).
+    originRequest:
+      access:
+        required: true
+        teamName: nish345
+        audTag:
+          - 24fb4b8359b4332414fc90d517bb5164082fa4677f193b48410fed28097c4b80
+  - service: http_status:404

@@ -24,7 +24,8 @@
   token per repo and writes it into that repo's GitHub Actions secret, replaced
   every 30 days. Its README says how to apply, rotate and delete it.
 - `containers/quadlet/` — `*.container` Podman quadlet units for the
-  LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
+  LiteLLM proxy, its Postgres and Redis, Grafana, aiostreams and the
+  Cloudflare Tunnel that gives the gh-aw pilot two router paths (fleet-ops#11311).
 - `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md`,
   `mac-rescue-2026-10-09.md` (the disposition of the Mac rescue bundles),
   `mac-scheduled-tasks.md` (the disposition of the Mac's 11 desktop
@@ -228,16 +229,15 @@
   next login. The check after a fresh CLI run: `find ~/.local/state ~/.local/share
   -not -type l \( -perm -g+w -o -perm -o+w \) | wc -l` must print 0 (a symlink
   always shows mode 777, so it is excluded).
-- `rootfs/etc/systemd/system/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
+- `systemd/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
   teammate that turns one request into one queued issue (`needs-triage`, so the
   [admission job](triage-admission.md) decides whether a worker starts)
   and answers with its URL. Stock `tincan listen --exec`, and the three tools it
   may use live in `pi-extensions/issue-desk/` (its README has the allowlist, the cap, the off
   switch and the delete steps). Pi starts with no built-in tools, no other
-  extensions, no MCP and no skills, so the model cannot run anything else. It runs
-  as a locked system unit (#10813), installed by the host config pipeline and
-  started by `ansible/tasks/agent-lock.yml`; `systemd/tincan-listen-issue-desk.service`
-  is the retired user form, kept for rollback and deleted by #10912.
+  extensions, no MCP and no skills, so the model cannot run anything else. Install
+  by hand from the deploy clone (link, then `enable --now`): it is not enabled by
+  `fleet-sync.service`.
 - `pi-extensions/` — Pi extensions the fleet's own agents load through stock Pi
   (`-e <path>`), never a wrapper. `pi-extensions/issue-desk/` and
   `pi-extensions/token-redact/` so far.
