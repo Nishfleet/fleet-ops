@@ -1,0 +1,19 @@
+# The gh-aw pilot's way into the router (fleet-ops#11311). GitHub-hosted runners
+# cannot reach the router on loopback, so this locally managed Cloudflare Tunnel
+# publishes two router paths and nothing else: the chat call and the model list
+# gh-aw reads to check the model exists. Every other path, the admin routes
+# included, answers 404 at the connector. The router still checks the caller's
+# key, which reaches only the pilot group (config/litellm-proxy.yaml).
+# Docs: developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/local-management/configuration-file/
+tunnel: 6c9a41d4-9920-4565-9256-75dac2eaa350
+credentials-file: /etc/cloudflared/credentials.json
+no-autoupdate: true
+# From this box QUIC (UDP 7844) times out and IPv6 has no route out, while
+# TCP 7844 over IPv4 answers: use the documented http2 transport over IPv4.
+protocol: http2
+edge-ip-version: "4"
+ingress:
+  - hostname: llm.nish.sh
+    path: ^/v1/(chat/completions|models)$
+    service: http://127.0.0.1:4000
+  - service: http_status:404

@@ -24,7 +24,8 @@
   token per repo and writes it into that repo's GitHub Actions secret, replaced
   every 30 days. Its README says how to apply, rotate and delete it.
 - `containers/quadlet/` — `*.container` Podman quadlet units for the
-  LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
+  LiteLLM proxy, its Postgres and Redis, Grafana, aiostreams and the
+  Cloudflare Tunnel that gives the gh-aw pilot two router paths (fleet-ops#11311).
 - `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md`,
   `mac-rescue-2026-10-09.md` (the disposition of the Mac rescue bundles),
   `mac-scheduled-tasks.md` (the disposition of the Mac's 11 desktop
