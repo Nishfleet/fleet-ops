@@ -1,0 +1,15 @@
+[Unit]
+Description=Check the deploy clone against origin/main every 5 minutes
+# Nothing else compares the clone to origin/main on a clock: fleet-sync.service's
+# probes only run when a deploy is started, so a merge that starts no deploy is
+# invisible. See fleet-clone-lag.service (fleet-ops#10046).
+# OnBootSec=10min gives the boot-time fleet-sync room to finish first.
+# Switch off: systemctl --user disable --now fleet-clone-lag.timer
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=5min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

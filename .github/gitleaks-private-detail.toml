@@ -66,10 +66,15 @@ regexes = ['''^home/nish/\.config/fleet-worker/nishfleet-worker\.private-key\.pe
 condition = "AND"
 
 [[allowlists]]
-description = "The Hermes sandbox drop-in must name the paths its ReadWritePaths= grants (the unit file has no %h for a system unit, and no inline comment to carry gitleaks:allow); the line is re-added whenever a path is added to it"
+description = "The Hermes sandbox drop-in and its lock test must name the paths the unit grants (ReadWritePaths) and, since fleet-ops#9981, hides (InaccessiblePaths): the unit file has no %h for a system unit, and no inline comment to carry gitleaks:allow; the list is re-added whenever a path is added to it"
 targetRules = ["private-home-path"]
-paths = ['''(^|/)rootfs/etc/systemd/system/hermes-\.service\.d/sandbox\.conf$''']
-regexes = ['''home/nish/(\.hermes|\.local/state/hermes|\.config/gh|workspaces/tooling/nish-vault/00)''']
+paths = ['''(^|/)rootfs/etc/systemd/system/hermes-\.service\.d/sandbox\.conf$''', '''^tests/test_systemd_unit_keys\.py$''']
+
+[[allowlists]]
+description = "The Beacon Hermes poll watcher names the binary it runs and the two paths its ReadWritePaths= grants (a system unit has no %h, and a unit line has no inline comment to carry gitleaks:allow), and its test reads those paths back; fleet-ops#11089"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/systemd/system/beacon-hermes-poll\.service$''', '''^tests/test_user_unit_sandboxing\.py$''']
+regexes = ['''home/nish/(\.local/bin/beacon|\.beacon|\.hermes)''']
 condition = "AND"
 
 [[allowlists]]
@@ -237,6 +242,19 @@ regexes = ['''^(home/nish/\.config/fleet-ops/seats/|home/nish/\.config/tincan/|h
 condition = "AND"
 
 [[allowlists]]
+description = "The managed-settings audit test and its doc spelled the two protected directories out in prose in the first two commits of fleet-ops#10567, before the test read those paths back off the file's own Read denies and the doc named the rule by what it covers. A PR scan reads every commit and history cannot be rewritten on an open PR. Only those five literals are allowed, so a new home path in either file still fails the scan"
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = ['''^tests/test_claude_managed_settings\.py$''', '''^docs/managed-settings-defaults\.md$''']
+regexes = [
+  '''^home/nish/\.config/fleet-ops/seats/claude-seat-a\.env$''',
+  '''^home/nish/\.config/fleet-ops/seats/$''',
+  '''^home/nish/\.config/tincan/inbox\.secret$''',
+  '''^home/nish/\.config/tincan/$''',
+  '''^\.config/fleet-ops/seats$''',
+]
+condition = "AND"
+
+[[allowlists]]
 description = "The four review runners' drop-ins hand the reviewer App key, the worker App key, the router key and one seat token over with LoadCredential= and EnvironmentFile=, and bind the tools, the rules and the deploy clone; a unit line cannot carry an inline gitleaks:allow comment and a system unit has no %h. The test reads those lines back, so it spells out one of them. Only the paths these files carry are allowed, so a new home path in any drop-in still fails the scan; fleet-ops#10950, four runners since #11069"
 targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = [
@@ -260,8 +278,22 @@ regexes = ['''^\.config/fleet-ops/seats$''']
 condition = "AND"
 
 [[allowlists]]
-description = "An earlier commit of the runner-jail bind cut (fleet-ops#10826) spelled the fleet config dir out as an absolute home path, before the test read it off the drop-in's own bind; a PR scan reads every commit and history cannot be rewritten on an open PR. Only that one directory is allowed, so a new home path in this file still fails the scan"
+description = "An earlier commit of the runner-jail bind cut (fleet-ops#10826) spelled the fleet config dir out as an absolute home path, before the test read it off the drop-in's own bind; a PR scan reads every commit and history cannot be rewritten on an open PR. fleet-ops#11120's first commit compared the TemporaryFileSystem= lines against absolute home paths, and its merge of main re-spelled that assertion from the drop-in's merged values. Only those directories are allowed, so a new home path in this file still fails the scan"
 targetRules = ["private-home-path"]
 paths = ['''^tests/test_runner_jail_start_state\.py$''']
-regexes = ['''^home/nish/\.config/fleet-ops$''']
+regexes = ['''^home/nish/\.config/fleet-ops$''', '''^home/nish/\.config/(gh|cloudflare)$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The nish config dirs tmpfiles file owns the two paths the jailed runner jobs mask and bind, so its lines must name them from the root (a tmpfiles line has no trailing comment to carry gitleaks:allow, fleet-ops#11120). Only those paths are allowed, so a new one in this file still fails the scan"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/tmpfiles\.d/nish-config-dirs\.conf$''']
+regexes = ['''^home/nish/\.config(/cloudflare)?$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The nish config dirs test reads the tmpfiles lines back, so its expected conf text compares against the same two absolute paths the shipped file spells out (a battery assert compares the conf's split lines, and the test has no own comment slot to carry gitleaks:allow, fleet-ops#11120). Only those paths are allowed, so a new one in this file still fails the scan"
+targetRules = ["private-home-path"]
+paths = ['''^tests/test_nish_config_dirs\.py$''']
+regexes = ['''^home/nish/\.config(/cloudflare)?$''']
 condition = "AND"

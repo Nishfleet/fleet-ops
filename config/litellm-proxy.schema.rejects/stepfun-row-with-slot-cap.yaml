@@ -4,8 +4,10 @@
 # rows and 645 on the three 2-slot rows, against 22 provider 429s. The Step Plan Pro cap of 15 concurrent stays enforced by demand
 # (the router's own aggregate on the key measured 3.93 concurrent) and by the provider's own 429, which cools the row for
 # cooldown_time and retries by itself (#8653); fleet-ops#10694 took the same cap off the Synthetic and z.ai rows.
-# Built from the live config's judge rows, one stepfun worker-capable row and its router_settings, which pass the schema
-# alone, so this file breaks only the rule named above.
+# The rows and router_settings are the live config's judge fallback, judge paid and StepFun
+# worker-capable rows plus its own router_settings, which pass the schema alone, so the change
+# above is the only one in this file.
+# undo: model_list.1.litellm_params.max_parallel_requests = drop
 model_list:
 - model_name: judge
   litellm_params:
@@ -40,7 +42,7 @@ model_list:
     order: 1
     weight: 1
     max_parallel_requests: 1
-    cooldown_time: 900
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -48,6 +50,7 @@ model_list:
     id: stepfun-step5previewd-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: judge
   litellm_params:
     model: openai/qwen3.8-max
@@ -59,18 +62,20 @@ model_list:
     rpm: 3
     order: 1
     max_parallel_requests: 3
-    cooldown_time: 900
+    cooldown_time: 21600
     extra_body:
       enable_thinking: true
       thinking_budget: 2048
+    additional_drop_params:
+    - reasoning_effort
   model_info:
     mode: chat
     supports_prompt_caching: true
-    cache_proof: 'Caches: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%); the endpoint reports prompt_tokens_details.cached_tokens. Judge group: one-shot calls only,
-      order unchanged.'
+    cache_proof: 'Caches: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%); the endpoint reports prompt_tokens_details.cached_tokens. Judge group: one-shot calls only, order unchanged.'
     id: alibaba-qwen38max-judge
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 router_settings:
   routing_strategy: simple-shuffle
   optional_pre_call_checks:
@@ -80,9 +85,20 @@ router_settings:
   redis_port: 6379
   redis_password: os.environ/REDIS_PASSWORD
   deployment_affinity_ttl_seconds: 600
+  model_group_alias:
+    worker-capable-desk: worker-capable
+    worker-public-desk: worker-public
   fallbacks:
   - worker-cheap:
     - worker-capable
+  - worker-public:
+    - worker-capable
+  - worker-public-desk:
+    - worker-capable
+  - assistant:
+    - worker-capable
+  - tether:
+    - assistant
   cooldown_time: 60
   allowed_fails: 1
   num_retries: 0

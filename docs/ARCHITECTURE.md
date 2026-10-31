@@ -11,7 +11,11 @@ One VPS (netcup), one `nish` user. Everything the fleet runs is a
 `systemctl --user` unit whose file lives in `systemd/` and is linked into
 `~/.config/systemd/user/` by hand once; a push to `main` is the deploy:
 `deploy-box.yml` runs `fleet-sync.service`, a fetch plus `--ff-only` merge,
-never `git pull` (RUNBOOK, fleet-ops#8893). GitHub is the durable copy of
+never `git pull` (RUNBOOK, fleet-ops#8893), and the workflow's security probe runs
+last in that same job, so a red probe still fails the run and cannot skip the
+deploy steps before it;
+`fleet-clone-lag.timer` fails the unit and pages when the clone is 35 min behind
+`origin/main` (fleet-ops#10046). GitHub is the durable copy of
 code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
@@ -187,7 +191,8 @@ The rules still in force:
   Those four runners run as the no-sudo service user `fleet-reviewer`, in their own HOME,
   and the reviewer App key reaches them by bare `LoadCredential=` from `/etc/credstore`,
   so no unit other than these four and no job on another runner can read it (fleet-ops#10950).
-  All four read the review lane's seat b from `claude-seat-b.env`; seat a serves worker jobs only.
+  All four read the review lane's seat b from `claude-seat-b.env`; seat a serves worker jobs, and a review
+  call falls back to it (`claude-seat-a.env` as a systemd credential) only when seat b fails, such as at its usage limit.
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the review user's own

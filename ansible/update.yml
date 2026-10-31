@@ -687,6 +687,37 @@
           register: tincan_listeners
           ignore_errors: true
 
+        # claude-vps's listener is the one system-scope listener (fleet-ops#9979):
+        # its lock is User=nish plus ProtectHome=tmpfs and the bind lists, which
+        # only a system unit carries. Same idle test as the user listeners above,
+        # so a wake that is mid-job waits for the next run. The restart runs as
+        # root, not as nish: nish may not restart a system unit.
+        - name: Read the claude-vps listener's control group
+          ansible.builtin.command:
+            argv: [systemctl, show, -p, ControlGroup, --value, tincan-listen-claude-vps.service]
+          register: tincan_system_cgroup
+          changed_when: false
+          when: tincan_version_after is changed
+
+        - name: Read the processes in the claude-vps listener's control group
+          ansible.builtin.slurp:
+            src: "/sys/fs/cgroup{{ tincan_system_cgroup.stdout | default('') | trim }}/cgroup.procs"
+          register: tincan_system_procs
+          ignore_errors: true
+          when:
+            - tincan_version_after is changed
+            - (tincan_system_cgroup.stdout | default('') | trim) != ''
+
+        - name: Restart the idle claude-vps listener on the new build
+          ansible.builtin.command:
+            argv: [systemctl, restart, tincan-listen-claude-vps.service]
+          when:
+            - tincan_version_after is changed
+            - tincan_system_procs.content is defined
+            - (tincan_system_procs.content | b64decode).split() | length == 1
+          register: tincan_listener_system
+          ignore_errors: true
+
         # syncthing is not upgraded here: it comes from Syncthing's own apt
         # repository (ansible/tasks/syncthing.yml), so the dist-upgrade above
         # moves the package, and its build carries no upgrader at all (#10844).
@@ -982,6 +1013,11 @@
         # Plugins loaded with --plugin-dir (scope "session") or from
         # ~/.claude/skills/ have no marketplace, and `claude plugin update`
         # refuses them by design.
+        # `claude plugin list --json` already merges the user and managed settings
+        # into `enabled` (docs/claude-plugin-drop-ins.md). A plugin it reports off
+        # is left out: Claude Code refuses to update a plugin the managed settings
+        # switch off and exits 1, which the assert below turns into a red run for a
+        # plugin no session loads.
         - name: Update every installed Claude Code plugin
           become: true
           become_user: nish
@@ -989,7 +1025,8 @@
           ansible.builtin.shell:
             cmd: >-
               set -o pipefail;
-              claude plugin list --json | jq -r '.[] | select(.installedAt != null) | .id' |
+              claude plugin list --json |
+              jq -r 'if any(.[]; .installedAt != null and ((.enabled | type) != "boolean")) then error("a plugin with no enabled flag cannot be updated safely") else .[] | select(.installedAt != null and .enabled) | .id end' |
               xargs -r -n1 claude plugin update
             executable: /bin/bash
           timeout: 600
@@ -1387,6 +1424,7 @@
               pre_update_backup_rc: "{{ (pre_update_backup | default({})).rc | default('not run') }}"
               tincan_listeners_restarted: "{{ (tincan_listeners | default({})).results | default([]) | map(attribute='item') | list }}"
               tincan_listeners_busy: "{{ tincan_busy }}"
+              tincan_system_listener: "{{ 'restarted' if (tincan_listener_system | default({})).changed | default(false) else ('failed' if (tincan_listener_system | default({})).failed | default(false) else ('busy' if (tincan_system_procs.content | default('') | length > 0) else 'no upgrade')) }}"
               sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"
               runners_online: "{{ (online | default({})).results | default([]) | map(attribute='stdout_lines') | map('length') | list }}"
               runner_jobs_running: "{{ busy_after.stdout }}"
@@ -1416,6 +1454,8 @@
               - "(tincan_cgroups | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(tincan_procs | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(tincan_listeners | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "not (tincan_system_procs | default({})).failed | default(false)"
+              - "(tincan_listener_system | default({})).rc | default(0) == 0"
               - "(app_versions_after | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(npm_running | default({'rc': 1})).rc | default(1) == 1"
               - "(pi_smoke | default({})).stdout | default('') is search('OK')"

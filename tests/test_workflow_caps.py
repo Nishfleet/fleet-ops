@@ -283,3 +283,67 @@ def test_the_orchestrate_session_books_its_wall_for_landing():
     assert "$(cat /tmp/orch-session-start)" in text, (
         "the prompt writes the session start but never reads it back: the budget needs the elapsed-minutes command"
     )
+
+
+def test_the_orchestrate_session_kills_what_its_engine_started():
+    job = yaml_json(DISPATCH)["jobs"]["orchestrate"]
+    step = next(s for s in job["steps"] if s.get("name") == "Run the orchestrator session")
+    run = step["run"]
+    assert re.search(r'setsid "\$\{engine\[@\]\}"', run), (
+        "the orchestrator session no longer runs its engine as its own process group: a dev server the "
+        "session backgrounded survives the session's end and stalls the runner unit at its MemoryHigh "
+        "line for minutes (four orphaned wrangler stacks, netcup-agent-19, 2026-10-30, fleet-ops#11140)"
+    )
+    assert 'wait "$engine_pid"' in run, (
+        "the orchestrate session step no longer waits on its engine, so its exit status never reaches the step"
+    )
+    for kill in ('kill -TERM "-$engine_pid"', 'kill -KILL "-$engine_pid"'):
+        assert kill in run, (
+            f"the step lost its `{kill}`: the engine's process group must die even when the engine was cut "
+            "off at the wall, because the group's backgrounded children outlive it (fleet-ops#11140)"
+        )
+    assert 'trap \'kill -TERM "-$engine_pid" 2>/dev/null || true\' EXIT' in run, (
+        "the step has no EXIT trap killing the engine's process group, so a step killed before the wait "
+        "returns leaks the group's children again (fleet-ops#11140)"
+    )
+
+
+def inish_daily_run():
+    steps = yaml_json(AGENT)["jobs"]["inish-daily"]["steps"]
+    step = next((s for s in steps if s.get("id") == "compile"), None)
+    assert isinstance(step, dict) and isinstance(step.get("run"), str), (
+        "agent.yml's inish-daily job has no compile step that runs shell, so this gate would pass vacuously"
+    )
+    return step["run"]
+
+
+def fresh_clone(run):
+    match = re.search(r"fresh_clone\(\) \{.*?\}", run, re.S)
+    assert match, "agent.yml's inish-daily job has no fresh_clone() helper"
+    clone = match.group(0)
+    assert clone.count("{") == clone.count("}"), (
+        f"this gate's regex cut the fresh_clone() body short at a brace inside it, so the "
+        f"credential check below would read a partial body: {clone}"
+    )
+    return clone
+
+
+CREDENTIAL_FORMS = ("extraheader", "authorization", "credential.", "x-access-token", "github.com@")
+
+
+def test_the_daily_clone_carries_no_credential_that_can_expire_mid_run():
+    clone = fresh_clone(inish_daily_run())
+    assert "inish-site.git" in clone, f"fresh_clone no longer clones inish-site: {clone}"
+    lowered = clone.lower()
+    for form in CREDENTIAL_FORMS:
+        assert form not in lowered, (
+            f"fresh_clone sends a credential with the clone ({form}), and the only one this job has "
+            f"expires after an hour: {clone}"
+        )
+
+
+def test_the_daily_names_a_failed_rebuild_clone():
+    assert re.search(r'fresh_clone "\$dst" \|\| \{ echo "[^"]+"; return 1; \}', inish_daily_run()), (
+        "checked() returns 1 with no message when the rebuild clone fails, so the only line the log has is "
+        "'left no valid edition' and the reader looks for an edition file the model wrote (fleet-ops#10876)"
+    )

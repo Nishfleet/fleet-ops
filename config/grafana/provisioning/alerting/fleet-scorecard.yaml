@@ -165,16 +165,6 @@ groups:
               repository: siterep-public
               options: {owner: Nishfleet, repository: siterep-public, query: "is:merged repo:Nishfleet/siterep-public", timeField: 2}
               refId: E
-          - refId: F
-            relativeTimeRange: {from: 259200, to: 0}
-            datasourceUid: fleet-github
-            model:
-              datasource: {type: grafana-github-datasource, uid: fleet-github}
-              queryType: Pull_Requests
-              owner: Nishfleet
-              repository: tether
-              options: {owner: Nishfleet, repository: tether, query: "is:merged repo:Nishfleet/tether", timeField: 2}
-              refId: F
           - refId: G
             relativeTimeRange: {from: 259200, to: 0}
             datasourceUid: fleet-github
@@ -195,16 +185,6 @@ groups:
               repository: seo-fix-kit
               options: {owner: Nishfleet, repository: seo-fix-kit, query: "is:merged repo:Nishfleet/seo-fix-kit", timeField: 2}
               refId: H
-          - refId: I
-            relativeTimeRange: {from: 259200, to: 0}
-            datasourceUid: fleet-github
-            model:
-              datasource: {type: grafana-github-datasource, uid: fleet-github}
-              queryType: Pull_Requests
-              owner: Nishfleet
-              repository: mailbox
-              options: {owner: Nishfleet, repository: mailbox, query: "is:merged repo:Nishfleet/mailbox", timeField: 2}
-              refId: I
           - refId: J
             datasourceUid: __expr__
             model:
@@ -230,13 +210,9 @@ groups:
                     UNION ALL
                     SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM E
                     UNION ALL
-                    SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM F
-                    UNION ALL
                     SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM G
                     UNION ALL
                     SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM H
-                    UNION ALL
-                    SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM I
                   ) AS merged
                 ) AS windows
         noDataState: OK
@@ -280,7 +256,7 @@ groups:
               queryType: Issues
               owner: Nishfleet
               repository: ''
-              options: {query: "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision NOT \"grafana alert:\" in:title archived:false", timeField: 2}
+              options: {query: "org:Nishfleet is:issue label:agent-ready -is:blocked -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision NOT \"grafana alert:\" in:title archived:false", timeField: 2}
               refId: B
           - refId: P
             relativeTimeRange: {from: 259200, to: 0}
@@ -348,6 +324,60 @@ groups:
         annotations:
           summary: '{{ if $values }}The agent pool sat idle on both of the last two days while unblocked agent-ready work was waiting.{{ else }}The fleet cannot read the runner metric, the runs or the ready issues for the Fleet scorecard idle rule, so it is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}Scorecard target: 0 idle runner-minutes while ready work waits (fleet-ops#10711). Either the queue stopped admitting work or a lane holds it; say which. Dashboard: Fleet scorecard, idle table.{{ else }}Check the fleet-prometheus and fleet-github data sources in Grafana.{{ end }}'
+        labels: {severity: warning, signal: fleet-scorecard}
+        isPaused: false
+
+      # Dependency-blocked ready work sat without a signal for 48h (fleet-ops#11135). The idle
+      # rule above drops dependency-blocked ready issues (-is:blocked, plus a mirror label once
+      # #11228/#11301 land), so a blocker stuck forever would silence the class instead of being
+      # seen. This rule keeps counting the class, one query, both mirror spellings in one token,
+      # the label comma being GitHub's OR (docs guide searching-issues-and-pull-requests.md,
+      # label:documentation,reliability; probed 2026-11-01: label:agent-blocked,needs-orchestrator
+      # read 61, the union of 41 and 21). The built-in is:blocked qualifier is not on this
+      # endpoint: the legacy REST search treats it as an unrecognized token (the advanced search
+      # endpoint has it, #11228), so at the pinned data source the qualifier is dead (#11301), and
+      # live on 2026-11-01, with #8888, 0509#5918 and drive#829 still open and still blocked_by 1,
+      # 2 and 1 by GraphQL, is:blocked read 0 and -is:blocked filtered nothing — the rule does not
+      # build on it. A plain OR group is out too: the search endpoint silently reads a
+      # parenthesised OR as zero (probed the same day: (label:agent-blocked OR
+      # label:needs-orchestrator) read 0, minutes after its halves read 41 and 20). An issue
+      # enters the count only when
+      # its own updated_at is at least 48h old, the queue-stuck pattern, so the age is per issue
+      # and not a property of the set. Until a mirror label lands the query is never written, so
+      # the count reads a true zero, not a broken read. Known gap (as in queue-stuck.yaml): an
+      # issue untouched for over 30 days leaves the read window and the count falls to 0, so a
+      # firing alert resolves instead of staying.
+      - uid: scorecard-blocked-stale
+        title: Dependency-blocked ready work with no update for 48h
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 2592000, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Issues
+              owner: Nishfleet
+              repository: ''
+              options: {query: "org:Nishfleet is:issue is:open label:agent-ready label:agent-blocked-dep,dependency-blocked NOT \"grafana alert:\" in:title archived:false", timeField: 2}
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT COUNT(*) AS blocked
+                FROM (SELECT updated_at FROM A) AS found
+                WHERE UNIX_TIMESTAMP() - UNIX_TIMESTAMP(updated_at) >= 172800
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}Dependency-blocked agent-ready work has had no update for 48 hours.{{ else }}The fleet cannot read GitHub issues for the Fleet scorecard blocked-stale rule, so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}A dependency-blocked agent-ready issue has had no update for two days while its blocker gives no sign of life (fleet-ops#11135). Open the blocker, or unlink the dependency so the issue returns to the queue. Dashboard: Fleet scorecard.{{ else }}Check the GitHub data source in Grafana.{{ end }} Open the list: https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aagent-ready+label%3Aagent-blocked-dep%2Cdependency-blocked+NOT+%22grafana+alert%3A%22+in%3Atitle+archived%3Afalse+sort%3Aupdated-asc'
         labels: {severity: warning, signal: fleet-scorecard}
         isPaused: false
 
