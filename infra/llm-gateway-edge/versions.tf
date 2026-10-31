@@ -13,7 +13,7 @@ terraform {
   # way as infra/cloudflare-tokens (README.md, "State"). A backend block cannot
   # read variables or "~", hence the absolute path.
   backend "local" {
-    path = "/home/nish/.local/state/fleet-ops/llm-gateway-edge/terraform.tfstate"
+    path = "/home/nish/.local/state/fleet-ops/llm-gateway-edge/terraform.tfstate" # gitleaks:allow
   }
 }
 

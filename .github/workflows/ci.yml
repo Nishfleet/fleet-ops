@@ -1619,20 +1619,11 @@ jobs:
           tofu_version: 1.13.1
           tofu_wrapper: false
       - name: tofu fmt -check
-        run: |
-          for d in infra/cloudflare-tokens infra/llm-gateway-edge; do
-            (cd "$d" && tofu fmt -check -diff -recursive)
-          done
+        run: for d in infra/cloudflare-tokens infra/llm-gateway-edge; do (cd "$d" && tofu fmt -check -diff -recursive) || exit 1; done
       - name: tofu init -backend=false
-        run: |
-          for d in infra/cloudflare-tokens infra/llm-gateway-edge; do
-            (cd "$d" && tofu init -backend=false -lockfile=readonly)
-          done
+        run: for d in infra/cloudflare-tokens infra/llm-gateway-edge; do (cd "$d" && tofu init -backend=false -lockfile=readonly) || exit 1; done
       - name: tofu validate
-        run: |
-          for d in infra/cloudflare-tokens infra/llm-gateway-edge; do
-            (cd "$d" && tofu validate)
-          done
+        run: for d in infra/cloudflare-tokens infra/llm-gateway-edge; do (cd "$d" && tofu validate) || exit 1; done
 
   ratchet:
     uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main

@@ -24,8 +24,8 @@ applies: this box has the credentials, CI has none.
 
 State holds the pilot router key (it sits inside the transform rule), so it
 lives outside the repo like the `infra/cloudflare-tokens` state:
-`/home/nish/.local/state/fleet-ops/llm-gateway-edge/terraform.tfstate`,
-encrypted with the same `TF_ENCRYPTION` file
+`~/.local/state/fleet-ops/llm-gateway-edge/terraform.tfstate`, encrypted with
+the same `TF_ENCRYPTION` file
 (`~/.config/cloudflare/tofu-state-encryption.env`; see
 `infra/cloudflare-tokens/state-encryption.env.example`).
 
