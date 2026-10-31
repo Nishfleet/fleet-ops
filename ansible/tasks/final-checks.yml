@@ -144,7 +144,7 @@
             (SELECT c.relname, COALESCE(a.attname, '-') AS attname FROM pg_class c
             JOIN pg_namespace nn ON nn.oid = c.relnamespace LEFT JOIN pg_attribute a
             ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-            WHERE nn.nspname = 'public' AND c.relkind IN ('r', 'p', 'f', 'v')
+            WHERE nn.nspname = 'public' AND c.relkind IN ('r', 'p', 'f', 'v', 'm')
             AND c.relname <> 'session_hop_logs'
             AND (has_table_privilege(c.oid, 'SELECT')
             OR (a.attnum IS NOT NULL AND has_column_privilege(c.oid, a.attnum, 'SELECT'))))
@@ -171,6 +171,7 @@
     - name: Remove the probe's password file
       become: true
       become_user: nish
+      check_mode: false
       ansible.builtin.file:
         path: "{{ grafana_ro_probe_pgpass.path }}"
         state: absent
