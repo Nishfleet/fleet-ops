@@ -396,6 +396,18 @@
       - {name: grafana-cloudflare-api-token, src: "{{ nish_home }}/.config/cloudflare/deploy-ci.env", key: CLOUDFLARE_API_TOKEN}
       - {name: grafana-postgres-password, src: "{{ nish_home }}/.config/fleet-ops/grafana-postgres-password.env", key: GRAFANA_POSTGRES_PASSWORD}
 
+    # The tincan relay's approval policy (fleet-ops#9979). It was hand-made on
+    # the box, so nothing in the repo said what the gate was; it is now rendered
+    # by jq from one roster file (config/tincan-relay/) and installed here, so
+    # the policy cannot drift from the repo and adding an agent is one line.
+    tincan_relay_state: "{{ nish_home }}/.local/state/tincan-relay"
+    tincan_relay_policy_path: "{{ tincan_relay_state }}/approval.json"
+    tincan_relay_roster_file: "{{ playbook_dir }}/../config/tincan-relay/agents.txt"
+    tincan_relay_policy_program: "{{ playbook_dir }}/../config/tincan-relay/policy.jq"
+    tincan_relay_roster: >-
+      {{ (lookup('ansible.builtin.file', tincan_relay_roster_file)).splitlines() | map('trim')
+         | reject('match', '^(#|$)') | unique | list }}
+
   tasks:
     # The review runners' user and registration exist before install-config.yml copies their
     # drop-ins: a drop-in names a credential the deploy may not have, and a unit whose
@@ -405,6 +417,8 @@
     - ansible.builtin.import_tasks: tasks/install-config.yml
 
     - ansible.builtin.import_tasks: tasks/agent-lock.yml
+
+    - ansible.builtin.import_tasks: tasks/tincan-relay-policy.yml
 
     - ansible.builtin.import_tasks: tasks/pilot-and-retired-runners.yml
 
@@ -437,12 +451,33 @@
 
   handlers:
     # The runner sandbox is read at unit start, so an installed drop-in waits for a start.
-    # This play installs it and reloads the daemon, and restarts no runner: a restart waits
-    # 5 min for a running job and then kills it, which cut three hand-offs on 2026-10-29
-    # 11:57Z (fleet-ops#10898). The drop-in header says where the change lands instead.
+    # This play reloads the daemon and then applies the change to the pool: the handler
+    # below starts fleet-runner-sandbox-apply.service, which restarts only the runner
+    # units whose drop-in is newer than their start and that hold no Runner.Worker
+    # process (idle), so no job is ever killed. A runner that was busy at the deploy is
+    # restarted when its job ends, within 5 min (fleet-runner-sandbox-apply.timer).
+    # Before fleet-ops#11248 this play restarted no runner and a jail tightening reached
+    # the pool only at the nightly drain, so from #11245 and #11226's merge at 18:27Z to
+    # the hand restart at 18:47Z every job failed the probe with "/run/user is readable
+    # from this job" on a unit that was running before the drop-in was installed.
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
+
+    # Runs after the reload above (handlers run in file order), so the manager applies
+    # the drop-in into its loaded unit list before the apply pass compares mtimes.
+    - name: Start the runner sandbox apply
+      ansible.builtin.systemd_service:
+        name: fleet-runner-sandbox-apply.service
+        state: started
+      # Under --check the copies above installed nothing, so the unit file may not exist.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # A drop-in is read at unit start. One systemctl call, gateway then serve, after the
+    # daemon reload above (handlers run in file order). A unit that is not installed
+    # fails the call, which fails the deploy loudly (fleet-ops#11185).
+    - name: Restart hermes units for their sandbox
+      ansible.builtin.command: /usr/bin/systemctl restart hermes-gateway.service hermes-serve.service
 
     # Established SSH sessions live in ssh@.service and survive this (fleet-ops#10541).
     - name: Restart ssh.socket
@@ -471,9 +506,6 @@
       ansible.builtin.systemd_service:
         name: systemd-journald.service
         state: restarted
-
-    - name: Create tmpfiles
-      ansible.builtin.command: /usr/bin/systemd-tmpfiles --create
 
     - name: Load audit rules
       ansible.builtin.command: /usr/sbin/augenrules --load

@@ -98,6 +98,7 @@ def issue(title="Fix the footer link colour", body="The footer link is grey on g
         ("Tidy", "Clean up the staging accounts", ["needs-triage"], "customer-data deletion"),
         ("Tidy", "x", ["needs-triage", "blocked-on: nish-decision"], "a reserved label"),
         ("Tidy", "x", ["needs-triage", "nish-reserved"], "a reserved label"),
+        ("Tidy", "x", ["needs-triage", "needs-nish-decision"], "a reserved label"),
         ("Tidy", "Add the DB password to .env", ["needs-triage"], "secrets"),
         ("Tidy", "x", ["needs-triage", "payments"], "money or payments"),
         ("Remove the unused avatar", "Delete the old png", ["needs-triage"], ""),
