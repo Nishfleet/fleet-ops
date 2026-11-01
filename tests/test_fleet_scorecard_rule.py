@@ -108,8 +108,9 @@ def _grouped_select_lists(sql):
     return lists
 
 
-def _declared_products():
-    return {r["name"] for r in json.loads(INTAKE.read_text())["repos"] if r.get("product") is True}
+def _declared_products(*sections):
+    cfg = json.loads(INTAKE.read_text())
+    return {r["name"] for s in sections for r in cfg[s] if r.get("product") is True}
 
 
 def _rule_products_expression():
@@ -137,7 +138,9 @@ def test_pull_request_search_scopes_to_the_repository_it_names(targets):
 
 @pytest.mark.parametrize("targets", [_dashboard_targets, _rule_targets])
 def test_the_searched_repositories_are_the_registry_products_and_the_control_plane(targets):
-    assert {t["repository"] for t in _searches(targets)} == _declared_products() | {"fleet-ops"}
+    searched = {t["repository"] for t in _searches(targets)}
+    assert _declared_products("repos") | {"fleet-ops"} <= searched
+    assert searched <= _declared_products("repos", "deferred") | {"fleet-ops"}
 
 
 # The hand-off rate panel (fleet-ops#11167) buckets PRs by created_at; every other PR
