@@ -3,12 +3,15 @@
 An open issue labelled `needs-triage` in an enrolled **product** repo
 (`repos` with `product: true` in `config/intake-repos.json`) gets a Jev verdict
 instead of waiting for a person to add `agent-ready`. The `admit` job in
-`.github/workflows/agent-dispatch.yml` runs on the hourly sweep, on the
+`.github/workflows/agent-dispatch.yml` runs on the sweep, on the
 `needs-triage` label event and on `workflow_dispatch` (`task=admit`, optionally
 `issue=<N>`). It asks the router `/jev` the same way `agent.yml` does: "Admit this issue for
 an automated worker now?" and "Could one coding agent finish the described
 change in a single session in under 45 minutes?", with the title, body and
-labels as state. The second question is the size gate (fleet-ops#9288): a
+labels as state. Both questions ride one call, which is stock for the router:
+the replay in `docs/jev-call-sites.md` answered two choice questions (`lane`,
+`vet`) per call, and `docs/ARCHITECTURE.md` types `/jev` as a decision call
+(boolean, choice or score), so `answers` carries more than one entry. The second question is the size gate (fleet-ops#9288): a
 worker session's wall is 55 minutes, so an issue whose own estimate does not
 fit never reaches a worker; the orchestrator lane it parks on can split it.
 

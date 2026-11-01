@@ -44,40 +44,52 @@ def _wr(rid, conclusion="failure", started="2026-10-10T10:00:00Z", ended="2026-1
     return {"id": rid, "conclusion": conclusion, "run_started_at": started, "updated_at": ended}
 
 
-def _runs_fixture(fake, runs, timeouts=(), early_failures=()):
-    (fake / "runs.json").write_text(json.dumps({"workflow_runs": runs}))
-    for wr in runs:
-        rid = wr["id"]
-        steps = [{"name": "Worker", "conclusion": "failure" if rid in timeouts else "success"}]
-        (fake / f"jobs-{rid}.json").write_text(json.dumps(
-            {"jobs": [{"id": 900 + rid, "name": "work", "steps": steps}]}))
-        if rid in timeouts:
-            (fake / f"ann-{900 + rid}.json").write_text(json.dumps(
-                [{"message": "The action 'Worker' has timed out after 55 minutes."}]))
-        elif rid in early_failures:
-            (fake / f"ann-{900 + rid}.json").write_text(json.dumps(
-                [{"message": "The action 'Worker' has failed. tests came back red on main"}]))
-        else:
-            (fake / f"ann-{900 + rid}.json").write_text(json.dumps([]))
-
-
-def _run(tmp_path, runs, timeouts=(), early_failures=(), repo="Nishfleet/0509", drop_jobs=(), drop_ann=()):
+def _bare(tmp_path):
     fake = tmp_path / "fake"
     fake.mkdir()
-    _runs_fixture(fake, runs, timeouts, early_failures)
-    for n in drop_jobs:
-        (fake / f"jobs-{n}.json").unlink()
-    for n in drop_ann:
-        (fake / f"ann-{900 + n}.json").unlink()
     gh = fake / "gh"
     gh.write_text(FAKE_GH)
     gh.chmod(0o755)
     env = {**os.environ, "FAKE_DIR": str(fake), "PATH": f"{fake}:{os.environ['PATH']}",
-           "GITHUB_REPOSITORY": repo,
+           "GITHUB_REPOSITORY": "Nishfleet/0509",
            "WALL_RATE_MAX": _env_var("WALL_RATE_MAX"), "WALL_MIN_SECS": _env_var("WALL_MIN_SECS"),
            "WALL_MINUTES": _env_var("WALL_MINUTES")}
-    return subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()],
+    return fake, env
+
+
+def _bash(env, block):
+    return subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", block],
                           env=env, capture_output=True, text=True)
+
+
+def _runs_fixture(fake, runs, timeouts=(), early_failures=(), jobs=None, anns=None):
+    (fake / "runs.json").write_text(json.dumps({"workflow_runs": runs}))
+    for wr in runs:
+        rid = wr["id"]
+        steps = [{"name": "Worker", "conclusion": "failure" if rid in timeouts else "success"}]
+        run_jobs = (jobs or {}).get(rid, [{"id": 900 + rid, "name": "work", "steps": steps}])
+        (fake / f"jobs-{rid}.json").write_text(json.dumps({"jobs": run_jobs}))
+        for job in run_jobs:
+            if (anns or {}).get(job["id"]) is not None:
+                (fake / f"ann-{job['id']}.json").write_text(json.dumps(anns[job["id"]]))
+            elif any(s.get("name") == "Worker" and s.get("conclusion") == "failure" for s in job["steps"]):
+                (fake / f"ann-{job['id']}.json").write_text(json.dumps(
+                    [{"message": "The action 'Worker' has timed out after 55 minutes."}]))
+            elif rid in early_failures:
+                (fake / f"ann-{job['id']}.json").write_text(json.dumps(
+                    [{"message": "The action 'Worker' has failed. tests came back red on main"}]))
+            else:
+                (fake / f"ann-{job['id']}.json").write_text(json.dumps([]))
+
+
+def _run(tmp_path, runs, timeouts=(), early_failures=(), repo="Nishfleet/0509", drop_jobs=(), drop_ann=(), jobs=None, anns=None):
+    fake, env = _bare(tmp_path)
+    _runs_fixture(fake, runs, timeouts, early_failures, jobs, anns)
+    for n in drop_jobs:
+        (fake / f"jobs-{n}.json").unlink()
+    for n in drop_ann:
+        (fake / f"ann-{900 + n}.json").unlink()
+    return _bash(env, _run_block())
 
 
 _S = "2026-10-10T10:00:00Z"
@@ -103,7 +115,7 @@ def test_under_target_is_green(tmp_path):
     r = _run(tmp_path, runs, timeouts=(11,))
     assert r.returncode == 0, r.stdout + r.stderr
     assert "::error::" not in r.stdout
-    assert "1 of 10 finished agent-dispatch runs" in r.stdout
+    assert "1 of 10 worker jobs" in r.stdout
 
 
 def test_target_boundary_is_red(tmp_path):
@@ -116,32 +128,15 @@ def test_target_boundary_is_red(tmp_path):
 
 def test_no_worker_step_run_is_not_in_the_denominator(tmp_path):
     runs = [_wr(1, "failure", _S, _E1_H), _wr(2, "success", _S, _E1_H)]
-    fake = tmp_path / "fake"
-    fake.mkdir()
-    (fake / "runs.json").write_text(json.dumps({"workflow_runs": runs}))
-    (fake / "jobs-1.json").write_text(json.dumps({"jobs": [{"id": 901, "name": "work", "steps": [{"name": "Checkout"}]}]}))
-    (fake / "jobs-2.json").write_text(json.dumps({"jobs": [{"id": 902, "name": "work", "steps": [{"name": "Checkout"}]}]}))
-    gh = fake / "gh"; gh.write_text(FAKE_GH); gh.chmod(0o755)
-    env = {**os.environ, "FAKE_DIR": str(fake), "PATH": f"{fake}:{os.environ['PATH']}",
-           "GITHUB_REPOSITORY": "Nishfleet/0509",
-           "WALL_RATE_MAX": _env_var("WALL_RATE_MAX"), "WALL_MIN_SECS": _env_var("WALL_MIN_SECS"),
-           "WALL_MINUTES": _env_var("WALL_MINUTES")}
-    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()],
-                       env=env, capture_output=True, text=True)
+    r = _run(tmp_path, runs, jobs={1: [{"id": 901, "name": "work", "steps": [{"name": "Checkout"}]}],
+                                   2: [{"id": 902, "name": "work", "steps": [{"name": "Checkout"}]}]})
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "no finished agent-dispatch run with a Worker step" in r.stdout
+    assert "no worker job in a finished agent-dispatch run" in r.stdout
 
 
 def test_failed_runs_read_fails_loud(tmp_path):
-    fake = tmp_path / "fake"
-    fake.mkdir()
-    gh = fake / "gh"; gh.write_text(FAKE_GH); gh.chmod(0o755)
-    env = {**os.environ, "FAKE_DIR": str(fake), "PATH": f"{fake}:{os.environ['PATH']}",
-           "GITHUB_REPOSITORY": "Nishfleet/0509",
-           "WALL_RATE_MAX": _env_var("WALL_RATE_MAX"), "WALL_MIN_SECS": _env_var("WALL_MIN_SECS"),
-           "WALL_MINUTES": _env_var("WALL_MINUTES")}
-    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()],
-                       env=env, capture_output=True, text=True)
+    _, env = _bare(tmp_path)
+    r = _bash(env, _run_block())
     assert r.returncode == 1, r.stdout + r.stderr
     out = r.stdout + r.stderr
     assert "::error::" in out and "runs-list read failed" in out
@@ -159,22 +154,8 @@ def test_annotations_read_failure_is_loud(tmp_path):
 
 
 def test_cancelled_wall_death_is_counted(tmp_path):
-    fake = tmp_path / "fake"
-    fake.mkdir()
     runs = [_wr(9, "cancelled", _S, _E1_H)] + [_wr(n, "success", _S, _E1_H) for n in range(10, 17)]
-    (fake / "runs.json").write_text(json.dumps({"workflow_runs": runs}))
-    for n in runs:
-        (fake / f"jobs-{n['id']}.json").write_text(json.dumps(
-            {"jobs": [{"id": 900 + n["id"], "name": "work", "steps": [{"name": "Worker"}]}]}))
-    (fake / "ann-909.json").write_text(json.dumps(
-        [{"message": "The action 'Worker' has timed out after 55 minutes."}]))
-    gh = fake / "gh"; gh.write_text(FAKE_GH); gh.chmod(0o755)
-    env = {**os.environ, "FAKE_DIR": str(fake), "PATH": f"{fake}:{os.environ['PATH']}",
-           "GITHUB_REPOSITORY": "Nishfleet/0509",
-           "WALL_RATE_MAX": _env_var("WALL_RATE_MAX"), "WALL_MIN_SECS": _env_var("WALL_MIN_SECS"),
-           "WALL_MINUTES": _env_var("WALL_MINUTES")}
-    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()],
-                       env=env, capture_output=True, text=True)
+    r = _run(tmp_path, runs, timeouts=(9,))
     assert r.returncode == 0, r.stdout + r.stderr
     assert "1 of 8" in r.stdout
 
@@ -182,7 +163,7 @@ def test_cancelled_wall_death_is_counted(tmp_path):
 def test_short_run_is_not_a_real_run(tmp_path):
     r = _run(tmp_path, [_wr(1, "failure", _S, "2026-10-10T10:01:00Z")], timeouts=(1,))
     assert r.returncode == 0
-    assert "no finished agent-dispatch run" in r.stdout
+    assert "no worker job in a finished agent-dispatch run" in r.stdout
 
 
 def test_wall_death_needs_the_annotation_not_the_duration(tmp_path):
@@ -193,19 +174,8 @@ def test_wall_death_needs_the_annotation_not_the_duration(tmp_path):
 
 def test_job_level_timeout_text_counts_too(tmp_path):
     runs = [_wr(n, "success", _S, _E1_H) for n in range(3, 12)] + [_wr(12, "failure", _S, "2026-10-10T10:56:00Z")]
-    fake = tmp_path / "fake"
-    fake.mkdir()
-    _runs_fixture(fake, runs, timeouts=(), early_failures=())
-    (fake / "jobs-12.json").write_text(json.dumps({"jobs": [{"id": 912, "steps": [{"name": "Worker"}]}]}))
-    (fake / "ann-912.json").write_text(json.dumps(
-        [{"message": "The job running on runner host has exceeded the maximum execution time of 55 minutes."}]))
-    gh = fake / "gh"; gh.write_text(FAKE_GH); gh.chmod(0o755)
-    env = {**os.environ, "FAKE_DIR": str(fake), "PATH": f"{fake}:{os.environ['PATH']}",
-           "GITHUB_REPOSITORY": "Nishfleet/0509", "WALL_AT": "0230",
-           "WALL_RATE_MAX": _env_var("WALL_RATE_MAX"), "WALL_MIN_SECS": _env_var("WALL_MIN_SECS"),
-           "WALL_MINUTES": _env_var("WALL_MINUTES")}
-    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()],
-                       env=env, capture_output=True, text=True)
+    r = _run(tmp_path, runs, jobs={12: [{"id": 912, "steps": [{"name": "Worker"}]}]},
+             anns={912: [{"message": "The job running on runner host has exceeded the maximum execution time of 55 minutes."}]})
     assert r.returncode == 0, r.stdout + r.stderr
     assert "1 of 10" in r.stdout
 
@@ -221,16 +191,7 @@ def test_missing_started_at_falls_back_to_created_at(tmp_path):
     runs = [{"id": 8, "conclusion": "failure", "created_at": _S,
              "updated_at": "2026-10-10T10:50:00Z"}]
     runs += [_wr(n, "success", _S, _E1_H) for n in range(9, 17)]
-    fake = tmp_path / "fake"
-    fake.mkdir()
-    _runs_fixture(fake, runs, timeouts=(8,))
-    gh = fake / "gh"; gh.write_text(FAKE_GH); gh.chmod(0o755)
-    env = {**os.environ, "FAKE_DIR": str(fake), "PATH": f"{fake}:{os.environ['PATH']}",
-           "GITHUB_REPOSITORY": "Nishfleet/0509",
-           "WALL_RATE_MAX": _env_var("WALL_RATE_MAX"), "WALL_MIN_SECS": _env_var("WALL_MIN_SECS"),
-           "WALL_MINUTES": _env_var("WALL_MINUTES")}
-    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()],
-                       env=env, capture_output=True, text=True)
+    r = _run(tmp_path, runs, timeouts=(8,))
     assert r.returncode == 0, r.stdout + r.stderr
     assert "1 of 9" in r.stdout
 
@@ -243,6 +204,29 @@ def test_shape_pins_the_daily_read():
     run = _run_block()
     for needle in ('.name == "Worker"', "has timed out after", "check-runs", "$WALL_RATE_MAX", "run_started_at", "runs-list read"):
         assert needle in run, f"{JOB} run block lost: {needle}"
+
+
+def test_daily_fire_has_its_own_concurrency_group():
+    group = _yq(".concurrency.group")
+    assert "github.event.schedule == '30 2 * * *'" in group and "'wall-rate'" in group, \
+        "the 02:30 fire needs a concurrency group of its own, or a pending sweep run cancels it (blocker on #11180)"
+
+
+def test_task_wall_rate_runs_outside_the_schedule():
+    cond = _yq(f".jobs.{JOB}.if")
+    assert "inputs.task == 'wall-rate'" in cond, \
+        "an enrolled repo must reach wall-rate with gh workflow run -f task=wall-rate, which workflow_call stubs can reach too"
+
+
+def test_every_worker_job_counts_not_just_the_first(tmp_path):
+    runs = [_wr(1, "failure", _S, _E1_H)] + [_wr(n, "success", _S, _E1_H) for n in range(2, 4)]
+    jobs = {1: [{"id": 905, "name": "work", "steps": [{"name": "Worker", "conclusion": "failure"}]},
+                {"id": 906, "name": "work", "steps": [{"name": "Worker", "conclusion": "failure"}]}]}
+    anns = {905: [{"message": "The action 'Worker' has timed out after 55 minutes."}],
+            906: [{"message": "The action 'Worker' has timed out after 55 minutes."}]}
+    r = _run(tmp_path, runs, jobs=jobs, anns=anns)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "2 of 4" in r.stdout + r.stderr
 
 
 def test_env_guards_ship_with_the_job():

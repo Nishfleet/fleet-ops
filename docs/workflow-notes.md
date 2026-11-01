@@ -54,6 +54,26 @@ The orchestrate and admit jobs are the self-hosted jobs here: org runner group
 or the job queues forever next to idle runners. Delete that entry with them.
 ```
 
+### agent-dispatch.yml: the wall-rate metric (fleet-ops#9288)
+
+The `wall-rate` job counts the 55-minute wall share once a day, on the 02:30 UTC
+schedule fire the job's own `if:` pins (08:00 IST, when the fleet is awake), or
+on demand with `gh workflow run agent-dispatch.yml -f task=wall-rate` in an
+enrolled repo, which a `workflow_call` stub can reach too. The daily fire has a
+concurrency group of its own (`wall-rate`, from the `concurrency.group`
+expression), because with `cancel-in-progress: false` a shared group lets a
+newer pending sweep fire cancel the daily run before it starts. Grafana cannot
+read a check-run annotation, so the metric is stock: the finished
+agent-dispatch runs of the last 24 hours give the runs list, every worker job
+in those runs (the read is paginated, so a second work job is never missed) is
+the denominator, and of the failed or cancelled ones, the check-run annotation
+"The action 'Worker' has timed out after 55 minutes." (or the job-level
+"exceeded the maximum execution time" shape) is the numerator. A dead read
+goes red; an empty denominator reports and exits 0. Over `WALL_RATE_MAX`
+(default 15) the daily run fails with the counts, which the default
+workflow-failure watch notification turns into the nudge. Guard baseline: 8 of
+60 real worker runs hit the wall over 10-03 to 10-05 (13%).
+
 ### agent-dispatch.yml: stuck-prs STUCK program
 
 stdin: {pr: {headRefOid, mergeable}, comments: the PR's issue
