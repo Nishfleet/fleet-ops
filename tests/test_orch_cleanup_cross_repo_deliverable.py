@@ -1,13 +1,15 @@
 """fleet-ops#10275: a hand-off whose deliverable went to another repo is not a dead end.
 
-The hand-off never writes to another repo: it files an issue in the product repo and
-comments the marker the prompt pins (`orchestrator: deliverable filed in <url>`), with
-`gh pr list` empty in fleet-ops and the deliverable present only in the product repo.
-The cleanup step then marks nothing, while an issue without a trusted marker, or with
-one from a stranger, still gets handoff-ended. This test runs the real `run:`
-block of "Clean up and mark a PR-less hand-off" from agent-dispatch.yml against a fake
-gh, as test_sweep_requeue.py does; the --jq program the step carries is evaluated by
-real jq, so the marker match itself is under test.
+The hand-off files the product issue and records it as the fleet-ops issue's own
+blocked_by dependency, the wait prompts/worker.md step 4 records, keeping
+needs-orchestrator on. GitHub owns the state: the dispatch gate skips the issue while
+the dependency is open, the summary clears when the product issue closes, and the
+cleared summary puts the issue back in the sweep's re-fire queue for its receipt
+close. So the cleanup step marks nothing while an open blocker stands, and an issue
+with no blocker still gets handoff-ended. This test runs the real `run:` block of
+"Clean up and mark a PR-less hand-off" from agent-dispatch.yml against a fake gh, as
+test_sweep_requeue.py does; the --jq program the step carries is evaluated by real jq,
+so the summary read itself is under test.
 """
 import json
 import os
@@ -16,18 +18,15 @@ import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 STEP = "Clean up and mark a PR-less hand-off"
-MARKER = (
-    "orchestrator: deliverable filed in https://github.com/Nishfleet/rera-report-card/issues/42;"
-    " this issue stays open and closes on a receipt when that issue is delivered."
-)
+BODY = "no due: line in here\n"
+FUTURE_DUE = "due: 2099-01-01 09:00 IST\n"
 
 FAKE_GH = r"""#!/usr/bin/env bash
 case "$1 $2" in
   "pr list") jq "${@: -1}" "$FAKE_DIR/prs.json" ;;
-  "issue view")
-    [ -z "$FAIL_COMMENTS" ] || exit 1
-    jq -r "${@: -1}" "$FAKE_DIR/comments.json" ;;
   "api graphql") echo 0 ;;
+  "api "*) [ -z "$FAIL_DEPS" ] || exit 1; jq -r "${@: -1}" "$FAKE_DIR/issue.json" ;;
+  "issue view") cat "$FAKE_DIR/body" ;;
   "label create"|"issue edit"|"issue comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
 esac
@@ -43,11 +42,7 @@ def _run_block():
     return out
 
 
-def _comment(body, association="MEMBER", login="nish3451"):
-    return {"body": body, "authorAssociation": association, "author": {"login": login}}
-
-
-def _setup(tmp_path, comments, prs=(), fail_comments=False):
+def _setup(tmp_path, blocked=0, body=BODY, prs=(), fail_deps=False):
     home = tmp_path / "home"
     (tmp_path / "runtime").mkdir()
     (tmp_path / "bin").mkdir()
@@ -55,7 +50,8 @@ def _setup(tmp_path, comments, prs=(), fail_comments=False):
     gh.write_text(FAKE_GH)
     gh.chmod(0o755)
     (tmp_path / "prs.json").write_text(json.dumps(list(prs)))
-    (tmp_path / "comments.json").write_text(json.dumps({"comments": comments}))
+    (tmp_path / "issue.json").write_text(json.dumps({"issue_dependencies_summary": {"blocked_by": blocked}}))
+    (tmp_path / "body").write_text(body)
     env = {
         **os.environ,
         "HOME": str(home),
@@ -70,8 +66,8 @@ def _setup(tmp_path, comments, prs=(), fail_comments=False):
         "GITHUB_SERVER_URL": "https://github.test",
         "GITHUB_RUN_ID": "1",
     }
-    if fail_comments:
-        env["FAIL_COMMENTS"] = "1"
+    if fail_deps:
+        env["FAIL_DEPS"] = "1"
     return env
 
 
@@ -82,31 +78,16 @@ def _cleanup(env):
     )
 
 
-def test_marker_comment_is_accepted_and_nothing_is_marked(tmp_path):
-    env = _setup(tmp_path, [_comment(MARKER)])
+def test_an_open_blocker_marks_nothing(tmp_path):
+    env = _setup(tmp_path, blocked=1, body=FUTURE_DUE)
     r = _cleanup(env)
     assert r.returncode == 0, r.stderr
-    assert (
-        "orchestrate: #10275 deliverable filed in another repo: "
-        "https://github.com/Nishfleet/rera-report-card/issues/42; nothing to mark"
-    ) in r.stdout.splitlines()
-    assert not (tmp_path / "writes.log").exists()
+    assert "orchestrate: #10275 has a linked closing PR or an open blocker, or a read failed; nothing to mark" in r.stdout.splitlines()
+    assert not (tmp_path / "writes.log").exists(), "an open blocker wins even over a future due:"
 
 
-def test_last_marker_wins(tmp_path):
-    older = _comment(
-        "orchestrator: deliverable filed in https://github.com/Nishfleet/old/issues/1; superseded."
-    )
-    env = _setup(tmp_path, [older, _comment(MARKER)])
-    r = _cleanup(env)
-    assert r.returncode == 0, r.stderr
-    assert "another repo: https://github.com/Nishfleet/rera-report-card/issues/42" in r.stdout
-    assert "Nishfleet/old/issues/1" not in r.stdout
-    assert not (tmp_path / "writes.log").exists()
-
-
-def test_no_marker_still_marks_ended(tmp_path):
-    env = _setup(tmp_path, [_comment("orchestrator: picked up, PR https://github.test/Nishfleet/fleet-ops/pull/1")])
+def test_no_blocker_still_marks_ended(tmp_path):
+    env = _setup(tmp_path)
     r = _cleanup(env)
     assert r.returncode == 0, r.stderr
     writes = (tmp_path / "writes.log").read_text()
@@ -114,31 +95,16 @@ def test_no_marker_still_marks_ended(tmp_path):
     assert "orchestrator hand-off ended without a PR:" in writes
 
 
-def test_marker_from_the_worker_app_is_accepted(tmp_path):
-    env = _setup(tmp_path, [_comment(MARKER, association="CONTRIBUTOR", login="nishfleet-worker")])
+def test_dependency_read_failure_marks_nothing(tmp_path):
+    env = _setup(tmp_path, fail_deps=True)
     r = _cleanup(env)
     assert r.returncode == 0, r.stderr
-    assert "deliverable filed in another repo" in r.stdout
+    assert "or a read failed; nothing to mark" in r.stdout
     assert not (tmp_path / "writes.log").exists()
 
 
-def test_marker_from_a_stranger_still_marks_ended(tmp_path):
-    env = _setup(tmp_path, [_comment(MARKER, association="NONE", login="stranger")])
-    r = _cleanup(env)
-    assert r.returncode == 0, r.stderr
-    assert "--add-label handoff-ended --remove-label needs-orchestrator" in (tmp_path / "writes.log").read_text()
-
-
-def test_comment_read_failure_marks_nothing(tmp_path):
-    env = _setup(tmp_path, [], fail_comments=True)
-    r = _cleanup(env)
-    assert r.returncode == 0, r.stderr
-    assert "comment read failed; nothing to mark" in r.stdout
-    assert not (tmp_path / "writes.log").exists()
-
-
-def test_pr_on_the_head_still_skips_before_the_marker(tmp_path):
-    env = _setup(tmp_path, [_comment(MARKER)], prs=[{"number": 1}])
+def test_pr_on_the_head_skips_before_the_reads(tmp_path):
+    env = _setup(tmp_path, blocked=1, prs=[{"number": 1}])
     r = _cleanup(env)
     assert r.returncode == 0, r.stderr
     assert "has a PR on orch/issue-10275; nothing to mark" in r.stdout
