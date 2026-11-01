@@ -98,6 +98,24 @@
     cache_valid_time: 3600
     lock_timeout: 300
 
+# Laptop packages a VPS never uses: battery power (upower), device firmware
+# updates (fwupd; the provider owns this host's firmware), Intel thermal control
+# (thermald), Thunderbolt (bolt) and iPhone USB (usbmuxd). udisks2 and
+# accountsservice stay because removing either removes plasma-desktop, the VNC
+# desktop. samba stays because a Mac LaunchAgent mounts its share every minute.
+- name: Remove laptop packages
+  ansible.builtin.apt:
+    name:
+      - upower
+      - fwupd
+      - fwupd-signed
+      - thermald
+      - bolt
+      - usbmuxd
+    state: absent
+    purge: true
+    lock_timeout: 300
+
 - name: Install sysctl settings
   ansible.builtin.copy:
     src: "{{ item }}"
