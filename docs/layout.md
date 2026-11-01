@@ -113,10 +113,6 @@
   `fleet-sync.service` step 2m links both and enables the timer on every deploy.
   Off switch: remove that step and its enable line, then
   `systemctl --user disable --now fleet-clone-lag.timer`.
-- `systemd/fleet-provider-watch.service` and `systemd/fleet-provider-watch.timer` — the
-  daily provider watch: each router provider's model list is compared with
-  the host snapshot, and a change files one fleet-ops issue with no model id in it.
-  [provider-watch.md](provider-watch.md) has the run, off and delete steps.
 - `systemd/syncthing.service` and `tigervnc.service` — stock vendor
   binaries (Syncthing, TigerVNC) run under systemd. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap

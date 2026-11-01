@@ -159,12 +159,13 @@ ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-
 #     has run it.
 ExecStart=-/usr/bin/systemctl --user stop later-sweep.timer later-sweep.service
 ExecStart=-/bin/rm -f %h/.config/systemd/user/later-sweep.service %h/.config/systemd/user/later-sweep.timer %h/.config/systemd/user/timers.target.wants/later-sweep.timer %h/.config/fleet-ops/intake-repos.json
-# 2g. The daily provider watch: link the unit pair so every deploy carries edits to it,
-#     the same way as step 2f. The timer is NOT enabled here: README "Provider watch"
-#     enables it once, so a hand disable stays disabled. Off switch: delete this step,
-#     then `rm` the two links in ~/.config/systemd/user and `systemctl --user daemon-reload`.
-ExecStart=/bin/sh -c 'for f in fleet-provider-watch.service fleet-provider-watch.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
-ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-provider-watch.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-provider-watch.timer
+# 2g. The daily provider watch is retired (fleet-ops#10935 step 3): the router keeps
+#     only live paid seats, and a dead seat already shows in litellm_deployment_state.
+#     Step 2.1's shape: stop the pair, then rm the unit links, the enable link and
+#     the host state directory only this unit wrote. Delete this step once a deploy
+#     has run it.
+ExecStart=-/usr/bin/systemctl --user stop fleet-provider-watch.timer fleet-provider-watch.service
+ExecStart=-/bin/rm -rf %h/.config/systemd/user/fleet-provider-watch.service %h/.config/systemd/user/fleet-provider-watch.timer %h/.config/systemd/user/timers.target.wants/fleet-provider-watch.timer %h/.local/state/provider-watch
 # 2h. The hourly Cua desk check (fleet-cua-desk-check.timer): link the unit pair so
 #     every deploy carries edits to it, the same way as step 2g, and enable the
 #     timer on every deploy like 2f, because a check that is silently off is the

@@ -32,7 +32,6 @@ operational prose to the topic's own file, not here.
 - [Workflow notes](docs/workflow-notes.md)
 - [Worker capacity](docs/worker-capacity.md)
 - [Private detail scan](docs/private-detail-scan.md)
-- [Provider watch](docs/provider-watch.md)
 
 Design and enforced rules: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Recovery steps:
 [docs/RUNBOOK.md](docs/RUNBOOK.md).
