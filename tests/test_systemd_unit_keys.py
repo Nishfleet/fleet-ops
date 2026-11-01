@@ -1269,8 +1269,6 @@ def test_cua_fixed_port_route_is_retired_and_nothing_restarts_the_daemon_for_con
     assert f"- /{CUA_DROPIN_DIR}\n" in host.split("    retired:\n", 1)[1].split("    # Files kept off GitHub", 1)[0], "host.yml deletes it on the host"
     assert "cua_daemon_port" not in host + update + (ROOT / "ansible/templates/tether.nft.j2").read_text()
     assert "cua_daemon_stale" not in update and "cua_daemon_unit" not in update, "no config-triggered daemon restart"
-    assert 'cua_upgrade: "{{ cua_newer and (cua_runs.stdout' in update, "the desk is recreated only for a newer release"
-    assert "rejectattr('status', 'equalto', 'idle') | list | length == 0) }}" in update, "idle only"
 
 
 SEOFIXKIT_UNITS = (
@@ -2179,7 +2177,6 @@ def test_root_tincan_listener_keeps_its_trim_flags_and_its_role_allow_list() -> 
 WAKE_UNITS = (
     "rootfs/etc/systemd/system/tincan-listen-fleet-worker.service",
     "rootfs/etc/systemd/system/tincan-listen-pi.service",
-    "rootfs/etc/systemd/user/cua-desk-daemon.service",
 )
 # Decision (fleet-ops#10263): the permissive flags stay. These listeners run headless with nobody to answer a prompt, and the
 # fleet rule gives every VPS agent full write/exec autonomy; a narrower mode only makes the vendor CLI deny and stall the wake.
@@ -2188,7 +2185,6 @@ WAKE_AGENT = {
     "tincan-listen-fleet-worker": ("pi --print --provider litellm --model worker-cheap", None),
     "tincan-listen-pi": ("pi --print --provider litellm --model worker-cheap", None),
 }
-DESK_UNIT = "rootfs/etc/systemd/user/cua-desk-daemon.service"
 
 
 def effective_directives(unit: Path) -> dict[str, list[str]]:
@@ -2208,13 +2204,11 @@ def test_wake_unit_is_in_the_repo_and_carries_the_page_hook(relative: str) -> No
     assert unit.is_file(), f"{relative} is not in the repo, so a git pull carries no edit to it"
     keys = effective_directives(unit)
     assert _last(keys, "Restart") == "always"
-    if relative != DESK_UNIT:
-        assert _last(keys, "OnFailure") == "fleet-unit-failed@%n.service"
+    assert _last(keys, "OnFailure") == "fleet-unit-failed@%n.service"
     assert _last(keys, "WantedBy") == (
         "multi-user.target" if relative.startswith("rootfs/etc/systemd/system/") else "default.target"
     )
-    if relative != DESK_UNIT:
-        assert keys["ExecStart"][0].startswith("/home/nish/.local/bin/tincan listen --exec ")
+    assert keys["ExecStart"][0].startswith("/home/nish/.local/bin/tincan listen --exec ")
 
 
 def test_each_wake_unit_is_pinned_on_its_agent_flags_and_task_id() -> None:
@@ -2230,13 +2224,6 @@ def test_each_wake_unit_is_pinned_on_its_agent_flags_and_task_id() -> None:
             f"TINCAN_CONFIG=%h/.config/tincan/{agent}.json",
         }, f"{name}: TINCAN_CONFIG does not point at its own config"
         assert keys["Environment"][1] == f"FLEET_TASK_ID=tincan-{agent}"
-
-
-def test_the_desk_daemon_loads_its_own_seat_file() -> None:
-    desk = effective_directives(ROOT / DESK_UNIT)
-    assert "%h/.config/fleet-ops/seats/claude-seat-b.env" in desk["EnvironmentFile"]
-    assert _last(desk, "Environment") == "CUA_MESH=prefer".lower()
-    assert _last(desk, "RestartSec") == "2" and _last(desk, "KillMode") == "mixed"
 
 
 def test_no_unit_loads_the_litellm_master_key() -> None:
@@ -2255,15 +2242,6 @@ def test_no_unit_loads_the_litellm_master_key() -> None:
         "Point the unit at a per-lane virtual key in seats/ (fleet-ops#10221); the proxy's own "
         "quadlet container is the one place that may load it."
     )
-
-
-def test_the_root_copy_installs_the_desk_daemon() -> None:
-    host = ansible_host.text()
-    assert 'src: "{{ rootfs }}/etc/systemd/user/"' in host and "dest: /etc/systemd/user/" in host, (
-        "step 2k is inert unless the root copy installs the whole rootfs/etc/systemd/user/ tree, "
-        "and an enumerated file list would miss the next file added there"
-    )
-    assert (ROOT / DESK_UNIT).is_file(), f"{DESK_UNIT} is not in the repo, so the copy installs nothing"
 
 
 SPACE_TOKEN = "Tk3-" + "x" * 28
@@ -2866,7 +2844,7 @@ def restarting_units() -> list[str]:
 def test_every_restart_surface_is_covered() -> None:
     units = restarting_units()
     assert units, "no unit with a Restart= policy was found"
-    surfaces = ("systemd", "rootfs/etc/systemd/system", "rootfs/etc/systemd/user", "containers/quadlet")
+    surfaces = ("systemd", "rootfs/etc/systemd/system", "containers/quadlet")
     missing = [surface for surface in surfaces if not any(name.startswith(f"{surface}/") for name in units)]
     assert not missing, f"no restarting unit found under {missing}, so the start-limit gate would pass vacuously"
 
