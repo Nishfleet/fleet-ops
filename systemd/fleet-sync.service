@@ -87,12 +87,13 @@ ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops
 ExecStart=-/usr/bin/systemctl --user stop retro-weekly.timer retro-weekly.service retro-weekly-api.socket tincan-listen-claude-vps.service
 ExecStart=-/bin/rm -f %h/.config/systemd/user/retro-weekly.service %h/.config/systemd/user/retro-weekly.timer %h/.config/systemd/user/retro-weekly-api.service %h/.config/systemd/user/retro-weekly-api.socket %h/.config/systemd/user/*.wants/retro-weekly.timer %h/.config/systemd/user/*.wants/retro-weekly-api.socket %h/.config/systemd/user/tincan-listen-claude-vps.service %h/.config/systemd/user/tincan-listen-claude-vps.service.d/10-nish-seat.conf %h/.config/systemd/user/*.wants/tincan-listen-claude-vps.service
 ExecStart=-/bin/rmdir --ignore-fail-on-non-empty %h/.config/systemd/user/tincan-listen-claude-vps.service.d
-# 2a. The hourly PR sweep (fleet-pr-sweep@.timer, #9602): link the template
-#     pair here so every deploy carries edits to it, and enable one instance per
-#     repo with an agent-dispatch stub after the daemon-reload below. Off switch:
-#     delete this step and the enable line, then `systemctl --user disable --now
-#     'fleet-pr-sweep@*.timer'`; a hand disable alone is re-enabled next deploy.
-ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.timer
+# 2a. The per-repo PR sweep timer is retired (fleet-ops#10935 step 3): GitHub's own
+#     schedule on agent-dispatch.yml is the sweep's trigger. Step 2.1's shape: stop
+#     the instances while the manager still holds them, then rm the template links
+#     and the enable links, named outright because ExecStart expands no glob.
+#     Delete this step once a deploy has run it.
+ExecStart=-/usr/bin/systemctl --user stop fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer fleet-pr-sweep@seo-fix-kit.timer
+ExecStart=-/bin/rm -f %h/.config/systemd/user/fleet-pr-sweep@.service %h/.config/systemd/user/fleet-pr-sweep@.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@fleet-ops.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@0509.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@drive.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@aiconverter-app.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@TinyStudio.io-public.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@siterep-public.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@rera-report-card.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@seo-fix-kit.timer
 # 2a''. The detached worker's token mint (fleet-ops#9738): link the template so every
 #     deploy carries edits to it. Nothing to enable: a worker launch line pulls an
 #     instance in with Requires= (AGENTS.md "Session-outliving work"). Off switch:
@@ -152,7 +153,7 @@ ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-
 #     repo list the unit reads, then link the unit pair, so every deploy carries
 #     edits to it. The install is a user-scope COPY, same class as 2c/6/7:
 #     the timer runs every 15 minutes and must not read its list out of the
-#     deploy clone. The timer is enabled on every deploy like 2a, unlike 2g,
+#     deploy clone. The timer is enabled on every deploy like 2h, unlike 2g,
 #     because a timer that is silently off is the failure this ships to fix
 #     (fleet-ops#9376: a one-shot transient `later-*` timer died with the manager
 #     restart, and the issue sat unpromoted). Off switch: delete this step and
@@ -273,7 +274,6 @@ ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-d1-restore-drill.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-clone-lag.timer
-ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer fleet-pr-sweep@seo-fix-kit.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
 #    (rootfs/etc/systemd/system/, Ansible's ansible-pull of ansible/host.yml)
