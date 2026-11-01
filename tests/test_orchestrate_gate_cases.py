@@ -29,7 +29,7 @@ FILTER = """
                 (.event_name == "issues" and .action == "labeled" and .label == "needs-orchestrator" and
                   ((.sender // "") == "nish3451" or
                    (((.sender // "") | endswith("[bot]")) and ((.sender // "") == "nishfleet-worker[bot]" or (.sender // "") == "github-actions[bot]"))))
-                or (.event_name == "workflow_dispatch" and .task == "orchestrate" and ((.issue // "") | length) > 0)
+                or (.event_name == "workflow_dispatch" and ((.issue // "") | length) > 0)
               );
             (.orchestrate_cases | map(select(.want != fire)) | if length == 0 then true else error("orchestrate filter mismatch: \\(map(.id)|join(","))") end)
 """

@@ -18,6 +18,7 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WF = str(ROOT / ".github/workflows/agent-dispatch.yml")
+ORCH_WF = str(ROOT / ".github/workflows/orchestrate.yml")
 STEP = ".jobs.list.steps[] | select(.env.REQUEUE)"
 LIST = '.jobs.list.steps[] | select(.id == "list")'
 REFIRED = "orchestrator re-fired by the sweep: https://example.invalid/runs/"
@@ -282,7 +283,7 @@ def test_the_infra_ending_is_not_the_counted_prefix():
     """fleet-ops#11166: if REQUEUE's startswith() prefix ever swallows the provider's ending too,
     the very case the prefix exists for escalates again."""
     counted = re.search(r'startswith\("([^"]+)"\)', _y(f"{STEP} | .env.REQUEUE")).group(1)
-    cleanup = _y('.jobs.orchestrate.steps[] | select(.name == "Clean up and mark a PR-less hand-off") | .run')
+    cleanup = subprocess.run(["yq", '.jobs.orchestrate.steps[] | select(.name == "Clean up and mark a PR-less hand-off") | .run', ORCH_WF], check=True, capture_output=True, text=True).stdout
     infra = re.findall(r'note="(orchestrator hand-off ended on infrastructure: )', cleanup)
     assert infra, "the cleanup step no longer marks an infra ending"
     assert not infra[0].startswith(counted), (counted, infra[0])

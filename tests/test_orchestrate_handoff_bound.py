@@ -5,7 +5,7 @@ import pathlib
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / ".github/workflows/agent-dispatch.yml"
+WORKFLOW = ROOT / ".github/workflows/orchestrate.yml"
 GROUP = "group: orchestrate-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}"
 
 

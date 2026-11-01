@@ -14,7 +14,7 @@ import subprocess
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-WF = ROOT / ".github/workflows/agent-dispatch.yml"
+WF = ROOT / ".github/workflows/orchestrate.yml"
 STEP = "Clean up and mark a PR-less hand-off"
 
 FAKE_GH = r"""#!/usr/bin/env bash

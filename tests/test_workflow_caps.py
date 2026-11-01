@@ -285,7 +285,7 @@ def test_the_orchestrate_session_books_its_wall_for_landing():
 
 
 def test_the_orchestrate_session_kills_what_its_engine_started():
-    job = yaml_json(DISPATCH)["jobs"]["orchestrate"]
+    job = yaml_json(ORCHESTRATE)["jobs"]["orchestrate"]
     step = next(s for s in job["steps"] if s.get("name") == "Run the orchestrator session")
     run = step["run"]
     assert re.search(r'setsid "\$\{engine\[@\]\}"', run), (
