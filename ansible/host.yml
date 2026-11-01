@@ -22,6 +22,7 @@
   force_handlers: true
   vars:
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
+    repo_root: "{{ (playbook_dir ~ '/..') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
     # Agent runners 1-10 stay. 11-36 are retired (fleet-ops#10480): 40 services
     # on a 12-core, 31 GB box ran at load 1. A directory goes only once its
@@ -84,6 +85,7 @@
     # path the old list named was absent from the box on 2026-11-01.
     retired_units: []
     retired_user_units:
+      - fleet-sync.service
       - fleet-litellm-proxy-config.path
       - fleet-grafana-provisioning.path
     retired:
@@ -98,6 +100,16 @@
       - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.service"
       - "{{ nish_home }}/.config/systemd/user/fleet-grafana-provisioning.path"
       - "{{ nish_home }}/.config/systemd/user/fleet-grafana-provisioning.service"
+      # fleet-sync's unit and the dead links it left; tasks/user-files.yml installs
+      # the files now (fleet-ops#10935 E1).
+      - "{{ nish_home }}/.config/systemd/user/fleet-sync.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/fleet-sync.service"
+      - "{{ nish_home }}/.config/fleet-worker/bootstrap.html"
+      - "{{ nish_home }}/.cursor/hooks/guard_cursor_packet.py"
+      - "{{ nish_home }}/.cursor/rules/shared-memory.mdc"
+      - "{{ nish_home }}/workspaces/tooling/fleet-ops-deploy-clone/.git/hooks/reference-transaction"
+      - /etc/tmpfiles.d/fleet-sync-metric.conf
+      - /var/lib/prometheus/node-exporter/fleet-sync.prom
       # Read only by the hand-install drift check, deleted 2026-11-01.
       - /etc/fleet-ops/box-only
     nish_home: "{{ '~nish' | expanduser }}"
@@ -206,6 +218,8 @@
     - ansible.builtin.import_tasks: tasks/retired-and-drift.yml
 
     - ansible.builtin.import_tasks: tasks/mcp-and-agent-clis.yml
+
+    - ansible.builtin.import_tasks: tasks/user-files.yml
 
     - ansible.builtin.import_tasks: tasks/secrets.yml
 

@@ -11,7 +11,7 @@ PrivateUsers= is not on the list: it is the user namespace systemd builds, the o
 step AppArmor allows. ProtectHostname= is not on the list either: its UTS half is
 lost, but its seccomp half holds.
 
-systemd/ is the user tree: fleet-sync.service links every unit in it into
+systemd/ is the user tree: ansible/tasks/user-files.yml copies its units into
 ~/.config/systemd/user. System units live in rootfs/etc/systemd/system/, where the
 sandbox keys do apply, and the test checks that no system unit lands in systemd/.
 """
@@ -113,6 +113,6 @@ def test_no_system_unit_lands_in_the_user_tree() -> None:
     ]
     assert not misplaced, (
         f"{', '.join(str(path) for path in misplaced)} install to a system target, but systemd/ is the "
-        "user tree that fleet-sync.service links into ~/.config/systemd/user; a system unit belongs in "
+        "user tree that ansible/tasks/user-files.yml copies into ~/.config/systemd/user; a system unit belongs in "
         "rootfs/etc/systemd/system/, where the sandbox keys do apply"
     )

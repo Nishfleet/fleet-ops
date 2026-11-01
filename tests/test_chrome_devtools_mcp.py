@@ -114,6 +114,13 @@ USER_FILE_TASKS = [
     "Apply config/hermes/digest-*.md to the live digest jobs",
     "Read Hermes' scheduled jobs again",
     "Link the packaged gh into nish's ~/.local/bin",
+    "Keep the deploy clone on main for the units that still read it",
+    "Install nish's user units",
+    "Install nish's quadlets",
+    "Install nish's agent and tool config files",
+    "Read pi's settings",
+    "Pin pi's packages from the repo",
+    "Apply nish's tmpfiles rules",
 ]
 
 
@@ -165,14 +172,6 @@ def test_chrome_tasks_run_after_the_handler_flush_and_before_the_credential_asse
 def test_agent_cli_tasks_are_bounded():
     for name in ("Read Claude Code's drive entry", "Drop a stale drive entry", "Pin the Drive filesystem server in Claude Code's user config"):
         assert TASKS[name]["timeout"] <= 120, name
-
-
-def test_fleet_sync_fast_forwards_claude_mods_and_fails_loud():
-    lines = [l for l in (ROOT / "systemd/fleet-sync.service").read_text().splitlines() if "claude-mods" in l and l.startswith("ExecStart")]
-    assert [l.split(" ", 1)[0] for l in lines] == ["ExecStart=/usr/bin/git"] * 2
-    assert " fetch --no-tags origin refs/heads/main:refs/remotes/origin/main" in lines[0]
-    assert lines[1].endswith(" merge --ff-only refs/remotes/origin/main")
-    assert not any(" pull" in l for l in lines)
 
 
 def _run_tasks(tmp_path, names, subs=None):
