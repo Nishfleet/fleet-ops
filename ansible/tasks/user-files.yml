@@ -11,6 +11,9 @@
     repo: https://github.com/Nishfleet/fleet-ops.git
     dest: "{{ nish_home }}/workspaces/tooling/fleet-ops-deploy-clone"
     version: main
+    # Adds --force to the fetch, so a moved upstream tag (v1, 2026-11-01) cannot
+    # stop the deploy with "would clobber existing tag".
+    force: true
 
 - name: Install nish's user units
   become: true
