@@ -9,7 +9,12 @@
 #
 # Signal: the stock GitHub data source (fleet-github, read-only) lists the runs of
 # agent-dispatch.yml in fleet-ops in the last 3 days (Workflow_Runs). The SQL
-# expression reads 1 when no run finished in the last 3 hours. The sweep has two
+# expression reads 1 when no run finished in the last 3 hours. Grafana runs SQL
+# expressions on an embedded MySQL-dialect engine (grafana.com/docs/grafana/latest/panels-visualizations/query-transform-data/sql-expressions/)
+# in sql_mode=only_full_group_by, so MAX beside bare UNIX_TIMESTAMP() in one
+# select list fails every evaluation with "in aggregated query without GROUP BY";
+# the aggregate lives in the derived table and the outer SELECT reads only its
+# column, the shape the fleet-scorecard rules run (fleet-ops#11477). The sweep has two
 # triggers, an hourly systemd timer on the box (systemd/fleet-pr-sweep@.timer) and
 # GitHub's own schedule, so a 3-hour gap means both are down. for: 30m keeps one
 # slow cycle from firing it.
@@ -52,11 +57,13 @@ groups:
               format: alerting
               refId: C
               expression: |-
-                SELECT CASE WHEN MAX(UNIX_TIMESTAMP(created_at)) IS NULL
-                              OR MAX(UNIX_TIMESTAMP(created_at)) < UNIX_TIMESTAMP() - 10800
+                SELECT CASE WHEN last_run IS NULL OR last_run < UNIX_TIMESTAMP() - 10800
                             THEN 1 ELSE 0 END AS stale
-                FROM A
-                WHERE status = 'completed'
+                FROM (
+                  SELECT MAX(UNIX_TIMESTAMP(created_at)) AS last_run
+                  FROM A
+                  WHERE status = 'completed'
+                ) AS last
         noDataState: Alerting
         execErrState: Error
         for: 30m

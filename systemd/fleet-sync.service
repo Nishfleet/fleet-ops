@@ -330,7 +330,9 @@ ExecStart=/usr/bin/find %h/.pi/agent/skills -xtype l -printf "[fleet-sync] skill
 #    call then exited 0 with no output and nothing paged. Fail LOUD on any listed
 #    launch path (symlinks followed) whose bytes equal /bin/true. A failed unit is
 #    the page (OnFailure=). It runs on every deploy. Off switch: delete this step.
-ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/tincan /usr/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
+#    The runners' runsvc.sh too: on 2026-10-31 a hand-off's stub loop overwrote all
+#    thirty (fleet-ops#10537 session), and each runner died on its next restart.
+ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/tincan /usr/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes %h/.local/share/agent-runner/*/runsvc.sh %h/.local/share/fleet-ci-runner/*/runsvc.sh; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
 # 11. The deploy result as a metric (fleet-ops#9437). Nothing paged for a failed
 #    fleet-sync: its OnFailure= healthchecks.io ping is inert on a host without
 #    ~/.config/fleet-ops/keystone-hc.env, and node_exporter's systemd collector
@@ -346,6 +348,23 @@ ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.
 #    line) from becoming a second failure, and FleetSyncMetricMissing pages when
 #    the series never appears.
 ExecStopPost=-/bin/sh -c 'r=0; [ "$$SERVICE_RESULT" = success ] || r=1; { echo "# TYPE fleet_sync_failed gauge"; echo "fleet_sync_failed $$r"; } > /var/lib/prometheus/node-exporter/fleet-sync.prom'
+# 12. Last, so a failure here cannot skip the steps above it (a failed ExecStart
+#     stops the chain). The packages key of ~/.pi/agent/settings.json is
+#     repo-owned (config/pi-packages.json, fleet-ops#9302): a pin change is a
+#     PR, not a hand edit on the host. The five pins are a byte-copy of the
+#     live file read on 2026-10-30: the host already runs pi-runner-guard and
+#     pi-grok / pi-mcp-adapter at the pins issue #9302's four-entry snapshot
+#     predates, so the first merge installs nothing new. Merge, not copy:
+#     pi rewrites the file's
+#     own bookkeeping keys at runtime (fleet-ops#8568), so jq's object merge
+#     takes only .packages from the repo file and leaves every other key as pi
+#     wrote it. cmp guard, same as 7: a merge that changes nothing writes
+#     nothing; a real pin change writes once. The temp file sits next to the
+#     target so the mv replaces the file atomically, and chmod --reference
+#     keeps its mode. Every failure (a missing or unparsable file) exits
+#     non-zero and fails the unit loud; recovery is `echo '{}' >
+#     ~/.pi/agent/settings.json` and a re-run of fleet-sync.
+ExecStart=/bin/sh -c 't=%h/.pi/agent/.settings.json.sync; /usr/bin/jq -s ".[0] * .[1]" %h/.pi/agent/settings.json %h/workspaces/tooling/fleet-ops-deploy-clone/config/pi-packages.json > "$$t" && chmod --reference=%h/.pi/agent/settings.json "$$t" && { cmp -s "$$t" %h/.pi/agent/settings.json || mv "$$t" %h/.pi/agent/settings.json; }; r=$$?; rm -f "$$t"; exit $$r'
 # /etc/hosts carries a static `127.0.0.1 litellm.fleet.local` line
 # (fleet-ops#8259). An earlier fleet-sync step appended it once; it is a
 # one-time host setting, not a per-tick deploy action (fleet-ops#8584).

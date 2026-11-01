@@ -152,6 +152,37 @@ def merged_values(dirs: list[Path], key: str) -> list[str]:
     return out
 
 
+def runner_bind_leaks(stem: str, bind_values: list[str]) -> list[str]:
+    """Binds a unit's own .service.d makes under the runner tree that reach past its own runner dir.
+
+    systemd.unit(5): %j is the final component of the prefix, so for
+    actions.runner.Nishfleet.netcup-agent-20.service it is 20, and the pooled
+    20-lockdown.conf's agent-runner/%j line resolves to agent-runner/20. A bind of
+    agent-runner itself, a sibling number or anything above the tree lets a job
+    write every runner's start script: the outage of 2026-10-31 overwrote all 30
+    runsvc.sh files through one such line.
+    """
+    root = Path(HOME) / ".local/share/agent-runner"
+    number = stem.removesuffix(".service.d").removesuffix(".service").rsplit("-", 1)[1]
+    own = root / number if number.isdigit() else root / "%j"
+    leaks = []
+    for value in bind_values:
+        for token in shlex.split(value):
+            source = token.lstrip("-+").split(":")[0]
+            if number.isdigit():
+                source = source.replace("%j", number)
+            path = Path(source)
+            wide = path == root or path.is_relative_to(root) or root.is_relative_to(path)
+            if wide and path != own:
+                leaks.append(token)
+    return leaks
+
+
+def agent_pool_units() -> dict[str, list[Path]]:
+    """The agent runner's unit dir -> its effective drop-ins, template and numbered instances."""
+    return {name: dirs for name, dirs in runner_units().items() if name.startswith("actions.runner.Nishfleet.netcup-agent-")}
+
+
 def runner_units() -> dict[str, list[Path]]:
     """Unit dir name -> the drop-in dirs that apply to it, for every runner .service.d in the repo."""
     dirs = sorted(SYSTEM.glob("actions.runner.*.service.d"))
@@ -247,6 +278,33 @@ def test_every_home_path_the_agent_jails_mask_can_be_mounted() -> None:
     # A parser that reads no line would leave the gate green with nothing checked, so pin what it reads.
     assert {Path(HOME, ".config", "gh"), Path(HOME, ".config", "cloudflare")} <= jails
     assert unmountable_jail_paths((AGENT_DIR / "20-lockdown.conf").read_text(), jails) == []
+
+
+def test_every_jail_masks_hermes_token_dir_onto_a_mount_the_runner_makes() -> None:
+    """Hermes' /run token dir (fleet-ops#10267) is a real nish-owned dir outside home, so the home
+    tmpfs rule covers nothing: it holds a live gh login any jailed engine can read. Each pool
+    paints it empty for the job steps, and every bwrap jail masks it again for the engines; --tmpfs
+    needs the mount the runner unit makes as its destination, which an InaccessiblePaths= node is
+    not (same reasoning as the gh home dir, #11232). Steps on hosts the feature has not reached yet
+    (a fresh runner before its first apply, the ci job on this PR head) have no dir to mask, so
+    each jail only adds the mask when the dir exists, the way $CREDENTIALS_DIRECTORY is skipped:"""
+    token = "/run/fleet-hermes-github-token"
+    mask = f"$hermes_mask"
+    for wf in (AGENT_WORKFLOW, DISPATCH_WORKFLOW):
+        text = wf.read_text()
+        jails = [line for line in text.splitlines() if re.search(r'^\s*(?:jail_base|claude_jail_[ab]|jail)=\(?"?bwrap ', line)]
+        assert len(jails) >= (4 if wf == AGENT_WORKFLOW else 1), jails
+        assert all(mask in line or "${HERMES_RUN:+--tmpfs " in line for line in jails), f"{wf.name}: one jail misses the hermes mask"
+    agent = AGENT_WORKFLOW.read_text()
+    define = 'hermes_mask=$([ -d /run/fleet-hermes-github-token ] && printf -- \'--tmpfs /run/fleet-hermes-github-token\' || true)'
+    assert agent.count(define) == 2, "one definition per worker/rerate step"
+    dispatch = DISPATCH_WORKFLOW.read_text()
+    assert '${HERMES_RUN:+--tmpfs "$HERMES_RUN"}' in dispatch, "the dispatch jail adds the hermes mask only when the dir exists"
+    assert "if [ -d /run/fleet-hermes-github-token ]; then HERMES_RUN=/run/fleet-hermes-github-token; fi" in dispatch, "the guard drives it, one if, no else"
+    for name, (_, lock) in POOLS.items():
+        assert f"TemporaryFileSystem={token}" in lock.read_text(), f"the {name} runner paints the token dir empty for its job steps"
+    tmpfiles = (ROOT / "rootfs/etc/tmpfiles.d/fleet-hermes-github-token.conf").read_text().strip().splitlines()[-1]
+    assert tmpfiles == f"d {token} 0700 nish nish - -", "the dir exists at boot and at every apply, before the first mint or any runner unit start"
 
 
 def test_gate_fails_when_the_jail_masks_a_path_the_runner_does_not_create() -> None:
@@ -369,7 +427,7 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
     agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
     # The empty mount points the worker jail masks (#10934, #11097), named by their tail under the home tmpfs.
     mounts = [v.removeprefix(HOME) for v in merged_values(agent, "TemporaryFileSystem")]
-    assert mounts == [":mode=0700,uid=1000,gid=1000,size=512M", "/.config/cloudflare:ro", "/.config/gh:ro", "/.config/fleet-worker:ro"]
+    assert mounts == [":mode=0700,uid=1000,gid=1000,size=512M", "/.config/cloudflare:ro", "/.config/gh:ro", "/.config/fleet-worker:ro", "/run/fleet-hermes-github-token"]
     bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
     # pi's library tree and the seat token files the unjailed steps read. The App key
     # arrives as a credential, so the key dir is not bound (fleet-ops#10957).
@@ -514,3 +572,31 @@ def test_the_agent_pool_binds_no_file_the_repo_ships() -> None:
     bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
     shipped = sorted(name for name in bound if (ROOT / "config" / name).is_file())
     assert not shipped, f"read from the deploy clone instead: {shipped}"
+
+
+def test_the_agent_pool_binds_only_each_runners_own_dir() -> None:
+    """The agent pool resolves %j to the unit's own number: no job reaches a sibling runner dir.
+
+    fleet-ops#11484: the pooled drop-in bound agent-runner whole, so a job on
+    runner N could overwrite runner M's runsvc.sh, and the outage of
+    2026-10-31 took all 30 runners down that way.
+    """
+    for name, dirs in agent_pool_units().items():
+        leaks = runner_bind_leaks(name.removesuffix(".service.d"), merged_values(dirs, "BindPaths"))
+        assert not leaks, leaks
+
+
+def test_gate_fails_on_a_wide_agent_runner_bind() -> None:
+    """The bind that let the 2026-10-31 outage reach every runner fails the gate."""
+    wide = [f"{HOME}/.local/share/agent-runner"]
+    above = [f"{HOME}/.local/share"]
+    own = [f"{HOME}/.local/share/agent-runner/%j"]
+    sibling = [f"-{HOME}/.local/share/agent-runner/25"]
+    retarget = [f"{HOME}/.local/share/agent-runner/20:/tmp/runner"]
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", wide) == wide
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", above) == above
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", own) == []
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", sibling) == sibling
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", retarget) == []
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-20.service", [own[0] + ":/alt"]) == []
+    assert runner_bind_leaks("actions.runner.Nishfleet.netcup-agent-.service.d", own) == []
