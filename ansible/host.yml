@@ -30,6 +30,10 @@
     # so until `config.sh remove` has taken .runner and .credentials away, the
     # directory is the only thing left that can still deregister the runner.
     agent_runner_retired_ids: "{{ range(31, 37) | list }}"
+    # The agent pool: one runner per concurrent worker, up to the router's seat cap
+    # (6, fleet-ops#10935), run as fleet-runner by tasks/runners.yml.
+    fleet_runner_ids: [1, 15, 16, 17, 18, 19]
+    fleet_runner_pi_version: 1.4.0
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
     # release's SHASUMS256.txt (https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
@@ -88,6 +92,8 @@
       - fleet-litellm-proxy-config.path
       - fleet-grafana-provisioning.path
     retired:
+      # Runner 1's pilot drop-in; fleet-runner@1.service runs it now (fleet-ops#10935).
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-1.service.d
       # The Healthchecks fail ping; Prometheus SystemUnitFailed replaces it (E7).
       - /etc/systemd/system/fleet-unit-failed@.service
       - "{{ nish_home }}/.config/systemd/user/fleet-unit-failed@.service"
@@ -203,6 +209,8 @@
 
     - ansible.builtin.import_tasks: tasks/tincan-relay-policy.yml
 
+    - ansible.builtin.import_tasks: tasks/runners.yml
+
     - ansible.builtin.import_tasks: tasks/pilot-and-retired-runners.yml
 
     - ansible.builtin.import_tasks: tasks/system.yml
@@ -262,6 +270,14 @@
     # restart waits there for the deploy to have a minted gh login and a proof
     # that reads an issue through it, and a handler can flush before that proof
     # runs (fleet-ops#10267).
+
+    # Only when a runner's .env or .path changed, which is its first deploy as fleet-runner.
+    - name: Restart the fleet runners
+      ansible.builtin.systemd_service:
+        name: "fleet-runner@{{ item }}.service"
+        state: restarted
+        daemon_reload: true
+      loop: "{{ fleet_runner_ids }}"
 
     # Established SSH sessions live in ssh@.service and survive this (fleet-ops#10541).
     - name: Restart ssh.socket

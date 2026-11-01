@@ -144,8 +144,8 @@ def test_every_task_that_touches_nishs_home_runs_as_nish_not_root():
                 "Prove the Hermes login reads the issue it was built for",
                 "Look for a plaintext git credential file in nish's home",
                 "Fail the run when a plaintext git credential file is in the way",
-                "Copy runner 1 to the pilot user once",
-                "Point the pilot runner links at the copy",
+                "Copy each runner registration to fleet-runner once",
+                "Give fleet-runner the scoped router key",
                 "Copy the review runners to the review user once",
                 "Point the review runner links at the copy",
                 "Point the review runner PATH at the bound tool directories",
@@ -377,18 +377,17 @@ def test_lockfile_install_runs_npm_ci_once_and_again_only_when_the_lock_changes(
 
 
 @pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
-def test_pilot_runner_copy_fills_an_empty_destination_and_never_clobbers_a_live_copy(tmp_path):
-    src = tmp_path / ".local/share/agent-runner/1"
+def test_runner_copy_fills_an_empty_destination_and_never_clobbers_a_live_copy(tmp_path):
+    src = tmp_path / ".local/share/agent-runner/15"
     (src / "bin.2.338.0").mkdir(parents=True)
     (src / "bin.2.338.0/Runner.Listener").write_text("listener")
     (src / "externals.2.338.0").mkdir()
     (src / "runsvc.sh").write_text("run")
     (src / "bin").symlink_to(src / "bin.2.338.0")
     (src / "externals").symlink_to(src / "externals.2.338.0")
-    dest = tmp_path / "var/lib/fleet-runner/1"
-    dest.mkdir(parents=True)
-    names = ["Copy runner 1 to the pilot user once", "Read the pilot runner links", "Point the pilot runner links at the copy"]
-    subs = {"/var/lib/fleet-runner": str(tmp_path / "var/lib/fleet-runner")}
+    dest = tmp_path / "var/lib/fleet-runner/15"
+    names = ["Copy each runner registration to fleet-runner once", "Read the runner links", "Point the runner links at the copy"]
+    subs = {"/var/lib/fleet-runner": str(tmp_path / "var/lib/fleet-runner"), "{{ nish_env.HOME }}": str(tmp_path), "^/home/": "^" + str(tmp_path) + "/"}
     _run_tasks(tmp_path, names, subs)
     assert (dest / "runsvc.sh").read_text() == "run"
     assert (dest / "bin").readlink().as_posix() == "bin.2.338.0"
@@ -400,14 +399,15 @@ def test_pilot_runner_copy_fills_an_empty_destination_and_never_clobbers_a_live_
     assert (dest / "runsvc.sh").read_text() == "live state"
 
 
-@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
-def test_pilot_runner_env_gets_its_own_home_and_loses_nish_paths(tmp_path):
-    dest = tmp_path / "var/lib/fleet-runner/1"
-    dest.mkdir(parents=True)
-    env = dest / ".env"
-    env.write_text("HOME=/home/nish\nXDG_RUNTIME_DIR=/run/user/1000\nLANG=C.UTF-8\nCLAUDE_CONFIG_DIR=/home/nish/.claude-a\n")
-    names = ["Give the pilot runner its own HOME in the runner environment", "Drop nish's runtime paths from the pilot runner environment"]
-    subs = {"/var/lib/fleet-runner": str(tmp_path / "var/lib/fleet-runner")}
+@pytest.mark.skipif(not shutil.which("ansible-playbook"), reason="ansible missing")
+def test_runner_env_and_path_name_only_fleet_runner(tmp_path):
+    for i in VARS["fleet_runner_ids"]:
+        (tmp_path / f"var/lib/fleet-runner/{i}").mkdir(parents=True)
+        (tmp_path / f"var/lib/fleet-runner/{i}/.env").write_text("HOME=/home/nish\nXDG_RUNTIME_DIR=/run/user/1000\n")
+    names = ["Give each runner fleet-runner's environment", "Give each runner fleet-runner's PATH"]
+    subs = {"/var/lib/fleet-runner/{{": str(tmp_path / "var/lib/fleet-runner") + "/{{"}
     _run_tasks(tmp_path, names, subs)
-    assert env.read_text() == f"HOME={tmp_path}/var/lib/fleet-runner\nLANG=C.UTF-8\n"
+    for i in VARS["fleet_runner_ids"]:
+        text = (tmp_path / f"var/lib/fleet-runner/{i}/.env").read_text() + (tmp_path / f"var/lib/fleet-runner/{i}/.path").read_text()
+        assert "/home/" not in text and "/run/user" not in text
     assert "changed=0" in _run_tasks(tmp_path, names, subs)

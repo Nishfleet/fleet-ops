@@ -68,7 +68,7 @@ jobs:
           { echo "Fleet issue worker for $REPO#$ISSUE. Read AGENTS.md first. Make the change the issue asks for on this branch, keep it small, run the repo's own checks, commit with a plain message, and push the branch. Do not open the PR; the workflow does."; echo; cat "$RUNNER_TEMP/issue.md"; } > "$RUNNER_TEMP/packet.md"
           case "$ENGINE" in
             claude) claude -p --permission-mode bypassPermissions < "$RUNNER_TEMP/packet.md" ;;
-            *) /home/nish/.local/bin/pi --print --provider litellm --model worker-capable < "$RUNNER_TEMP/packet.md" ;;
+            *) pi --print --provider litellm --model worker-capable < "$RUNNER_TEMP/packet.md" ;;
           esac
           git -c user.name=nishfleet-worker -c user.email=nishfleet-worker@users.noreply.github.com add -A
           git -c user.name=nishfleet-worker -c user.email=nishfleet-worker@users.noreply.github.com commit -qm "$(head -n1 "$RUNNER_TEMP/issue.md") (#$ISSUE)" || true

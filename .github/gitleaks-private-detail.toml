@@ -72,9 +72,9 @@ regexes = ['''fleet-prometheus-reload|blacksmith-flip''']
 condition = "AND"
 
 [[allowlists]]
-description = "The pilot runner drop-in hands the worker App key over with LoadCredential=, which must name the key's source path (no %h for a system unit, no inline comment to carry gitleaks:allow); fleet-ops#10153"
+description = "The fleet-runner unit hands the worker App key over with LoadCredential=, which must name the key's source path (no %h for a system unit, no inline comment to carry gitleaks:allow); fleet-ops#10153"
 targetRules = ["private-home-path"]
-paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.Nishfleet\.netcup-agent-1\.service\.d/30-pilot-user\.conf$''']
+paths = ['''(^|/)rootfs/etc/systemd/system/fleet-runner@\.service$''']
 regexes = ['''^home/nish/\.config/fleet-worker/nishfleet-worker\.private-key\.pem$''']
 condition = "AND"
 
@@ -289,4 +289,11 @@ targetRules = ["private-fleet-seats-config"]
 paths = ['''^config/pi-models\.json$''']
 regexTarget = "line"
 regexes = ['''"apiKey": "!cut -d= -f2- \$HOME/\.config/fleet-ops/seats/litellm-agent\.env",$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The runner pool task gives fleet-runner the scoped key at the path pi-models.json reads (fleet-ops#10935), so it names that seats directory; only the directory itself is allowed"
+targetRules = ["private-fleet-seats-config"]
+paths = ['''^ansible/tasks/runners\.yml$''']
+regexes = ['''^\.config/fleet-ops/seats$''']
 condition = "AND"
