@@ -1,4 +1,7 @@
-# Runs two systemd oneshots on the fleet runner; each exit code is a verdict. Reasons: docs/workflow-notes.md.
+# deploy-box: push-triggered. Writes a request stamp to the deploy mailbox
+# (/var/lib/fleet-deploy/request) and waits for fleet-deploy.service's verdict:
+# root runs the deploy (fleet-sync, then fleet-host-config) from fleet-deploy.path,
+# so no step on this runner touches the user bus or polkit. fleet-ops#8519, #10043.
 # The probe runs last: its failure still fails the run, and it can no longer skip a deploy step (fleet-ops#10046).
 name: deploy-box
 
@@ -18,16 +21,16 @@ jobs:
   apply:
     name: apply
     runs-on: [self-hosted, fleet-ci]
-    # The unit allows TimeoutStartSec=300 for the steps alone; 10 min leaves
-    # headroom without letting a hung step park a runner.
-    timeout-minutes: 10
-    env:
-      XDG_RUNTIME_DIR: /run/user/1000
+    # fleet-deploy.service allows itself 900s; 35 min covers a wait behind one queued full-length run.
+    timeout-minutes: 35
     steps:
-      - name: Start fleet-sync.service (user-scope deploy steps)
-        run: /usr/bin/systemctl --user start fleet-sync.service || { /usr/bin/journalctl --user --no-pager -xeu fleet-sync.service --lines=60; exit 1; }
-      - name: Start fleet-host-config.service (Ansible applies rootfs/ as root)
-        run: /usr/bin/systemctl start fleet-host-config.service || { /usr/bin/journalctl --no-pager -xeu fleet-host-config.service --lines=60; exit 1; }
+      - name: Write the deploy request and wait for the verdict
+        run: |
+          set -euo pipefail
+          systemctl is-active --quiet fleet-deploy.path || { echo "::error::fleet-deploy.path is not active"; exit 1; }
+          stamp="run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; echo "deploy request: $stamp"; printf '%s\n' "$stamp" > /var/lib/fleet-deploy/request
+          until line=$(grep "^$stamp " /var/lib/fleet-deploy/result 2>/dev/null); do sleep 10; done
+          echo "deploy verdict: $line"; read -r _ res status _ <<<"$line"; [ "$res" = success ] && [ "$status" = 0 ] || { sed -n '1,100p' /var/lib/fleet-deploy/log; exit 1; }
       - name: Fail when the host-config run left no ~/.claude.json
         run: test -e "$HOME/.claude.json" || { echo "::error::$HOME/.claude.json is missing on $RUNNER_NAME; the claude jail's bwrap bind dies without it (fleet-ops#11194)"; exit 1; }
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main

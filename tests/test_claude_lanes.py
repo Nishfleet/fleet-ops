@@ -27,6 +27,7 @@ logs its argv.
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -590,7 +591,7 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
         line = lines[name].replace("$HOME", str(home)).replace("$seat_a", str(jail_seat))
         for k, v in sub.items():
             line = line.replace("$" + k, v)
-        line = line.replace("$RUNNER_TEMP", str(runner_temp))
+        line = line.replace("$RUNNER_TEMP", str(runner_temp)).replace("$hermes_mask", "")  # empty in this fake home: the dir exists only where a runner unit paints it
         assert opt in line, name
         # cred_dir=None is the runner whose unit mounts no credential dir: the jail
         # hides nothing there and still starts.
@@ -956,11 +957,18 @@ def test_non_alert_title_skips_the_lookup(tmp_path):
 @pytest.mark.parametrize("prefix", ["alert: ", "cost alarm: ", "grafana alert: ", "router dead row: ", "router dead key: "])
 def test_every_issue_filing_prefix_reaches_the_twin_lookup(tmp_path, prefix):
     """Each prefix a contact point writes, not just "alert: " (fleet-ops#11086):
-    the other three filed one issue per firing and closed nothing."""
+    the other four filed one issue per firing and closed nothing."""
     title = prefix + "SystemUnitFailed restic-r2-size-guard.service"
     out, log = _dup_gate(tmp_path, title, [{"number": 50, "title": title}, {"number": 41, "title": title}])
     assert out == "SKIP duplicate-alert"
     assert "gh issue close 50 -R o/r --duplicate-of 41" in log
+
+
+def test_the_prefix_cases_cover_the_gate_list(tmp_path):
+    """The cases above and the gate's own list must name the same prefixes, so
+    a sixth prefix in agent.yml cannot slip past the cases (fleet-ops#11086)."""
+    gate = json.loads(re.search(r"--argjson titles '(\[[^']*\])'", _step("work", "Gate")).group(1))
+    assert set(gate) == {"alert: ", "cost alarm: ", "grafana alert: ", "router dead row: ", "router dead key: "}
 
 
 @pytest.mark.parametrize("prefix", ["cost alarm: ", "router dead row: ", "router dead key: ", "grafana alert: "])

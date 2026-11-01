@@ -6,7 +6,7 @@ Reasons and switches that used to sit as comments in the workflow files; they mo
 
 ```
 Events that put work on the agent queue. Repo variable AGENT_MODE:
-  shadow (default) = only issues also labelled shadow-actions, no rework
+  shadow (default) = nothing dispatches
   live             = every agent-ready issue, plus rework on red CI
 Repo variable ORCHESTRATE:
   off                  = the orchestrate job never starts
@@ -151,17 +151,21 @@ The workflow file is 48 lines (fleet-ops#10947). Every reason that used to sit a
   cannot fail it. It is not a required check. The conditions are on the steps, so the job always
   reports. Switch it off with the repository variable `PRIVATE_DETAIL_SCAN=off` (see README.md).
 
-### deploy-box.yml: what the two oneshots are
+### deploy-box.yml: how the request reaches the deploy units
 
-Push-triggered. Starts the `fleet-sync.service` user oneshot (the user-scope deploy steps), then
-the `fleet-host-config.service` system oneshot (Ansible applies `rootfs/` as root); each exit code
-is a verdict. polkit lets this runner's user start that one system unit, so no step uses sudo, and
-the unit's own guards still gate every step (fleet-ops#8519). The unit allows
-`TimeoutStartSec=300` for the steps alone, so the job's `timeout-minutes: 10` leaves headroom
-without letting a hung step park a runner. The security probe is the job's last step, not its
-first: a red probe still fails the run, and it can no longer mark the two deploy steps `skipped`,
-which is how two merges on 2026-10-22 reached no deploy for 40 min (fleet-ops#10046;
-`tests/test_deploy_box_trigger.py` locks the order).
+Push-triggered. It writes a request stamp to `/var/lib/fleet-deploy/request` and
+waits for that stamp's verdict line in `/var/lib/fleet-deploy/result`.
+`fleet-deploy.path` starts `fleet-deploy.service`, which runs the
+`fleet-sync.service` user oneshot (the user-scope deploy steps) and then the
+`fleet-host-config.service` system oneshot (Ansible applies `rootfs/` as root);
+the result line's exit status is the verdict. No step runs from the runner and
+no CI job can start a system unit, so the unit's own guards still gate every step
+(fleet-ops#8519, #10043). The unit allows `TimeoutStartSec=900` for both steps, so
+the job's `timeout-minutes: 35` leaves headroom for a request that queues behind
+another without letting a hung step park a runner. The security probe is the job's
+last step, not its first: a red probe still fails the run, and it can no longer
+skip the deploy request, which is how two merges on 2026-10-22 reached no deploy
+for 40 min (fleet-ops#10046; `tests/test_deploy_box_trigger.py` locks the order).
 
 ### ratchet.yml: how the rule reaches every repo
 
@@ -303,23 +307,22 @@ deleted issue 9502, exit 1, stdout {"message":"This issue was deleted",
 "status":"410"}, stderr "(HTTP 410)"; either marks it gone, any other read
 fault stays fatal (fleet-ops#9553).
 
-### agent.yml: the arm step's path allowlist
+### agent.yml: the arm step classifies with the one list
 
-The arm step arms only when every path in the PR is product code. The shared list
-is the fleet-ops and 0509 layout: `app/routes`, `app/components`, a handful of
-`app/lib` modules, `tests/*.test.tsx`, `e2e/*.spec.ts`, `docs/`. drive keeps its
-code in `src/` and its tests in `test/`, so it adds `src/` and `test/*.test.*` to
-the same line, and every drive PR touching either stopped being held
-(fleet-ops#9420; drive#850 was held with a coordinator approval on its head). A
-repo the `case` does not name keeps the shared list, so 0509 and a repo the fleet
-does not own are unchanged. Only test files are added, not the helpers beside them
-(`test/d1-sqlite.mjs` stays held), and `hold-risky` still holds money, secrets and
-data inside `src/` from its own list: `config/risky-paths.json` carries
-`drive-src-billing-dir` and `drive-src-secret-named-file` for exactly that, and
-`tests/test_risky_paths_cases.py` runs them. The `case` rides the `safe=` line rather than
-a block of its own because the workflow may not grow (the ratchet).
-`tests/test_arm_allowlist.py` runs the step against a fake `gh` for each layout and
-control, and pins the review job's `FLEET_TASK_ID` (#9428) in the same file.
+`config/risky-paths.json` is the one list. The arm step runs agent-dispatch.yml's
+`CLASSIFY` program against it before it arms a claim PR, and holds the PR, labeled
+`needs-coordinator`, when the classifier calls it risky. It reads both from
+fleet-ops main by URL, the way `hold-risky` and `coordinator-approval` read them,
+so the check cannot drift from the hold, and it holds when a read of the rules,
+the list or the diff fails, so an outage at arm time cannot arm a risky head
+(fleet-ops#11164). The step used to carry a second list beside the file, and the
+two drifted: a drive PR in `src/` was held while the file already called it safe,
+which took a patch to the step to fix (fleet-ops#9420, #11049).
+tests/test_agent_workflows.py runs the step against a fake `gh` that serves a
+`pulls/<n>/files` read and a fake `curl` that serves the checkout's rules and
+list, so the step runs the real program against the real list: a PR the
+classifier calls risky is labeled and not armed, and the old second list cannot
+come back unnoticed. `ci.yml` runs that test (fleet-ops#9278).
 
 ### agent.yml: the 2026-10 diet audit (fleet-ops#11068)
 
@@ -369,6 +372,109 @@ over 15 minutes (STUCK)" step pins the wiring (`stuck-review:review_pr
 stuck-arm:arm_pr stuck-rework:ref stuck-file:stuck_pr`) and fails when the job
 is gone.
 
+### agent.yml: the comment diet (fleet-ops#10946)
+
+The issue's comment bullet — comments one short line or none — collapsed 37 of
+the base file's 38 multi-line comment blocks. Count: `awk '/^[[:space:]]*#/{c++;
+next} {if(c>=2) print NR-c": "c; c=0}' .github/workflows/agent.yml`, which lists
+each block of two or more consecutive comment lines — on the base commit it
+prints 38 blocks totalling 149 lines; on this PR's tree it prints one block,
+2 lines (the cap comment beside its functional `# shellcheck disable=SC2016`
+pragma, which a comment collapse cannot join). The prose that does not fit a
+short line lives here, and the one-liner keeps the issue ref that finds it:
+
+- Labeled-run wait (fleet-ops#9269): a labeled run still waiting for a runner
+  must not be poked; the new run displaces the waiting one in the
+  `agent-<repo>-<ref>` group and GitHub cancels it (0509#7005 re-labeled six
+  times in 28 min, 258 cancelled drive runs in 3 days). An issues-event run's
+  title is the issue title, which is why the compare is `display_title`. The
+  sweep token (actions: write) reads runs too, because the worker App token
+  carries no actions permission. Its concurrency group keeps one waiting sweep
+  at most per repo.
+- Review scope (fleet-ops#10681): an approval follows the change, not the
+  commit. A head whose own diff (merge-base to head) is unchanged since an
+  approved head carries that approval; a head whose own diff changed is
+  reviewed only against the approved diff. `git range-diff` cannot decide this:
+  when the branch merged main, its output is the same whether the conflict
+  resolution kept the PR's own line or changed it. tests/test_review_carry.py
+  holds that case and the moved-line case. Anything else is a full review.
+- Only a real verdict counts as reviewed. The older hold comment and the
+  "could not be judged" verdict carry none, so there is one review per head.
+  A carry candidate must START a line of an unedited github-actions[bot]
+  comment, because a hold comment quotes the approval line inside its body.
+- The carry candidate's approval is double-keyed: any workflow on a branch of
+  this repo posts as the same bot, so only an approval of another head can
+  carry, and it must also be approve()'s review on that head, whose commit_id
+  is that head (a push can dismiss it, so DISMISSED counts too). Without that
+  review, or when the read fails, the head gets a full review; so does an
+  approved head that no longer exists, since carry()'s fetch fails. It fails
+  closed.
+- carry(): the approved head's own diff, replayed onto this head's merge-base
+  with union merge (so a line main added beside it in a conflict is kept), must
+  give this head's tree exactly, and the two own diffs must read the same apart
+  from the line each hunk sits on (so no whitespace change, no file added or
+  dropped); otherwise what differs is the interdiff to review. Compared as
+  text, which is stricter than a patch id (a patch id ignores the path a hunk
+  is in). The `+` forces refs/prior, so a rerun cannot be refused, and
+  --no-renames lists a guard path this head renamed away under its old name
+  too. merge-tree --write-tree arrived in git 2.40, so an older runner makes
+  every carry fail and a full review follows: it fails closed.
+- All three risky-PR reviews run on Claude seats (Opus first, then Fable and
+  Sonnet side by side): the owner's rule of 2026-10-31. The router's judge and
+  assistant rows sat behind usage walls for hours, and every walled third
+  review filed a retry ticket.
+- A blocked `orch/issue-N` PR goes back to the orchestrator only through the
+  rework block (fleet-ops#10435): its reads run on the job's token, not the
+  runner login's, whose core quota other work exhausted once and reddened an
+  approved head (fleet-ops#10970). The label and comment post as the worker
+  App, because GITHUB_TOKEN fires no workflow event, so the orchestrator is
+  never dispatched. No step reads a login file, so the step runs on the review
+  runners, whose user has none (fleet-ops#10950). A PR from a fork never
+  reaches here at all.
+- The arm job re-reads the PR after the token is minted, and --match-head-commit
+  makes the arm itself refuse a moved head; hold-risky checks the approval
+  again when the arm fires auto_merge_enabled.
+- `stuck` files one orchestrator issue for a PR that has waited over an hour
+  and that no worker owns: a session's own branch, or a claim PR whose issue is
+  closed or deleted (40 of 53 waiting fleet PRs on 2026-10-11). The App token
+  files it so the needs-orchestrator label fires the orchestrate job. One open
+  issue per PR: a new head comments on it, the same head does nothing.
+- The review call: `--tools ""` because a tool could open the runner's key files
+  and the review posts publicly (claude honors an empty --tools, checked
+  2026-10-10). No fallback to another family, no approval without this review;
+  a call that fails or answers nothing, a usage limit included, did not finish:
+  retry. Fable is not a default reviewer because it burned 44% of a seat's
+  weekly limit in about two days when defaulted (Nish 2026-10-28, #10608); it
+  is the second reviewer of guard heads only.
+- Guard heads (money, secrets, data, .github/, the review rules) need three
+  INDEPENDENT reviews because a PR that adds its own workflow could post an
+  approval as the same bot, and a later head that dropped the workflow would
+  then inherit a forged approval (the approval can never be one of the PR's own
+  additions).
+- The sweep's lane counts are host-wide but the listing is this repo's only, so
+  the sweep covers every other enrolled repo too, whose own Gate admits only a
+  lane that is free (fleet-ops#10638). `.repos[]` names enrolled sweep targets;
+  `.sweep_only[]` names un-enrolled repos whose agent-ready items the
+  worker-exit top-up still re-sweeps: a retry of items already labelled, never
+  admit or intake (docs/intake-enrolment.md).
+- Blocker lines: a line starting with blocker(s), with or without markup (not
+  the echoed header "blocker/risk/nit"), unless only a none-variant follows
+  (none, no blockers, n/a, a dash, then markup or a sentence). The grammar is
+  held by tests/test_review_scan.py.
+- inish-daily trust boundary: the candidate fetch (Jev key, GitHub search
+  token, optional X key from seats/x-api.env) runs outside the jail before the
+  model starts. The jail hides both, Nish's gh login, the Cloudflare tokens,
+  the seat files, the App key and litellm-master-key.env; pi reads a virtual
+  worker-capable-only key, 3h, $5 for the whole run, revoked on exit (the key
+  alias carries the run id). After each attempt only its edition JSON is taken
+  (a regular file, size-capped), a fresh clone of main is made, the edition and
+  the pristine candidate file are dropped in, and the builder and the whole
+  test suite run there. The publish step pushes from that clone, so
+  model-written code, git hooks and .git state never reach the push.
+- sys() runs clone, fetch, build and tests with a system PATH and no user git
+  config; /usr/bin/node and python3 run the same two suites `npm test` does;
+  /usr/local/bin holds gh.
+
 ### coordinator-approval.yml: the merge-queue gate
 
 The risky-change gate as a required check (fleet-ops#9383, #10292). Fleet-ops runs it on
@@ -382,4 +488,11 @@ passes, so the check reports and a PR can be enqueued; the queue does the reject
 commit of this workflow's own first queue entry is main before the move, where the rules still
 sat under the `hold-risky` job, so the rules read either layout. `ci.yml` runs this block against
 a fake `gh` with each read failing.
+
+Every commit in a group must map to the PR that brought it: a squash subject ends in `(#N)` and a
+merge-commit subject starts with `Merge pull request #N`, but a merge-commit or rebase merge also
+lands the branch's own commits, whose subjects carry no number. 0509 merges that way, and its first
+two gate runs failed on exactly those commits (runs 40992530675, 41016620699). An unmapped subject
+now falls back to the commits API's pull-request association for that sha, and a commit with no
+association still fails the check.
 

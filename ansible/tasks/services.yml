@@ -40,6 +40,19 @@
     daemon_reload: true
   ignore_errors: "{{ ansible_check_mode }}"
 
+# The runner sandbox apply unit (fleet-ops#11248) restarts the runner units whose
+# drop-in is newer than their start and that hold no Runner.Worker process: the
+# handler covers the deploy and this timer catches a runner that was busy then,
+# within 5 min of its job ending. Starting the timer schedules the first pass;
+# it never runs the service now.
+- name: Enable the runner sandbox apply timer
+  ansible.builtin.systemd_service:
+    name: fleet-runner-sandbox-apply.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
 # The Beacon Hermes poll watcher (fleet-ops#11089) is a system unit now. It parses
 # Telegram text, so it needs a mount sandbox that holds, and a unit the user
 # manager starts gets none on this box (docs/user-unit-sandboxing.md). Its file is
@@ -130,3 +143,128 @@
     name: podman.socket
     state: stopped
     masked: true
+
+# Hermes' own GitHub login (fleet-ops#10267). The sandbox drop-in hides nish's
+# admin login in ~/.config/gh and points GH_CONFIG_DIR at the token directory
+# this oneshot writes, so the chat agent runs gh with a one-hour App token
+# scoped to the calls its digest jobs make. The unit is a system unit and its
+# RuntimeDirectory is /run, so the token never touches disk. The timer keeps
+# the token fresh; starting the unit here mints the first one now.
+#
+# A GitHub outage must not turn the rest of the host config red, so neither the
+# mint nor the proof stops this play: each is reported below, and the restart
+# is gated on the login file itself and on a gh call through it, so Hermes
+# moves onto the new login only once that login has read the issue it was
+# built for. The unit's OnFailure= pages and the timer retries in
+# 20 minutes, so a box left on the old login is not silent.
+- name: Enable the Hermes GitHub login refresh
+  ansible.builtin.systemd_service:
+    name: fleet-hermes-github-token.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Mint the Hermes GitHub login now
+  ansible.builtin.systemd_service:
+    name: fleet-hermes-github-token.service
+    state: started
+  register: hermes_login_mint
+  ignore_errors: true
+
+- name: Read the login file the mint wrote
+  ansible.builtin.stat:
+    path: /run/fleet-hermes-github-token/hosts.yml
+  register: hermes_login_file
+
+- name: Report a Hermes login that failed to mint
+  ansible.builtin.debug:
+    msg: >-
+      fleet-hermes-github-token.service did not mint ({{ hermes_login_mint.msg | default('no message') }}).
+      Hermes keeps the login it has: it restarts onto the minted one only once the file
+      exists, and the timer retries in 20 minutes.
+  when: hermes_login_mint is failed
+
+# A real gh call through the minted login, before the handler restarts Hermes
+# onto it: GH_CONFIG_DIR names the token directory, never nish's ~/.config/gh,
+# which is also what makes this proof mean anything.
+- name: Prove the Hermes login reads the issue it was built for
+  ansible.builtin.command:
+    argv: [/usr/bin/gh, issue, view, "10267", --repo, Nishfleet/fleet-ops, --json, number, --jq, .number]
+  become: true
+  become_user: nish
+  environment:
+    HOME: "{{ nish_home }}"
+    PATH: "{{ nish_home }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    GH_CONFIG_DIR: /run/fleet-hermes-github-token
+  register: hermes_login_proof
+  changed_when: false
+  ignore_errors: true
+  when:
+    - not ansible_check_mode
+    - hermes_login_file.stat.exists
+
+- name: Report a Hermes login that cannot read an issue
+  ansible.builtin.debug:
+    msg: >-
+      gh could not read Nishfleet/fleet-ops#10267 through the minted login
+      ({{ hermes_login_proof.msg | default(hermes_login_proof.stderr | default('no output')) }}).
+      The timer retries in 20 minutes; Hermes keeps the login it has.
+  when: hermes_login_proof is failed
+
+# The drop-in is what hides nish's admin login, so it must not take effect on a
+# box that has no minted login to replace it, or one that failed to read an
+# issue: a restart in that state would leave Hermes with no gh at all, or with
+# a login nothing has proven, and both units run Restart=always. The proof is
+# skipped in check mode, so the gate also accepts that skip.
+# Staleness is the same comparison fleet-runner-sandbox-apply.service makes for
+# the runners: the drop-in's mtime against the unit's start time, which systemd
+# holds itself (it answers "has a unit read this drop-in yet" without a state
+# file, and a natural Restart=always start after the install clears the
+# staleness that a change flag or a marker would keep alive). A failed deploy
+# re-arms by itself: the next deploy re-reads the installed mtime, so a restart
+# that skipped once still fires once a proven login exists.
+- name: Read the installed Hermes sandbox drop-in
+  ansible.builtin.stat:
+    path: /etc/systemd/system/hermes-.service.d/sandbox.conf
+  register: hermes_installed_sandbox_dropin
+
+- name: Read when hermes-gateway last started
+  ansible.builtin.command:
+    argv: [/bin/sh, -c, "t=$(systemctl show -p ActiveEnterTimestamp --value hermes-gateway.service); case \"$t\" in ''|n/a) echo 0 ;; *) date -d \"$t\" +%s ;; esac"]
+  register: hermes_gateway_start
+  changed_when: false
+  check_mode: false
+
+- name: Read when hermes-serve last started
+  ansible.builtin.command:
+    argv: [/bin/sh, -c, "t=$(systemctl show -p ActiveEnterTimestamp --value hermes-serve.service); case \"$t\" in ''|n/a) echo 0 ;; *) date -d \"$t\" +%s ;; esac"]
+  register: hermes_serve_start
+  changed_when: false
+  check_mode: false
+
+- name: Restart Hermes onto the minted login
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - hermes-gateway.service
+    - hermes-serve.service
+  when:
+    - hermes_installed_sandbox_dropin.stat.exists
+    - "hermes_installed_sandbox_dropin.stat.mtime | int > ([hermes_gateway_start.stdout | int, hermes_serve_start.stdout | int] | min)"
+    - hermes_login_file.stat.exists
+    - hermes_login_proof is skipped or hermes_login_proof is succeeded
+
+- name: Explain a Hermes restart that waited on a proven login
+  ansible.builtin.debug:
+    msg: >-
+      The Hermes sandbox drop-in is newer than the running Hermes units, but its
+      restart waits for a minted login that exists and reads
+      Nishfleet/fleet-ops#10267, so Hermes keeps the login it has. The timer
+      retries the mint every 20 minutes, the next deploy re-reads the same
+      staleness, and a natural Restart=always start re-reads the drop-in too.
+  when:
+    - hermes_installed_sandbox_dropin.stat.exists
+    - "hermes_installed_sandbox_dropin.stat.mtime | int > ([hermes_gateway_start.stdout | int, hermes_serve_start.stdout | int] | min)"
+    - not (hermes_login_file.stat.exists and (hermes_login_proof is skipped or hermes_login_proof is succeeded))
