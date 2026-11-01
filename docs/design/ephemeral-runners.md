@@ -25,7 +25,7 @@ poller, no wrapper.
   |---|---|---|---|
   | agent | `netcup-agent-1..10` | org runner group `agent` (id 3) | `self-hosted`, `agent` |
   | fleet-ci | `netcup-fleet-ci-1..3` | org, `fleet-ci-3` in the restricted group `drive-eval` | `self-hosted`, `linux`, `x64`, `fleet-ci` |
-  | vault | `netcup-vault-1` | one repository outside the org | not covered here |
+  | vault (retired 2026-11; its workflows run on GitHub-hosted runners) | `netcup-vault-1` | one repository outside the org | not covered here |
 
 - Registration was done once by hand with `config.sh`. A runner stays
   registered until someone removes it. The unit's `ExecStart` is the runner's
