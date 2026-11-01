@@ -13,8 +13,7 @@
 #      catch-up run that crosses midnight still names the report with one string.
 #   2. Downloads every d1-backup-* artifact of that run with gh, as the
 #      nishfleet-worker App with a one-hour Actions-write token for that one repo
-#      (fleet-worker-github-token@actions:drive.service, the same unit
-#      fleet-pr-sweep@drive.service uses, fleet-ops#10601). Actions write is
+#      (fleet-worker-github-token@actions:drive.service, fleet-ops#10601). Actions write is
 #      what carries actions read; the App has no narrower grant, and the token is
 #      revoked and its env file deleted the moment the run ends, so a detached
 #      worker on the same uid never finds a live one in the runtime dir between
