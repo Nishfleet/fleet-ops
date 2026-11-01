@@ -1,6 +1,7 @@
 """fleet-sync's LINK-GUARD: a dead skill-mirror link warns; dead wiring and throwaway targets still fail the unit (fleet-ops#9967)."""
 
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -100,3 +101,45 @@ def test_a_skill_link_whose_target_came_back_passes_silently(tmp_path: Path) -> 
     (home / SKILLS / "zod").symlink_to("../../../.claude/skills/zod")
     results = run(every_guard_command(home))
     assert all(result == (0, "") for result in results), results
+
+
+def retired_sweep_commands(home: Path) -> list[list[str]]:
+    commands = []
+    for raw in UNIT.read_text().splitlines():
+        if raw.startswith("ExecStart=") and "fleet-pr-sweep" in raw:
+            body = raw[len("ExecStart=") :]
+            if body.startswith("-"):
+                body = body[1:]
+            commands.append(shlex.split(expand(body, home)))
+    assert len(commands) == 2, commands
+    assert commands[0][0].endswith("systemctl") and commands[1][0].endswith("rm"), commands
+    return commands
+
+
+def test_the_retired_sweep_step_empties_its_links_before_the_guard_runs(tmp_path: Path) -> None:
+    home = fleet_home(tmp_path)
+    clone = tmp_path / "clone/systemd"
+    clone.mkdir(parents=True)
+    user = home / ".config/systemd/user"
+    for name in ("fleet-pr-sweep@.service", "fleet-pr-sweep@.timer"):
+        (clone / name).touch()
+        (user / name).symlink_to(clone / name)
+    (user / "fleet-pr-sweep@fleet-ops.timer").symlink_to(clone / "fleet-pr-sweep@.timer")
+    (user / "timers.target.wants").mkdir()
+    (user / "timers.target.wants/fleet-pr-sweep@fleet-ops.timer").symlink_to(clone / "fleet-pr-sweep@.timer")
+    shutil.rmtree(tmp_path / "clone")
+    leftover = user / "fleet-pr-sweep@fleet-ops.timer"
+    dead = run(every_guard_command(home))
+    assert dead[1][0] != 0 and "LINK-GUARD live symlink -> dead target" in dead[1][1]
+    assert str(leftover) in dead[1][1]
+    stop, rm = retired_sweep_commands(home)
+    instances = sorted({a for a in stop[1:] if a.endswith(".timer")})
+    assert instances, stop
+    for instance in instances:
+        assert str(user / instance) in rm, (instance, rm)
+        assert str(user / "timers.target.wants" / instance) in rm, (instance, rm)
+    assert run([rm])[0][0] == 0
+    for path in (user / "fleet-pr-sweep@.service", user / "fleet-pr-sweep@.timer", leftover,
+                 user / "timers.target.wants/fleet-pr-sweep@fleet-ops.timer"):
+        assert not path.exists(), path
+    assert all(result == (0, "") for result in run(every_guard_command(home)))
