@@ -123,8 +123,6 @@
     # install that one instead, skipping the age gate. For a release that
     # passed a staged test after 24 h. Empty = take the newest aged release.
     cua_spaces_tag: ""
-    cua_desk_space: local:desk
-    cua_desk_agent_dir: agents/desk
     cua_package_dir: /var/lib/fleet-ops/cua-spaces
     # Versioned before and after the update, and the report pairs the two
     # lists by position. pi is not in this list on purpose: `pi --version`
@@ -730,16 +728,10 @@
 
         # Cua Spaces has no apt repository, so its newest stable release that is
         # at least cua_min_age_hours old (or the tag pinned in cua_spaces_tag)
-        # is fetched, checked against that release's checksums and installed. The
-        # daemon that hosts the persistent desk agent runs the old binary until
-        # it restarts, and its Space has no working Volume mount afterwards, so
-        # the Space is deleted and created again. The agent's files live in
-        # the Cua Volume on the host: they are read before the delete (the
-        # update stops when they are not there), archived once per upgrade, and
-        # read again after the create. A run in any state but idle holds the
-        # update back until the next day. Any failure is recorded and fails the
-        # run at the final assert.
-        - name: Update Cua Spaces and recreate the desk Space
+        # is fetched, checked against that release's checksums and installed,
+        # because tether's own Space runs on it. Any failure is recorded and
+        # fails the run at the final assert.
+        - name: Update Cua Spaces
           become: true
           become_user: nish
           environment: "{{ nish_env }}"
@@ -806,33 +798,6 @@
                 mode: "0644"
               when: cua_newer
 
-            - name: Read the desk agent's files from the Volume before touching the Space
-              ansible.builtin.command:
-                argv: ["{{ cua_cli }}", volume, ls, "{{ cua_desk_agent_dir }}"]
-              register: cua_volume_before
-              changed_when: false
-              failed_when: cua_volume_before.rc != 0 or 'CLAUDE.md' not in cua_volume_before.stdout
-              when: cua_newer
-
-            - name: Archive the Volume once per upgrade
-              ansible.builtin.archive:
-                path: "{{ nish_env.HOME }}/.cua/volume"
-                dest: "{{ nish_env.HOME }}/backups/cua-volume-{{ cua_installed.stdout }}-before-{{ cua_target }}.tgz"
-                format: gz
-              when: cua_newer
-
-            - name: List the runs in the desk Space just before the install
-              ansible.builtin.command:
-                argv: ["{{ cua_cli }}", agent, ls, "{{ cua_desk_space }}", --json]
-              register: cua_runs
-              changed_when: false
-              when: cua_newer
-
-            - name: Decide whether to upgrade now
-              ansible.builtin.set_fact:
-                cua_desk_busy: "{{ cua_newer and (cua_runs.stdout | from_json | rejectattr('status', 'equalto', 'idle') | list | length > 0) }}"
-                cua_upgrade: "{{ cua_newer and (cua_runs.stdout | from_json | rejectattr('status', 'equalto', 'idle') | list | length == 0) }}"
-
             - name: Install the package
               become: false
               ansible.builtin.apt:
@@ -845,53 +810,10 @@
               environment:
                 DEBIAN_FRONTEND: noninteractive
                 PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-              when: cua_upgrade
-
-            - name: Restart the daemon that hosts the desk agent
-              ansible.builtin.command:
-                argv: [systemctl, --user, restart, cua-desk-daemon.service]
-              when: cua_upgrade
-
-            - name: Wait until the daemon answers
-              ansible.builtin.command:
-                argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
-              register: cua_daemon_up
-              until: cua_daemon_up.rc == 0
-              retries: 15
-              delay: 2
-              changed_when: false
-              when: cua_upgrade
-
-            - name: Delete the desk Space, whose Volume mount died with the old daemon
-              ansible.builtin.command:
-                argv: ["{{ cua_cli }}", spaces, delete, "{{ cua_desk_space }}", --force]
-              when: cua_upgrade
-
-            - name: Create the desk Space again
-              ansible.builtin.command:
-                argv: ["{{ cua_cli }}", spaces, create, linux, --name, "{{ cua_desk_space | regex_replace('^local:', '') }}", --on, local]
-              when: cua_upgrade
-
-            - name: Read the desk agent's files from the Volume again
-              ansible.builtin.command:
-                argv: ["{{ cua_cli }}", volume, ls, "{{ cua_desk_agent_dir }}"]
-              register: cua_volume_after
-              changed_when: false
-              failed_when: cua_volume_after.rc != 0 or 'CLAUDE.md' not in cua_volume_after.stdout
-              when: cua_upgrade
-
-            - name: Check the new desk Space has the Volume mounted
-              ansible.builtin.command:
-                argv: ["{{ cua_cli }}", sandbox, exec, "{{ cua_desk_space }}", "grep -c ' /volume ' /proc/mounts"]
-              register: cua_volume_mount
-              until: cua_volume_mount.rc == 0 and cua_volume_mount.stdout | trim == '1'
-              retries: 10
-              delay: 3
-              changed_when: false
-              when: cua_upgrade
+              when: cua_newer
 
             - name: Smoke-test a Space on the new version
-              when: cua_upgrade
+              when: cua_newer
               block:
                 - name: Create a throwaway Space
                   ansible.builtin.command:
@@ -908,20 +830,6 @@
                   ansible.builtin.command:
                     argv: ["{{ cua_cli }}", spaces, delete, "local:update-smoke", --force]
                   ignore_errors: true
-
-            - name: Read the desk Space status
-              ansible.builtin.command:
-                argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
-              register: cua_sandboxes
-              changed_when: false
-              failed_when: "(cua_sandboxes.stdout | from_json | selectattr('id', 'equalto', cua_desk_space) | selectattr('status', 'equalto', 'ready') | list | length) != 1"
-              when: cua_upgrade
-
-            - name: Check the relay host service is still up
-              ansible.builtin.command:
-                argv: [systemctl, --user, is-active, cua-spacesd-host.service]
-              changed_when: false
-              when: cua_upgrade
 
             - name: Drop the downloaded package
               become: false
@@ -1384,8 +1292,7 @@
               # One plain line per update this run checked but did not apply,
               # with the reason, so nothing is held back silently (#9965).
               checked_not_applied: >-
-                {{ (['Cua Spaces ' ~ cua_target ~ ' not installed, ' ~ ((cua_installed | default({})).stdout | default('unknown')) ~ ' kept: a desk agent run was busy. The next run tries again.']
-                    if cua_desk_busy | default(false) | bool else [])
+                {{ ([]
                    + (tincan_busy | map('regex_replace', '^(.*)$', 'tincan listener \1 not restarted on the new build: it was not idle. The next upgrade restarts it.') | list)
                    + (['Reboot not done: ' ~ ((reboot_pkgs | default({})).stdout_lines | default([]) | join(', ') | default('unknown packages', true)) ~ ' need it. Only Nish starts a reboot, from the open reboot issue.']
                       if reboot_flag.stat.exists else []) }}
@@ -1431,8 +1338,7 @@
               cua_spaces:
                 installed: "{{ (cua_installed | default({})).stdout | default('unknown') }}"
                 newest: "{{ cua_target | default('unknown') }}"
-                upgraded: "{{ cua_upgrade | default(false) }}"
-                desk_busy: "{{ cua_desk_busy | default('unknown') }}"
+                upgraded: "{{ cua_newer | default(false) }}"
               npm_stage_dirs_removed: "{{ (npm_stage_dirs | default({})).files | default([]) | map(attribute='path') | list }}"
               git_pins_off_default_branch: "{{ (off_branch_pins | default({})).stdout_lines | default([]) | list }}"
               reboot_required: "{{ reboot_flag.stat.exists }}"
