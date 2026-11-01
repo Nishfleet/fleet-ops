@@ -297,3 +297,10 @@ targetRules = ["private-fleet-seats-config"]
 paths = ['''^ansible/tasks/runners\.yml$''']
 regexes = ['''^\.config/fleet-ops/seats$''']
 condition = "AND"
+
+[[allowlists]]
+description = "Remote Control's hardening drop-in binds absolute /home/nish paths, because it is a system unit and %h there is /root, not the User= home (systemd.unit(5), Specifiers); fleet-ops#11290."
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/systemd/system/claude-remote-control\.service\.d/80-hardening\.conf$''']
+regexes = ['''^home/nish/(workspaces|\.claude|\.claude\.json|\.local/bin|\.local/share/claude|\.gitconfig|\.config/claude/browser-use\.env)$''']
+condition = "AND"
