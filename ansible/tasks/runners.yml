@@ -85,7 +85,7 @@
   become: true
   become_user: fleet-runner
   ansible.builtin.command:
-    argv: [/usr/local/bin/npm, install, --global, --prefix, /var/lib/fleet-runner/.local, "@earendil-works/pi-coding-agent@{{ fleet_runner_pi_version }}"]
+    argv: [/opt/node-v22.23.3/bin/npm, install, --global, --prefix, /var/lib/fleet-runner/.local, "@earendil-works/pi-coding-agent@{{ fleet_runner_pi_version }}"]
     creates: "/var/lib/fleet-runner/.local/lib/node_modules/@earendil-works/pi-coding-agent/package.json"
   environment:
     HOME: /var/lib/fleet-runner
