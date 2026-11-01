@@ -89,6 +89,7 @@
     retired_units:
       - fleet-runner-sandbox-apply.timer
       - fleet-runner-sandbox-apply.service
+      - tincan-listen-issue-desk.service
     retired_user_units:
       - fleet-sync.service
       - fleet-litellm-proxy-config.path
@@ -141,7 +142,12 @@
       - "{{ nish_home }}/.config/fleet-worker/bootstrap.html"
       - "{{ nish_home }}/.cursor/hooks/guard_cursor_packet.py"
       - "{{ nish_home }}/.cursor/rules/shared-memory.mdc"
-      - "{{ nish_home }}/workspaces/tooling/fleet-ops-deploy-clone/.git/hooks/reference-transaction"
+      # The deploy clone and its products/ link; every reader uses
+      # /var/lib/fleet-ops/repo now.
+      - "{{ nish_home }}/workspaces/tooling/fleet-ops-deploy-clone"
+      - "{{ nish_home }}/workspaces/products/fleet-ops"
+      # Disabled listener whose extension and prompt left the repo; box-only file.
+      - /etc/systemd/system/tincan-listen-issue-desk.service
       - /etc/tmpfiles.d/fleet-sync-metric.conf
       - /var/lib/prometheus/node-exporter/fleet-sync.prom
       # Read only by the hand-install drift check, deleted 2026-11-01.
