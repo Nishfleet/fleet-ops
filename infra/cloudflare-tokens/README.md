@@ -2,23 +2,25 @@
 
 OpenTofu config that makes one narrow Cloudflare API token per repo, writes it
 into that repo's existing GitHub Actions secret, and replaces it every 30 days.
+The one token whose consumer is not a GitHub Actions job is written to a 0600
+file on the VPS instead (`vps-grafana`, the Grafana Cloudflare data source).
 
 The key that makes keys (the minter token) stays on the VPS. **It must never go
 to GitHub**: not as a repo, org or environment secret, not in a workflow, not in
 a variable. GitHub only ever holds the narrow tokens this config writes.
 
 Providers: `cloudflare/cloudflare` v5, `integrations/github`, `hashicorp/time`
-(`time_rotating`). Account: the `account_id` default in `variables.tf`.
+(`time_rotating`), `hashicorp/local` (`local_sensitive_file`, for the VPS file).
+Account: the `account_id` default in `variables.tf`.
 
 Status: applied for the 10 repos that were in the list on 2026-10-09 with the
 minter token (`~/.config/cloudflare/token-minter.env`); the plan resolved every
 permission group name against the live API. Which jobs have run on the new
 tokens is in the PR body. A weekly timer renews them (see "Renewal").
-`inish-mail-filter` was added by #9919 and is not applied yet: the first `tofu
-apply` after that merge creates its token and writes its secret, so the state
-holds it before any run has used it. `fleet_console` (fleet-console-worker) was
-applied by hand on 2026-10-20 and is now in `main.tf`, so the weekly apply no
-longer destroys it; `seo-fix-kit` is new and is created by the next apply.
+`fleet_console` (fleet-console-worker) was applied by hand on 2026-10-20 and is
+now in `main.tf`, so the weekly apply no longer destroys it; `seo-fix-kit` is new and is created by the next apply.
+`vps-grafana` is new and is created by the next apply, together with the
+`~/.config/cloudflare/deploy-ci.env` file it writes (fleet-ops#10169).
 
 ## What it creates
 
@@ -28,27 +30,37 @@ longer destroys it; `seo-fix-kit` is new and is created by the next apply.
 | `0509-deploy` | 0509 | `CLOUDFLARE_API_TOKEN` (environment `production`) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
 | `0509-reports` | 0509 | `CLOUDFLARE_API_TOKEN` (repo) | D1 Read, Workers Scripts Read, Account Analytics Read | none | GitHub-hosted (`e2e-scheduled.yml` backup-proof, jev-failures, soak-report; `evals.yml`) | none |
 | `0509-settings` | 0509 | `CLOUDFLARE_SETTINGS_TOKEN` (repo) | Workers R2 Storage Write | Zone Read, Email Routing Rules Write | GitHub-hosted (`cloudflare-settings.yml`) | none |
-| `0509-support-inbox` | 0509-support-inbox | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
-| `siterep-public` | siterep-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
-| `TinyStudio.io-public` | TinyStudio.io-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Workers R2 Storage Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
+| `0509-support-inbox` | mailbox | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
+| `siterep-public` | siterep-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
+| `TinyStudio.io-public` | TinyStudio.io-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Workers R2 Storage Write, D1 Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
 | `inish-site` | inish-site | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`ci.yml` deploy job) | none |
-| `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, Account Settings Read | none | GitHub-hosted (`deploy.yml`) | none |
-| `tinystudio-in` | tinystudio-in | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, Account Settings Read | none | GitHub-hosted (`deploy-public-site.yml`) | none |
-| `inish-mail-filter` | inish-mail-filter | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
+| `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, D1 Write, Account Settings Read | none | GitHub-hosted (`deploy.yml`, `d1-export.yml`) | none |
 | `seo-fix-kit` | seo-fix-kit | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`: D1 migrations apply, `wrangler deploy` with custom domains and a queue consumer) | none |
 | `fleet_console` | fleet-console-worker | `CLOUDFLARE_API_TOKEN` (repo), plus a repo `CLOUDFLARE_ACCOUNT_ID` | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
+| `vps-grafana` | the VPS (no repo) | `CLOUDFLARE_API_TOKEN` in `~/.config/cloudflare/deploy-ci.env`, a 0600 file (no GitHub secret) | Account Analytics Read | none | the VPS host: Grafana's `fleet-cloudflare` data source, the Cloudflare cost alarm (fleet-ops#9355) | VPS addresses (`vps_only`) |
 
-The `mailbox` repo is the former `0509-support-inbox` repo (same repo id): the
-`0509-support-inbox` entry above writes its secret through the GitHub rename
-redirect, so it needs no entry of its own.
+The `0509-support-inbox` entry writes to `mailbox`, the same repo under its new
+name. The key keeps its old name so the Cloudflare token is not replaced; the
+repo secret is deleted and written again once, because the repo name changed.
 
-**No token is IP-locked.** Every job that reads a Cloudflare secret runs on
-`ubuntu-latest`, and GitHub-hosted runners have no fixed address (an IP-locked
-deploy token failed on them with Cloudflare error 9109). The lock exists in the
-config (`vps_only = true` adds `condition.request_ip` with the addresses in `vps_cidrs`;
-they are not kept in git; see "VPS-only tokens" below) and is for a
-token whose jobs all run on the VPS self-hosted runners. No Cloudflare job does
-today.
+`tinystudio-in` is archived, so no workflow runs there and nothing reads its
+secret. Its entry is gone: the next apply revokes its Cloudflare token. Its repo
+secret was dropped from the state first (`tofu state rm`), because an archived
+repo is read-only and the App is not installed on it, so a delete would fail.
+
+`vps-grafana` is the one token that is not a GitHub secret. It is written by
+`local_sensitive_file.token` to `~/.config/cloudflare/deploy-ci.env`, mode 0600,
+as the single line `CLOUDFLARE_API_TOKEN=<value>`: the same key and the same file
+`ansible/host.yml` already reads to build the `grafana-cloudflare-api-token`
+Podman secret that the `fleet-cloudflare` data source uses. Nothing downstream
+changes, and the value never enters a GitHub secret, a log line or argv.
+
+**One token is IP-locked.** `vps-grafana` is: every read of it is a Cloudflare
+GraphQL analytics query from the VPS host, which has a fixed address, and the
+lock is the config's own `vps_only = true` (see "VPS-only tokens" below). Every
+other token is not, because its consumer job runs on `ubuntu-latest` and
+GitHub-hosted runners have no fixed address (an IP-locked deploy token failed on
+them with Cloudflare error 9109).
 
 `CLOUDFLARE_ACCOUNT_ID` is an identifier, not a credential, and stays as it is
 (org secret, plus repo secrets in drive, 0509-support-inbox and the 0509
@@ -66,9 +78,52 @@ in `main.tf`.
 
 Existing org secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are
 visible to all Nishfleet repos. A repo or environment secret of the same name wins
-over the org secret, so the new tokens take over with no workflow change. The org
-`CLOUDFLARE_API_TOKEN` stays in place as the fallback for any repo this config
-does not manage; delete it by hand once every consumer is proven on its own token.
+over the org secret, so the new tokens take over with no workflow change.
+`vps-grafana` closes the last gap the org fallback covered: the VPS consumer now
+has a token of its own, so the org `CLOUDFLARE_API_TOKEN` has no consumer left.
+Delete it by hand in the GitHub org settings once the first apply has run and
+the cost alarm still evaluates. The repos that still pass the org secret in a
+workflow (`codex-workspace`, `tiny-studio-vps-infra`, `vps-control-tower`,
+`memory-compound`, `agent-governor`, `egress-probe`) are all archived, so no
+workflow runs there and nothing reads it.
+
+## Retirement of the hand-made keys
+
+The tokens this config replaced were made by hand and held the same repo and
+environment secret slots before 2026-10-09. The retirement is decided
+(fleet-ops#9504: Nish approved the deletions on 2026-10-29):
+
+- Retired: the hand-made per-repo tokens. This config rewrote every repo and
+  environment secret it covers on 2026-10-09 (and created `seo-fix-kit`'s on
+  2026-10-22), so nothing reads the old values. They are deleted in the
+  Cloudflare dashboard by the owner, because the key-maker token may not delete
+  standing tokens (repo rules) and no runner lane can reach the token list.
+  Nishfleet/drive's deploy run on 2026-10-29 (dispatch of main head, run
+  40838134670) is the proof the minted token carries a full production deploy:
+  migrations, both Workers, queues, custom domains.
+- Retired: the hand-made VPS `deploy-ci` token (analytics from the VPS), replaced
+  by `vps-grafana` in `main.tf` (fleet-ops#10169). It was a user token with no
+  expiry, no IP lock, and Workers, D1, KV and Zone read permissions for a
+  consumer that needs one read-only group. **Not yet revoked**: its value still
+  sits in `~/.config/cloudflare/deploy-ci.env` until the first apply rewrites
+  that file with the minted token, and that file then holds exactly one line, so
+  a copy of the old value has to be taken out of it before that apply. The old
+  token stays valid in Cloudflare
+  until the owner deletes it in the dashboard. That delete is the one step this
+  config cannot do, unlike the per-repo tokens, which the apply destroys itself
+  once it has minted their replacements. Until that delete, a leaked copy of the
+  old value still works, so the revocation is the last step of the rotation and
+  is not implied by this PR. A
+  preview upload or an analytics query from a hand session takes a 24-hour
+  `job-*` token from the mint gate (`docs/cloudflare-credentials.md`), not a
+  standing one.
+- Retired: the disabled account-admin token from 2026-09-25, deleted the same
+  way. The expired token that used to live in the VPS `deploy.env` file died on
+  its expiry date; only the file was ever deleted.
+- Kept: the VPS `email` token (Email Routing and Sending, R2, Turnstile,
+  locked to the VPS IPs) and the key-maker token itself. Moving the `email`
+  token under this config is a separate task; the org
+  `CLOUDFLARE_API_TOKEN` fallback is now deletable (see above).
 
 ## State
 
@@ -97,7 +152,8 @@ that include reaches the box (the next `fleet-host-config` run after merge) the
 state is not backed up, and `/etc/restic/` itself is root-owned, so this repo
 cannot prove what the live list holds; check with
 `grep cloudflare-tokens /etc/restic/include.txt`. If the state is lost, delete
-the old tokens in the Cloudflare dashboard (names start `gha-`) and apply again
+the old tokens in the Cloudflare dashboard (names start `gha-`, and
+`vps-grafana-` for the host token, which is not a GitHub secret) and apply again
 to mint fresh ones.
 
 ### State encryption
@@ -139,14 +195,14 @@ sha256 checked) into `~/.local/bin/tofu`.
 
     cd infra/cloudflare-tokens
     set -a; . ~/.config/cloudflare/token-minter.env; set +a
-    GITHUB_TOKEN=$(gh auth token) tofu init
-    GITHUB_TOKEN=$(gh auth token) tofu plan
-    GITHUB_TOKEN=$(gh auth token) tofu apply
+    TF_VAR_github_app_pem="$(cat ~/.config/cloudflare/nishfleet-secrets.private-key.pem)" sh -c 'tofu init && tofu plan && tofu apply'
+
+The key is set for that one command only, so it does not stay in the shell.
 
 Run it from an interactive session of the admin login, not from a jailed worker:
-the worker jail hides both `~/.config/cloudflare` and `~/.config/gh` on purpose
-(AGENTS.md, "Cloudflare credentials on this host"). The GitHub login needs admin
-on each repo to write its secrets.
+the worker jails hide `~/.config/cloudflare`, which holds the minter token and
+the App key, on purpose (AGENTS.md, "Cloudflare credentials on this host"). The
+GitHub secrets are written by the App, not by the `gh` login.
 
 `~/.config/cloudflare/token-minter.env` holds `CLOUDFLARE_API_TOKEN=<minter>`: a
 user token with `API Tokens Write` plus every permission group listed above
@@ -165,25 +221,67 @@ and `wrangler` config, not by running them.
 
 ## VPS-only tokens
 
-`vps_cidrs` defaults to `[]` (the addresses are not kept in git). No token sets
-`vps_only` today, so the empty default changes nothing. Before any token in
-`main.tf` sets `vps_only = true`, supply the addresses to every `tofu` run,
-including the weekly `cloudflare-tokens-apply.service`, for example
-`TF_VAR_vps_cidrs='["<ipv4>/32","<ipv6>/128"]'` in that unit's environment, or a
-gitignored `*.tfvars` file. Read the addresses on the box with
-`curl -4 -s ifconfig.me` and `curl -6 -s ifconfig.me`. The `precondition` on the
-token resource stays: with `vps_only = true` and an empty `vps_cidrs`, the plan
-fails (fail-closed) instead of minting an unlocked token.
+`vps_cidrs` defaults to `[]` (the addresses are not kept in git). `vps-grafana`
+sets `vps_only = true`, so the apply needs the addresses on every run. They live
+in the gitignored `~/.config/cloudflare/vps-cidrs.tfvars`, which
+`cloudflare-tokens-apply.service` passes with `-var-file=`, so the weekly
+rotation supplies them with no hand step. The file holds one line:
+
+```hcl
+vps_cidrs = ["<ipv4>/32", "<ipv6>/128"]
+```
+
+Read the addresses on the box with `curl -4 -s ifconfig.me` and
+`curl -6 -s ifconfig.me`. Place the file before the first apply that includes
+`vps-grafana`.
+
+**The apply checks the file against the host.** The unit's `ExecStartPre` reads
+the host's current addresses from the same two sources and fails the unit
+before the apply when a current address is not in the file: an address change
+otherwise leaves the apply succeeding with a token locked to dead addresses
+(fleet-ops#10969), and Grafana's Cloudflare queries fail while the renewal
+stays green. When the check fails, refresh the file in one command and start
+the unit again:
+
+```sh
+printf 'vps_cidrs = ["%s/32", "%s/128"]\n' "$(curl -4 -s ifconfig.me)" "$(curl -6 -s ifconfig.me)" > ~/.config/cloudflare/vps-cidrs.tfvars
+```
+
+If the host's egress address changes for good, this one command is the whole
+fix: a changed `vps_cidrs` is a change to the token resource, so the next apply
+mints `vps-grafana` locked to the fresh addresses, and an unchanged file
+changes nothing on a healthy apply.
+
+The `precondition` on the token resource stays: with `vps_only =
+true` and an empty `vps_cidrs`, the plan fails (fail-closed) instead of minting
+an unlocked token. That failure stops the whole apply, so no other token is
+renewed either; it is loud (the unit's `OnFailure=` fires the healthchecks fail
+ping) and the tokens keep working until 45 days after their last rotation, which
+leaves about two weeks to place the file after the first failed weekly run.
 
 ## Rotation
 
 Each token has a `time_rotating` resource (30 days, `rotation_days`) and
 expires 45 days after it was made (`expiry_days`). When 30 days have passed, the
 next `tofu apply` replaces the `time_rotating` resource, which replaces the token
-(`replace_triggered_by`) and rewrites the GitHub secret. The new token is created
-first and the old one deleted after the secret is rewritten
-(`create_before_destroy`), so a running deploy never sees a dead token. Token
-names end in the creation date, so the old and new tokens can coexist.
+(`replace_triggered_by`) and rewrites the GitHub secret, or the VPS file for
+`vps-grafana`. The new token is created first and the old one deleted after the
+secret is rewritten (`create_before_destroy`), so a running deploy never sees a
+dead token. Token names end in the creation date, so the old and new tokens can
+coexist.
+
+`vps-grafana` has a second consumer that a rewritten file does not reach:
+Grafana mounts a **copy** of the file as the `grafana-cloudflare-api-token`
+Podman secret, and `ansible/tasks/secrets.yml` recreates that copy on a
+host-config run. So the apply's `ExecStartPost` starts
+`fleet-host-config.service`, the writer that already does that, instead of
+writing the secret a second time: it replaces the copy only when the value
+changed and restarts `fleet-grafana.service` only then. Without that step the
+window between a rotation and the next host-config run would leave Grafana
+holding a token the apply had just deleted, and the Cloudflare spend watch
+(fleet-ops#9355) would read nothing meanwhile. There is no host-config timer,
+so that window has no other bound. polkit grants user `nish` the verb `start` on
+that unit and nothing else (`rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules`).
 
 Rotation happens only when `tofu apply` runs. If no apply happens within 45
 days of the last one, the tokens expire and the deploys that read them fail. The
@@ -202,9 +300,11 @@ right trigger (not an event).
 Weekly, because tokens rotate at 30 days and expire at 45: the apply does nothing
 for three weeks, then replaces them, and two missed weeks still leave slack.
 
-- Credentials: `EnvironmentFile=%h/.config/cloudflare/token-minter.env`. No env
-  file holds a GitHub token on this host, so the unit takes `GITHUB_TOKEN` from
-  `gh auth token` (the `~/.config/gh/hosts.yml` login). That login needs admin on each repo.
+- Credentials: `EnvironmentFile=%h/.config/cloudflare/token-minter.env` for Cloudflare. GitHub
+  secrets are written by the `nishfleet-secrets` GitHub App (Secrets and Environments write only,
+  installed on the repos in `main.tf`); its key is `~/.config/cloudflare/nishfleet-secrets.private-key.pem`, mode 0600,
+  in the directory every worker jail hides.
+  When a repo is added to `main.tf`, add it to the App's installation too.
 - State: the unit sets no state path. It uses the `backend "local"` path in
   `versions.tf` (`~/.local/state/fleet-ops/cloudflare-tokens/terraform.tfstate`),
   the same file as a hand apply. The provider cache goes to
@@ -237,13 +337,18 @@ then keep working until their expiry date (at most 45 days after the last apply)
 ## Switch it off and delete it
 
 1. `tofu destroy` (same environment as apply). It deletes every Cloudflare token
-   this config made and every GitHub secret it wrote.
+   this config made and every GitHub secret it wrote, and it deletes the VPS
+   file `~/.config/cloudflare/deploy-ci.env` too, because that file is a
+   resource of this config (`local_sensitive_file.token`). Delete
+   `~/.config/cloudflare/vps-cidrs.tfvars` by hand.
 2. The workflows then read nothing (or fall back to the org secret). Recreate
    whichever secrets you still want by hand.
 3. Remove `infra/cloudflare-tokens/`, the renewal units in `systemd/`, the
    `cloudflare-tokens-tofu` job and the tofu stub step in
-   `.github/workflows/ci.yml`, the OpenTofu tasks in `ansible/host.yml`, and the
-   state line in `config/restic/include.txt`.
+   `.github/workflows/ci.yml`, the OpenTofu tasks in `ansible/host.yml` (in the
+   same step: destroy deletes `deploy-ci.env`, so a `grafana_secrets` entry left
+   pointing at it fails the next host-config run), and the state line in
+   `config/restic/include.txt`.
 4. Delete `~/.local/state/fleet-ops/cloudflare-tokens/` and
    `~/.config/cloudflare/token-minter.env`, and revoke the minter token in the
    Cloudflare dashboard.

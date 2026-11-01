@@ -1,0 +1,14 @@
+{
+  "extraKnownMarketplaces": {
+    "inbox": {
+      "source": {
+        "source": "github",
+        "repo": "petekp/inbox",
+        "ref": "v0.2.14"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "inbox@inbox": true
+  }
+}

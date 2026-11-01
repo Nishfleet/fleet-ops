@@ -1,0 +1,939 @@
+{
+  "question": "needs_judgment (agent.yml Gate, typed choice judgment|mechanical): which MiniMax variant answers the Gate best on the shipped held-out cases",
+  "cases_file": "tests/evals/cases/needs_judgment.json",
+  "source": "tests/evals/cases/needs_judgment.json (unchanged): 60 0509 issues labelled agent-ready, labelled by the judge group (openai/qwen3.8-max, a non-Claude family), split test",
+  "split_use": "this decision spends the split: choosing between the two MiniMax variants on these 60 cases means they are no longer a clean held-out set for a later change to either MiniMax row. A later change to those rows needs cases written and labelled after 2026-10-20.",
+  "decision": "no router weight for the added id. The provider list grew one id on 2026-10-20, and a row for it would need Nish's yes first: the approved-models list at the top of config/litellm-proxy.yaml names MiniMax: M3.1-Flash-Preview only (2026-09-28). The eval was run to see whether there was a case for asking, and there is not: on the Gate's own 60 held-out cases, one read per case, the two ids are not measurably different (routing agreement 47/60 against 50/60, choice matching the label 46/60 against 49/60; the 3-case gaps are 9 and 7 discordant pairs, McNemar exact p 0.51 and 0.45, sampling noise at this n), and the added id is ahead on one band only (5 mechanical cases banded to the Claude lane against 6). So no row and no setting in config/litellm-proxy.yaml changes: the four MiniMax rows are exactly as they were, and the only change to that file is a comment pointing here.",
+  "case_record": "tests/evals/cases/needs_judgment.json is the case set and is unchanged by this PR. The rows scored here are held once, in this file, so nothing can drift between two copies; a worker that enumerates tests/evals/cases/ finds case sets only.",
+  "labeller": {
+    "group": "judge",
+    "served_model": "openai/qwen3.8-max",
+    "router_row": "alibaba-qwen38max-judge",
+    "calls": 0,
+    "note": "no new labels: the builder scored the already-labelled cases, so the family that wrote the labels neither wrote nor graded anything here. The builder is Claude; the labels and the held-out split predate it. The builder ran the score, but it graded a MiniMax family's answers against labels a third family wrote: no Claude output is graded and no Claude labels are read as ground truth for it"
+  },
+  "scorer": {
+    "endpoint": "POST https://api.minimax.io/anthropic/v1/messages (the provider's own anthropic-compatible path, key from the seat file through a 0600 header file, never argv)",
+    "served_model": [
+      "MiniMax-M3.1-Flash-Preview (the id the router serves today; sent bare on the direct call, the anthropic/ prefix on the router rows is LiteLLM notation)",
+      "MiniMax-M3.1-Flash (the id the provider list added 2026-10-20, sent bare on the direct call)"
+    ],
+    "calls": "120 scored (60 cases x 2 variants, one read each); the discarded 256-token pass was another 120 on the same flat plan",
+    "repeats": 1,
+    "request": "the /jev typed-choice schema the Gate itself sends cannot cross a provider's anthropic path (that path takes plain messages), so the request was a plain messages call carrying the Gate's own question and choice criteria from agent.yml's judgment_p, verbatim, over title + the first 6000 chars of body, identical for both variants. The head-to-head between the two variants is valid on that shape; the absolute numbers are one harness's shape and are not comparable to the Gate's real Jev routing",
+    "reading": "choice and probability parsed from the reply text; a case with no JSON gets no band and is counted as middle (the free lane), the way a Jev error routes"
+  },
+  "tuning": "none on either side: the question, the criteria and the case labels are the shipped ones, and neither variant's prompt was tuned. max_tokens was raised from 256 to 1024 after a first pass because both variants emit a thinking block first and 256 truncated it before any JSON text arrived; that was a harness artefact on both sides, so both variants were rescored at the same value. The discarded 256-token pass cost another 120 reads on the same flat plan and is disclosed here rather than dropped.",
+  "bands": {
+    "claude": "p(judgment) >= 0.9",
+    "free": "p(judgment) <= 0.1",
+    "middle": "otherwise (routes to the free lanes)"
+  },
+  "probe": {
+    "endpoint": "POST https://api.minimax.io/anthropic/v1/messages, the provider's own anthropic-compatible path",
+    "model_sent": "MiniMax-M3.1-Flash (the bare id, the way the provider's anthropic path takes it; the anthropic/ prefix on the router rows is LiteLLM notation and is not part of the call)",
+    "model_reported_by_provider": "MiniMax-M3.1-Flash (verbatim from the reply's model field; re-checked 2026-10-25: HTTP 200, model MiniMax-M3.1-Flash, stop_reason end_turn, base_resp.status_code 0)",
+    "http_status": 200,
+    "listing_status": {
+      "GET /anthropic/v1/models": 200,
+      "GET /v1/models": 200
+    },
+    "result": "stop_reason end_turn, base_resp.status_code 0, one short answer",
+    "billing": "config/provider-watch.json records this seat as billing flat, so the one read, the 120 scored reads and the 120 discarded first-pass reads (see tuning) sit inside the plan (config/paid-plans.json lists it as a subscription) and add no per-token spend"
+  },
+  "summary": {
+    "MiniMax-M3.1-Flash-Preview": {
+      "n": 60,
+      "parsed": 59,
+      "err": 1,
+      "agree": 49,
+      "routing": 50,
+      "claude_n": 34,
+      "claude_ok": 28,
+      "sent_to_claude": 6,
+      "free_n": 21,
+      "free_ok": 20,
+      "middle": 5,
+      "middle_mech": 2
+    },
+    "MiniMax-M3.1-Flash": {
+      "n": 60,
+      "parsed": 58,
+      "err": 2,
+      "agree": 46,
+      "routing": 47,
+      "claude_n": 29,
+      "claude_ok": 24,
+      "sent_to_claude": 5,
+      "free_n": 22,
+      "free_ok": 18,
+      "middle": 9,
+      "middle_mech": 5
+    }
+  },
+  "head_to_head": {
+    "routing_agreement": {
+      "MiniMax-M3.1-Flash-Preview": "50/60",
+      "MiniMax-M3.1-Flash": "47/60"
+    },
+    "choice_matches_label": {
+      "MiniMax-M3.1-Flash-Preview": "49/60",
+      "MiniMax-M3.1-Flash": "46/60"
+    },
+    "mechanical_cases_sent_to_claude": {
+      "MiniMax-M3.1-Flash-Preview": 6,
+      "MiniMax-M3.1-Flash": 5
+    },
+    "read": "the two ids are not measurably different on the Gate's bands at n=60, one read per case: the served id is ahead 50/60 to 47/60 on routing agreement and 49/60 to 46/60 on choice matching the label (9 and 7 discordant pairs, McNemar exact p 0.51 and 0.45 — sampling noise), and the added id is ahead on one band only (5 mechanical cases banded to the Claude lane against 6). The eval gives no case for adding a row; the approved-models list is the binding reason none was added"
+  },
+  "legend": "n = the 60 held-out cases; parsed = replies whose choice text arrived (err = the rest, parse_fail true, banded middle); agree = choice matches the label; routing = the lane the band routes to (the claude band, else the free lanes) matches the lane the label implies (judgment, else the free lanes); claude_n / free_n = cases in that band; claude_ok / free_ok = in-band cases whose choice matches the label; sent_to_claude = mechanical-labelled cases banded claude, i.e. the mechanical cases the Claude lane would have taken; middle = middle-band cases; middle_mech = mechanical-labelled cases in the middle band",
+  "rows": {
+    "MiniMax-M3.1-Flash-Preview": [
+      {
+        "id": "0509#1258",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#1420",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.95,
+        "band": "claude"
+      },
+      {
+        "id": "0509#1432",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.98,
+        "band": "claude"
+      },
+      {
+        "id": "0509#1728",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#1894",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#2025",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.97,
+        "band": "claude"
+      },
+      {
+        "id": "0509#2112",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.94,
+        "band": "claude"
+      },
+      {
+        "id": "0509#2116",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.06,
+        "band": "free"
+      },
+      {
+        "id": "0509#2140",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.96,
+        "band": "claude"
+      },
+      {
+        "id": "0509#2181",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#2293",
+        "label": "judgment",
+        "choice": null,
+        "parse_fail": true,
+        "p_judgment": null,
+        "band": "middle"
+      },
+      {
+        "id": "0509#2306",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#2325",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.02,
+        "band": "free"
+      },
+      {
+        "id": "0509#2358",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.02,
+        "band": "free"
+      },
+      {
+        "id": "0509#2400",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#2424",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#2516",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#2837",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.03,
+        "band": "free"
+      },
+      {
+        "id": "0509#3018",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3146",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3412",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.86,
+        "band": "middle"
+      },
+      {
+        "id": "0509#3613",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.9,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3617",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.9,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3621",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3678",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#3681",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3750",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#3753",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3782",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3982",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3986",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.98,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4022",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.98,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4244",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4272",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4290",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4313",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4332",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.82,
+        "band": "middle"
+      },
+      {
+        "id": "0509#4418",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.02,
+        "band": "free"
+      },
+      {
+        "id": "0509#4422",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#4435",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.94,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4482",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.78,
+        "band": "middle"
+      },
+      {
+        "id": "0509#4521",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#4954",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.98,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5114",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.96,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5164",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.94,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5234",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.02,
+        "band": "free"
+      },
+      {
+        "id": "0509#5432",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#5621",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5625",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5667",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5755",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5803",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.02,
+        "band": "free"
+      },
+      {
+        "id": "0509#5886",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#5918",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5943",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.02,
+        "band": "free"
+      },
+      {
+        "id": "0509#6138",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.04,
+        "band": "free"
+      },
+      {
+        "id": "0509#7024",
+        "label": "judgment",
+        "choice": "mechanical",
+        "p_judgment": 0.13,
+        "band": "middle"
+      },
+      {
+        "id": "0509#7067",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#914",
+        "label": "judgment",
+        "choice": "mechanical",
+        "p_judgment": 0.07,
+        "band": "free"
+      },
+      {
+        "id": "0509#948",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      }
+    ],
+    "MiniMax-M3.1-Flash": [
+      {
+        "id": "0509#1258",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#1420",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.88,
+        "band": "middle"
+      },
+      {
+        "id": "0509#1432",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.97,
+        "band": "claude"
+      },
+      {
+        "id": "0509#1728",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#1894",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#2025",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.84,
+        "band": "middle"
+      },
+      {
+        "id": "0509#2112",
+        "label": "judgment",
+        "choice": "mechanical",
+        "p_judgment": 0.1,
+        "band": "free"
+      },
+      {
+        "id": "0509#2116",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.84,
+        "band": "middle"
+      },
+      {
+        "id": "0509#2140",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.88,
+        "band": "middle"
+      },
+      {
+        "id": "0509#2181",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.97,
+        "band": "claude"
+      },
+      {
+        "id": "0509#2293",
+        "label": "judgment",
+        "choice": "mechanical",
+        "p_judgment": 0.14,
+        "band": "middle"
+      },
+      {
+        "id": "0509#2306",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.02,
+        "band": "free"
+      },
+      {
+        "id": "0509#2325",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.03,
+        "band": "free"
+      },
+      {
+        "id": "0509#2358",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.03,
+        "band": "free"
+      },
+      {
+        "id": "0509#2400",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.03,
+        "band": "free"
+      },
+      {
+        "id": "0509#2424",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.03,
+        "band": "free"
+      },
+      {
+        "id": "0509#2516",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.02,
+        "band": "free"
+      },
+      {
+        "id": "0509#2837",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.14,
+        "band": "middle"
+      },
+      {
+        "id": "0509#3018",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3146",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.98,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3412",
+        "label": "judgment",
+        "choice": "mechanical",
+        "p_judgment": 0.06,
+        "band": "free"
+      },
+      {
+        "id": "0509#3613",
+        "label": "judgment",
+        "choice": "mechanical",
+        "p_judgment": 0.09,
+        "band": "free"
+      },
+      {
+        "id": "0509#3617",
+        "label": "mechanical",
+        "choice": null,
+        "parse_fail": true,
+        "p_judgment": null,
+        "band": "middle"
+      },
+      {
+        "id": "0509#3621",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3678",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.02,
+        "band": "free"
+      },
+      {
+        "id": "0509#3681",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3750",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#3753",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3782",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3982",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#3986",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.95,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4022",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.97,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4244",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4272",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.98,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4290",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.98,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4313",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.97,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4332",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.94,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4418",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.96,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4422",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.02,
+        "band": "free"
+      },
+      {
+        "id": "0509#4435",
+        "label": "mechanical",
+        "choice": "judgment",
+        "p_judgment": 0.91,
+        "band": "claude"
+      },
+      {
+        "id": "0509#4482",
+        "label": "mechanical",
+        "choice": null,
+        "parse_fail": true,
+        "p_judgment": null,
+        "band": "middle"
+      },
+      {
+        "id": "0509#4521",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.04,
+        "band": "free"
+      },
+      {
+        "id": "0509#4954",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5114",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.94,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5164",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.02,
+        "band": "free"
+      },
+      {
+        "id": "0509#5234",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.06,
+        "band": "free"
+      },
+      {
+        "id": "0509#5432",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#5621",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5625",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5667",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.98,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5755",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5803",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.07,
+        "band": "free"
+      },
+      {
+        "id": "0509#5886",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.02,
+        "band": "free"
+      },
+      {
+        "id": "0509#5918",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.94,
+        "band": "claude"
+      },
+      {
+        "id": "0509#5943",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.01,
+        "band": "free"
+      },
+      {
+        "id": "0509#6138",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.09,
+        "band": "free"
+      },
+      {
+        "id": "0509#7024",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.88,
+        "band": "middle"
+      },
+      {
+        "id": "0509#7067",
+        "label": "mechanical",
+        "choice": "mechanical",
+        "p_judgment": 0.1,
+        "band": "free"
+      },
+      {
+        "id": "0509#914",
+        "label": "judgment",
+        "choice": "mechanical",
+        "p_judgment": 0.08,
+        "band": "free"
+      },
+      {
+        "id": "0509#948",
+        "label": "judgment",
+        "choice": "judgment",
+        "p_judgment": 0.99,
+        "band": "claude"
+      }
+    ]
+  }
+}

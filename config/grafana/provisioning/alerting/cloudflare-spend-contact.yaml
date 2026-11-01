@@ -25,7 +25,7 @@ contactPoints:
             template: |-
               {{- with index .Alerts 0 -}}
               {{- coll.Dict "title" (printf "cost alarm: %s %s" .Labels.alertname .Labels.resource)
-                     "body" (printf "%s.\n\nValue: %s. Threshold: %s. Top resource: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana cloudflare-spend rules, fleet-ops#9355. Find the leak, stop it, then close this issue." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.top .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
+                     "body" (printf "%s.\n\nValue: %s. Threshold: %s. Top resource: %s.\n\n%s\n\nRule `%s`, started firing %s UTC. Source: the Grafana cloudflare-spend rules, fleet-ops#9355. Find the leak, stop it, then close this issue." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.top .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05"))
                      "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
               {{- end -}}
   - orgId: 1
@@ -43,9 +43,30 @@ contactPoints:
           payload:
             template: |-
               {{- with index .Alerts 0 -}}
-              {{- coll.Dict "title" (printf "router dead row: %s" .Labels.model_id)
-                     "body" (printf "%s.\n\nValue: %s. Threshold: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana router-dead-row rule (config/grafana/provisioning/alerting/router-dead-row.yaml), fleet-ops#9312 class fix. Do not remove or bench the row without Nish's yes: open a needs-nish-decision issue with the evidence." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
+              {{- $$row := .Labels.model_id -}}
+              {{- if not $$row -}}{{- if .Labels.requested_model -}}{{- $$row = printf "%s (proxy-level)" .Labels.requested_model -}}{{- else -}}{{- $$row = "unnamed proxy request" -}}{{- end -}}{{- end -}}
+              {{- coll.Dict "title" (printf "router dead row: %s" $$row)
+                     "body" (printf "%s.\n\nValue: %s. Threshold: %s.\n\n%s\n\nRule `%s`, started firing %s UTC. Source: the Grafana router-dead-row rule (config/grafana/provisioning/alerting/router-dead-row.yaml), fleet-ops#9312 class fix. Do not remove or bench the row without Nish's yes: open a needs-nish-decision issue with the evidence." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05"))
                      "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
+              {{- end -}}
+  - orgId: 1
+    name: router-dead-key-dispatch
+    receivers:
+      - uid: router-dead-key-gh-issues
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $__file{/run/secrets/github-token/token}
+          maxAlerts: 1
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- coll.Dict "title" (printf "router dead key: %s parked on a 401" .Labels.model_id)
+                     "body" (printf "%s.\n\nValue: %s. Threshold: %s.\n\n%s\n\nRule `%s`, started firing %s UTC. Source: the Grafana router-dead-key rule (config/grafana/provisioning/alerting/router-dead-row.yaml), fleet-ops#9312 class fix, split out in fleet-ops#11081. Renew the provider key that backs this row, or approve taking its rows out of the router: a worker cannot renew a key, so this issue is filed needs-nish-decision and no worker run can close it." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05"))
+                     "labels" (coll.Slice "needs-nish-decision" "priority-now") | data.ToJSON -}}
               {{- end -}}
 
   - orgId: 1
@@ -64,8 +85,51 @@ contactPoints:
             template: |-
               {{- with index .Alerts 0 -}}
               {{- coll.Dict "title" (printf "grafana alert: %s" .Labels.alertname)
-                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, filed by the severity policy in cloudflare-spend-contact.yaml. A paid plan to cancel, a spend to accept or a row to remove is Nish's call: open a needs-nish-decision issue with the evidence instead of acting. Otherwise find the cause, fix it, then close this issue." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC. Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, filed by the severity policy in cloudflare-spend-contact.yaml. A paid plan to cancel, a spend to accept or a row to remove is Nish's call: open a needs-nish-decision issue with the evidence instead of acting. Otherwise find the cause, fix it, then close this issue." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
                      "labels" (coll.Slice "agent-ready") | data.ToJSON -}}
+              {{- end -}}
+
+  - orgId: 1
+    name: nish-ask-dispatch
+    receivers:
+      - uid: nish-ask-gh-issues
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $__file{/run/secrets/github-token/token}
+          maxAlerts: 1
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- coll.Dict "title" (printf "grafana alert: %s" .Labels.alertname)
+                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC. Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting. No worker can pick this one up: the board it names is private, and only the account owner can give the worker tokens read on it." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "labels" (coll.Slice "needs-nish-decision") | data.ToJSON -}}
+              {{- end -}}
+
+  - orgId: 1
+    name: prometheus-alert-dispatch
+    receivers:
+      - uid: prometheus-alert-gh-issues
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $__file{/run/secrets/github-token/token}
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- $$units := "" -}}
+              {{- range $$.Alerts -}}
+              {{- $$units = printf "%s- %s (started firing %s UTC)\n" $$units (or .Labels.name .Labels.instance) (.StartsAt.Format "2006-01-02 15:04:05") -}}
+              {{- end -}}
+              {{- coll.Dict "title" (printf "alert: %s" .Labels.prom_alertname)
+                     "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` is firing for %d instance(s):\n\n%s\nSource: the Grafana prometheus-alerts rule, fleet-ops#10300. One issue covers every instance of this alert name (fleet-ops#10327): fix the one cause behind them.\n\nFix the cause, prove the alert resolved, then close this issue. If the failed unit is on the polkit start list, re-run it with `systemctl start <unit>` once your fix is live, and show `Result=success`." .Annotations.summary .Annotations.description .Labels.prom_alertname (len $$.Alerts) $$units)
+                     "labels" (coll.Slice "agent-ready" "strong-only") | data.ToJSON -}}
               {{- end -}}
 
 
@@ -108,10 +172,29 @@ policies:
         object_matchers:
           - [signal, "=", router-dead-row]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: [alertname, model_id, requested_model]
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 12h
+      - receiver: router-dead-key-dispatch
+        object_matchers:
+          - [signal, "=", router-dead-key]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
         group_by: [alertname, model_id]
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
+      - receiver: prometheus-alert-dispatch
+        object_matchers:
+          - [signal, "=", prometheus]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: [prom_alertname]
+        group_wait: 30s
+        group_interval: 5m
+        # 24h, not 168h: a worker that closes the issue without fixing the cause
+        # must not silence the alert for 7 days (fleet-ops#10321). Cost: at most
+        # one strong-seat run per still-firing alert per day.
+        repeat_interval: 24h
       - receiver: fleet-alert-dispatch
         object_matchers:
           - [signal, "=", deploy-failed-24h]
@@ -132,6 +215,29 @@ policies:
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 7d
+      # A rule only the account owner can act on must not reach the worker queue.
+      # fleet-ops#10881: the ask rule reads the private Nishfleet/nish-vault board, and
+      # every worker token is minted with a body naming one repository
+      # (systemd/fleet-worker-github-token@.service), so a worker running a fleet-ops
+      # issue gets 404 there. The alert counted 40 open asks forever, and each firing
+      # filed an agent-ready issue that dispatched a worker which parked
+      # blocked-on: orchestrator: one worker run and one orchestrator run per day, with
+      # no ask reachable. Its issue goes to Nish instead, who can read the board and
+      # grant the read. DatasourceError and DatasourceNoData are excluded, so a read
+      # error on the ask rule still reaches the catch-all below and the fleet fixes the
+      # data source. This route is terminal, so an ask alert stops here. It re-files
+      # every 24h, the catch-all's cadence: a needs-nish-decision issue starts no
+      # worker run, so the plan route's weekly rule against re-filing the same
+      # decision does not apply, and the ask rule keeps the daily pressure its 4h
+      # no-slip guarantee needs.
+      - receiver: nish-ask-dispatch
+        object_matchers:
+          - [audience, "=", nish]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: ['...']
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 24h
       - receiver: fleet-alert-dispatch
         object_matchers:
           - [alertname, "=~", ".+"]

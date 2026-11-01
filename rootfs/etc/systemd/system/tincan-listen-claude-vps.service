@@ -1,7 +1,7 @@
 [Unit]
 Description=Agent Tincan wake for claude-vps, locked: no keys except Jev (Nish 2026-10-22)
-Wants=network-online.target
-After=network-online.target
+Wants=network-online.target user@1000.service
+After=network-online.target user@1000.service
 OnFailure=fleet-unit-failed@%N.service
 StartLimitIntervalSec=10min
 StartLimitBurst=5
@@ -39,7 +39,7 @@ ProtectHostname=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-InaccessiblePaths=/run/docker.sock /var/run/docker.sock /run/user -/srv/aiostreams
+InaccessiblePaths=/run/docker.sock /var/run/docker.sock -/run/user -/srv/aiostreams
 # Nothing outside the bind list is writable (the files its user owns under /var/lib and /srv are read-only).
 ProtectSystem=strict
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

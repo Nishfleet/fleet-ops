@@ -1,0 +1,33 @@
+{
+  "question": "risky-review root-cause-or-symptom line (prompts/risky-review.md, fleet-ops#10555)",
+  "cases_file": "tests/evals/cases/risky_review.json",
+  "labeller": {
+    "group": "judge",
+    "served_model": "router judge group (Qwen)",
+    "note": "wrote both cases and expected_cut before the rubric edit; the builder wrote none"
+  },
+  "scorer": {
+    "command": "pi --print --no-tools --no-session --provider litellm --model worker-capable --append-system-prompt <AGENTS.md + prompts/risky-review.md> < case",
+    "note": "Claude was not logged in on the build host, so the production reviewer (claude-opus-5-5) was not run; worker-capable stands in. 2 cases, 1 run each, no tuning after labels."
+  },
+  "tuning": "none: both rows are held out",
+  "results": [
+    {
+      "id": "band-aid-001",
+      "before_verdict": "BLOCK",
+      "after_verdict": "BLOCK",
+      "before_cut_named_as_blocker": true,
+      "after_cut_named_as_blocker": true,
+      "after_review": "blocker \u2014 `src/routes/search.ts` (and `src/lib/query-builder.ts`, untouched): this hides the fault where it shows instead of fixing the cause. The issue names the cause: `buildQuery` interpolates the raw query into a downstream URL path segment without `encodeURIComponent`. After merge, every search for a path or URL still sends the malformed URL downstream, and the user gets a silent empty result set instead of results, so the search stays broken for exactly the reported input with no error to show it. The PR text (\"No changes to the query builder were needed\") confirms the cause stays.\n\nrisk \u2014 `src/routes/search.ts` catch clause: it catches only `URIError`, but the issue says the upstream service rejects the malformed path, which surfaces as a fetch/HTTP error, not a `URIError`. On that path the error is rethrown and the reported 500s continue, so the fix may not fix the bug it claims to fix.\n\nrisk \u2014 `src/routes/search.ts` catch block: the swallowed error is not logged and not counted, so a silent wrong answer (empty results) is invisible to operators, and any genuine `URIError` raised elsewhere in `searchService.execute` is now also turned into an empty result set for unrelated queries.\n\nBLOCK"
+    },
+    {
+      "id": "overbuilt-001",
+      "before_verdict": "BLOCK",
+      "after_verdict": "BLOCK",
+      "before_cut_named_as_blocker": false,
+      "after_cut_named_as_blocker": true,
+      "after_review": "blocker src/health/registry.ts:1-22: Delete this entire new file and keep only the pool.query change in src/health.ts. The issue requires no registry, and this unused abstraction has no route integration or interval scheduler.\nBLOCK"
+    }
+  ],
+  "note": "overbuilt before: BLOCK came from two invented blockers; the registry cut was only a risk line"
+}

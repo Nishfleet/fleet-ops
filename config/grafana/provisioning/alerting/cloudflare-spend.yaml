@@ -42,8 +42,10 @@
 #   2026-09-28 sign-in e2e (5,976 a day, about 250/h) still fires in its first
 #   hour. Accepted blind spot: a leak under 100/h stays silent; bounded at
 #   2,400/day.
-#   R2: total Standard storage over 30 GB, or a bucket up 2 GB within 24h
-#   (last value minus the 24h low, so a prune followed by regrowth still counts).
+#   R2: total Standard storage over 30 GB, a bucket up 2 GB within 24h
+#   (last value minus the 24h low, so a prune followed by regrowth still counts),
+#   or the account total up more than 4 GB in 30 days (warning, so it files an
+#   issue and never pages).
 #
 # Floor on the median leg (fleet-ops, incident 2026-10-06): the rule is
 #   ($D > 3 x allowance) || ($D > 3 x median && $D > 1 x allowance)
@@ -178,11 +180,11 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: 'Workers AI used {{ $values.D.Value | printf "%.0f" }} neurons in the last hour'
-          description: 'It fires above {{ $values.G.Value | humanize }} neurons/h: the lower of the 10,000 neurons/h floor and the larger of 3 x the 7-day hourly median ({{ $values.C.Value | humanize }}) and the same floor. On 2026-10-02 this product burned 1,113,645 neurons in one day; the floor is the 2026-10-03 fix for the rule firing on 0509 judge traffic, which is designed paid usage.'
-          value: '{{ $values.D.Value | printf "%.0f" }} neurons in the last hour'
-          threshold: 'over {{ $values.G.Value | humanize }} neurons/h (the 10,000 neurons/h floor, or 3 x the 7-day hourly median above the same floor)'
-          top: '{{ $labels.resource }}'
+          summary: 'Workers AI used {{ with index $values "D" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} neurons in the last hour'
+          description: 'It fires above {{ with index $values "G" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} neurons/h: the lower of the 10,000 neurons/h floor and the larger of 3 x the 7-day hourly median ({{ with index $values "C" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}) and the same floor. On 2026-10-02 this product burned 1,113,645 neurons in one day; the floor is the 2026-10-03 fix for the rule firing on 0509 judge traffic, which is designed paid usage.'
+          value: '{{ with index $values "D" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} neurons in the last hour'
+          threshold: 'over {{ with index $values "G" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} neurons/h (the 10,000 neurons/h floor, or 3 x the 7-day hourly median above the same floor)'
+          top: '{{ with $labels.resource }}{{ . }}{{ else }}unknown resource{{ end }}'
         labels: {severity: critical, signal: cloudflare-spend, product: workers-ai}
         isPaused: false
       - uid: cf-d1-rows-read
@@ -260,11 +262,11 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: 'D1 read {{ $values.D.Value | printf "%.0f" }} rows in the last hour'
-          description: 'It fires above {{ $values.G.Value | humanize }} rows/h: the lower of 3 x the allowance (102,739,725 rows/h, 3 x the pro-rated 25B/month allowance) and the larger of 3 x the 7-day hourly median ({{ $values.C.Value | humanize }}) and the 1x allowance floor (34246575).'
-          value: '{{ $values.D.Value | printf "%.0f" }} rows read in the last hour'
-          threshold: 'over {{ $values.G.Value | humanize }} rows/h (3 x allowance, or 3 x the 7-day hourly median above the 1x allowance floor of 34246575)'
-          top: 'D1 database {{ $labels.resource }}'
+          summary: 'D1 read {{ with index $values "D" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} rows in the last hour'
+          description: 'It fires above {{ with index $values "G" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} rows/h: the lower of 3 x the allowance (102,739,725 rows/h, 3 x the pro-rated 25B/month allowance) and the larger of 3 x the 7-day hourly median ({{ with index $values "C" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}) and the 1x allowance floor (34246575).'
+          value: '{{ with index $values "D" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} rows read in the last hour'
+          threshold: 'over {{ with index $values "G" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} rows/h (3 x allowance, or 3 x the 7-day hourly median above the 1x allowance floor of 34246575)'
+          top: 'D1 database {{ with $labels.resource }}{{ . }}{{ else }}unknown resource{{ end }}'
         labels: {severity: critical, signal: cloudflare-spend, product: d1-rows-read}
         isPaused: false
       - uid: cf-email-sends
@@ -342,11 +344,11 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: 'Cloudflare sent {{ $values.D.Value | printf "%.0f" }} emails in the last hour'
-          description: 'It fires above {{ $values.G.Value | humanize }} emails/h: the lower of the 100 emails/h floor and the larger of 3 x the 7-day hourly median ({{ $values.C.Value | humanize }}) and the same floor. The floor sits above the weekly production e2e suite (about 54 to 75 sign-in emails in one hour, 0509 e2e-scheduled, Sundays 07:40 UTC cron, fleet-ops#9591). The 2026-09-28 sign-in e2e sent about 5,976 emails in a day.'
-          value: '{{ $values.D.Value | printf "%.0f" }} emails in the last hour'
-          threshold: 'over {{ $values.G.Value | humanize }} emails/h (100/h floor, or 3 x the 7-day hourly median above it)'
-          top: 'sending domain {{ $labels.resource }}'
+          summary: 'Cloudflare sent {{ with index $values "D" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} emails in the last hour'
+          description: 'It fires above {{ with index $values "G" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} emails/h: the lower of the 100 emails/h floor and the larger of 3 x the 7-day hourly median ({{ with index $values "C" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}) and the same floor. The floor sits above the weekly production e2e suite (about 54 to 75 sign-in emails in one hour, 0509 e2e-scheduled, Sundays 07:40 UTC cron, fleet-ops#9591). The 2026-09-28 sign-in e2e sent about 5,976 emails in a day.'
+          value: '{{ with index $values "D" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} emails in the last hour'
+          threshold: 'over {{ with index $values "G" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} emails/h (100/h floor, or 3 x the 7-day hourly median above it)'
+          top: 'sending domain {{ with $labels.resource }}{{ . }}{{ else }}unknown resource{{ end }}'
         labels: {severity: critical, signal: cloudflare-spend, product: email-sends}
         isPaused: false
       - uid: cf-r2-standard-total
@@ -399,11 +401,11 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: 'R2 Standard storage is {{ $values.D.Value | humanize }}B'
+          summary: 'R2 Standard storage is {{ with index $values "D" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}B'
           description: 'Total R2 Standard storage is over 30 GB (27.9 GiB). Measured 2026-10-21: the restic live repository and its 30-day-locked copy held about 10 GB each, because the retention policy grouped snapshots by path set and old groups never aged out. With restic forget --group-by host,tags the live repository settles near 3 GiB; the locked copy drains to about the same by 2026-11-21, when the last object under the 30-day lock expires and rclone sync --min-age 31d reclaims it. The 0509-snapshots pair ramps to about 12.5 GiB over a year under its 365-day lifecycle rules (0509#5950). The line sits above the total today (about 23 GB) plus the repack the first prune writes into the locked copy, so it does not page for the drain. Tighten it again once the locked copy has drained. cf-r2-bucket-growth stays the fast per-bucket detector at 2 GB in 24 hours, so a slow leak spread across buckets pages here.'
-          value: '{{ $values.D.Value | humanize }}B Standard in total'
+          value: '{{ with index $values "D" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}B Standard in total'
           threshold: 'over 30 GB (30000000000 bytes) Standard in total'
-          top: 'bucket {{ $labels.resource }}'
+          top: 'bucket {{ with $labels.resource }}{{ . }}{{ else }}unknown resource{{ end }}'
         labels: {severity: critical, signal: cloudflare-spend, product: r2-storage}
         isPaused: false
       - uid: cf-r2-bucket-growth
@@ -461,12 +463,107 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: 'R2 bucket {{ $labels.resource }} grew {{ $values.E.Value | humanize }}B in 24 hours'
+          summary: 'R2 bucket {{ with $labels.resource }}{{ . }}{{ else }}unknown resource{{ end }} grew {{ with index $values "E" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}B in 24 hours'
           description: 'A bucket grew by more than 2 GB against its size 24 hours ago. 0509-landing-page-artifacts grew about 36 GB over 2026-09-22 to 2026-10-07 and the restic repo went from 3 GB to 24 GB.'
-          value: '{{ $values.E.Value | humanize }}B in 24 hours'
+          value: '{{ with index $values "E" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}B in 24 hours'
           threshold: 'over 2 GB growth in 24 hours'
-          top: 'bucket {{ $labels.resource }}'
+          top: 'bucket {{ with $labels.resource }}{{ . }}{{ else }}unknown resource{{ end }}'
         labels: {severity: critical, signal: cloudflare-spend, product: r2-storage}
+        isPaused: false
+      # The middle tier (fleet-ops#9825). A leak that adds under 2 GB a day to
+      # each of several buckets is invisible to cf-r2-bucket-growth, which
+      # compares one bucket against itself, and the total page fires only once
+      # the account crosses 30 GB. This compares the account total against the
+      # same hour 30 days ago, so a spread or trickling leak shows up as growth
+      # whatever any single bucket does. Query B is the hour ending 30 days
+      # back, the same shape as cf-r2-bucket-growth's 24-hour-back B.
+      # Query R joins the account growth to the top-bucket row, because a
+      # scalar frame carries no labels and the top annotation needs one.
+      # G is the line the rule really uses: its $B > 0 leg guards the
+      # baseline, so a 30-day-back window with no rows, which the Infinity
+      # backend reads as a total of zero, cannot turn the whole account into
+      # 30 days of growth. for: 0s, as every rule in this file: the group
+      # runs hourly and the comparison is two 1-hour snapshots 30 days apart,
+      # so a one-hour spike in A is at most a one-hour alert.
+      # Accepted blind spot: a planned bulk write raises the total for good,
+      # so a restore or a re-upload of more than 4 GB files an issue on every
+      # evaluation until the 30-day-old baseline catches up, up to a month.
+      # Severity warning, not critical: cloudflare-spend-contact.yaml sends
+      # only critical to hermes-urgent, so this rule files a fleet-ops issue
+      # and never pages. tests/alert_routes_check.py holds that: a rule outside
+      # its URGENT list must be warning.
+      - uid: cf-r2-total-growth
+        title: Cloudflare R2 Standard storage 30-day growth
+        condition: F
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: A
+              root_selector: '$map([data.viewer.accounts[0]], function($a){{"total": $sum($a.r2StorageAdaptiveGroups.max.payloadSize)}})'
+              columns: [{selector: total, text: value, type: number}]
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    r2StorageAdaptiveGroups(limit: 10000, filter: {storageClass: "Standard", datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { bucketName } max { payloadSize } }
+                  } } }
+          - refId: B
+            relativeTimeRange: {from: 2595600, to: 2592000}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: B
+              root_selector: '$map([data.viewer.accounts[0]], function($a){{"total": $sum($a.r2StorageAdaptiveGroups.max.payloadSize)}})'
+              columns: [{selector: total, text: value, type: number}]
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    r2StorageAdaptiveGroups(limit: 10000, filter: {storageClass: "Standard", datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { bucketName } max { payloadSize } }
+                  } } }
+          - refId: T
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: T
+              root_selector: data.viewer.accounts[0].r2StorageAdaptiveGroups
+              columns:
+                - {selector: dimensions.bucketName, text: resource, type: string}
+                - {selector: max.payloadSize, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    r2StorageAdaptiveGroups(limit: 1, orderBy: [max_payloadSize_DESC], filter: {storageClass: "Standard", datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { bucketName } max { payloadSize } }
+                  } } }
+          - refId: E
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: E, expression: $A - $B}
+          - {refId: G, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: G, expression: '($B > 0) && ($E > 4000000000)'}}
+          - refId: R
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $G}
+          - {refId: F, datasourceUid: __expr__, model: {<<: *cf-threshold}}
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'R2 Standard storage grew {{ with index $values "E" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}B in 30 days'
+          description: 'The account total grew by more than 4 GB against the same hour 30 days ago. It is the middle tier between cf-r2-bucket-growth, which compares one bucket against itself 24 hours ago and so misses a leak that adds under 2 GB a day to each of several buckets, and cf-r2-standard-total, which pages at 30 GB. Measured 2026-10-21 (fleet-ops#9943): the account holds about 23 GB, the restic live repository and its 30-day-locked copy held about 10 GB each before the retention prune, whose kept set is about 1.5 GiB, and the 0509-snapshots pair ramps to about 12.5 GiB over a year under its 365-day lifecycle rules (0509#5950), which is about 1 GB a month. The line sits about 4x above that designed ramp, and the drain of the locked copy to 2026-11-21 shrinks the total, so neither the designed growth nor the drain fires it. Severity warning: it files a fleet-ops issue through the cloudflare-spend contact point and never reaches hermes-urgent. top names the largest bucket today, not the bucket that grew, because the query compares account totals.'
+          value: '{{ with index $values "E" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}B growth in 30 days'
+          threshold: 'over 4 GB (4000000000 bytes) growth in 30 days'
+          top: 'bucket {{ with $labels.resource }}{{ . }}{{ else }}unknown resource{{ end }}'
+        labels: {severity: warning, signal: cloudflare-spend, product: r2-storage}
         isPaused: false
 
   # D1 write spike (Nish, 2026-10-15). A flat line, not the 3x scheme above: on
@@ -540,10 +637,10 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: 'D1 wrote {{ $values.D.Value | printf "%.0f" }} rows in the last 60 minutes (line: 50,000)'
-          description: 'Top database writing: {{ $labels.resource }}. Normal peaks are up to ~27,000 rows/h; the 2026-09-14..19 restore drills wrote 331k to 426k rows/h.'
-          value: '{{ $values.D.Value | printf "%.0f" }} rows written in the last 60 minutes'
+          summary: 'D1 wrote {{ with index $values "D" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} rows in the last 60 minutes (line: 50,000)'
+          description: 'Top database writing: {{ with $labels.resource }}{{ . }}{{ else }}unknown resource{{ end }}. Normal peaks are up to ~27,000 rows/h; the 2026-09-14..19 restore drills wrote 331k to 426k rows/h.'
+          value: '{{ with index $values "D" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} rows written in the last 60 minutes'
           threshold: 'over 50,000 rows in the last 60 minutes'
-          top: 'D1 database {{ $labels.resource }}'
+          top: 'D1 database {{ with $labels.resource }}{{ . }}{{ else }}unknown resource{{ end }}'
         labels: {severity: critical, signal: cloudflare-spend, product: d1-rows-written}
         isPaused: false

@@ -9,8 +9,8 @@ Description=Mint the short-lived GitHub App token Grafana's alert webhook sends 
 # read `$__file{/run/secrets/github-token/token}`, which Grafana expands each
 # time provisioning loads, and this oneshot (fired every 20 min by
 # fleet-grafana-github-token.timer) writes a fresh token there and makes Grafana
-# reload. The reload is the stock admin API call that
-# fleet-grafana-provisioning.service already makes.
+# reload it when the loaded token has run down. The reload is the stock admin API
+# call that fleet-grafana-provisioning.service already makes.
 #
 # The token is minted from the nishfleet-worker App key that fleet-grafana
 # already mounts, scoped by the request body to issues:write on this one repo
@@ -60,5 +60,29 @@ ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
   echo "minted a GitHub App token for Nishfleet/fleet-ops issues:write, valid one hour"'
 # Grafana picks the new file up on a provisioning reload. The service skips
 # itself when Grafana is stopped (a starting Grafana reads the file anyway).
-ExecStartPost=/usr/bin/systemctl --user start fleet-grafana-provisioning.service
+#
+# The reload is now the guard below, not an unconditional start. Grafana drops
+# an in-flight dispatch when the reload applies a new configuration, and all
+# three observed one-off notifications failures align with an apply or restart
+# (fleet-ops#11426: 13:15:56Z apply and the 21:26Z restart, 2026-10-29;
+# fleet-ops#11441: the 14:37:27Z apply from this very mint, 2026-10-31). The
+# mint fired the reload three times per token hour, so the guard reloads only
+# when the token loaded into Grafana (`$__file{}` is frozen at load) has run
+# down to one mint interval remaining, which keeps the timer's own failure
+# slack: a healthy cadence reloads at every second mint instead of every mint.
+# When a mint fails, the next succeeding mint can hold the loaded token until
+# its last minute before the reload lands, so a few sends can still go out on
+# a token that just expired — the same at most one mint interval a failed
+# mint already accepts, which the delivery rule pages through. The mint time
+# of the loaded token is the mtime of the token file at the reload, so the
+# ledger below holds it; a missing, empty or non-numeric ledger, as after a
+# boot, means reload. A reload whose ledger write fails (say, the tmpfs is
+# gone mid-run) reloads again at the next mint: an extra reload costs one
+# more in-flight dispatch, never a lost delivery.
+#
+# The `-` prefix: the token is minted and the file is in place, and a reload
+# that cannot get through pages through the reload unit's own OnFailure=, so
+# failing the mint with it only adds a second failed unit. On 2026-10-29 the
+# reload failed for 2.5 h and this unit failed four times with it.
+ExecStartPost=-/bin/bash -c 'set -euo pipefail; l="$$RUNTIME_DIRECTORY/provisioned-token-mint"; m="$$(stat -c %%Y "$$RUNTIME_DIRECTORY/token" 2>/dev/null || echo 0)"; loaded="$$(cat "$$l" 2>/dev/null || echo 0)"; case "$$loaded" in ""|*[!0-9]*) loaded=0;; esac; now=$$(date +%%s); if test "$$loaded" -le "$$(($$now - 2400))"; then /usr/bin/systemctl --user start fleet-grafana-provisioning.service && echo "$$m" > "$$l"; fi'
 TimeoutStartSec=300

@@ -19,6 +19,12 @@ Description=Fleet view (Grafana, Quadlet)
 # the directory it fills must exist before the container mounts it.
 Wants=fleet-grafana-github-token.service
 After=fleet-grafana-github-token.service
+# A crash loop must reach `failed`, which only the user-manager failed list
+# (`systemctl --user list-units --state=failed`) reads: no OnFailure= hook, and
+# the node_systemd_unit_state gauge reads system units only. The default 5
+# starts in 10 s is never spent at RestartSec=5s (fleet-ops#10253).
+StartLimitIntervalSec=10min
+StartLimitBurst=5
 
 [Container]
 # Pinned to the digest of the 13.2.3 manifest list; the tag stays as a readable label, but the
@@ -56,6 +62,9 @@ Volume=%t/fleet-grafana-github-token:/run/secrets/github-token:ro
 Secret=grafana-telegram-bot-token,type=mount,target=/run/secrets/grafana-telegram-bot-token,uid=472,mode=0400
 Secret=grafana-telegram-home-channel,type=mount,target=/run/secrets/grafana-telegram-home-channel,uid=472,mode=0400
 Secret=grafana-cloudflare-api-token,type=mount,target=/run/secrets/grafana-cloudflare-api-token,uid=472,mode=0400
+# The SELECT-only grafana_ro login for the session-hop Postgres data source
+# (fleet-ops#9475); not the router's read-write litellm login.
+Secret=grafana-postgres-password,type=mount,target=/run/secrets/grafana-postgres-password,uid=472,mode=0400
 Environment=GF_SERVER_HTTP_ADDR=127.0.0.1
 Environment=GF_SERVER_HTTP_PORT=3001
 Environment=GF_SERVER_ROOT_URL=https://netcup-rs2000.tailc0f05f.ts.net:8443/
@@ -70,6 +79,12 @@ Environment=GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
 Environment=GF_NEWS_NEWS_FEED_ENABLED=false
 Environment=GF_PLUGINS_PREINSTALL_SYNC=grafana-github-datasource@2.9.2,yesoreyeram-infinity-datasource@4.1.1
 Environment=GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/fleet.json
+# Grafana cancels a datasource fetch at its evaluation timeout, and the 30s default is too
+# short for the alert rules that read GitHub: GitHub caps a workflow-run list at 1,000 rows, so
+# the stock plugin pages 10 requests and today's reads took 26.2s at the median (max 30.0s, 63
+# cancelled at exactly 30.000s, fleet-ops#10913). 45s is above that read and below the 1m
+# interval of the shortest rule group, so a hung datasource cannot overlap the next tick.
+Environment=GF_UNIFIED_ALERTING_EVALUATION_TIMEOUT=45s
 
 [Service]
 # The token directory and file must exist before the container mounts them and

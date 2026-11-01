@@ -32,3 +32,21 @@ variable "vps_cidrs" {
   type        = list(string)
   default     = []
 }
+
+variable "github_app_id" {
+  description = "The nishfleet-secrets GitHub App, which writes the repo secrets (Secrets and Environments write only)."
+  type        = string
+  default     = "5509997"
+}
+
+variable "github_app_installation_id" {
+  description = "Its installation on the org, limited to the repos in main.tf."
+  type        = string
+  default     = "176168389"
+}
+
+variable "github_app_pem" {
+  description = "The App's private key contents. Set as TF_VAR_github_app_pem by the unit; never in a file in the repo."
+  type        = string
+  sensitive   = true
+}

@@ -98,6 +98,7 @@ def issue(title="Fix the footer link colour", body="The footer link is grey on g
         ("Tidy", "Clean up the staging accounts", ["needs-triage"], "customer-data deletion"),
         ("Tidy", "x", ["needs-triage", "blocked-on: nish-decision"], "a reserved label"),
         ("Tidy", "x", ["needs-triage", "nish-reserved"], "a reserved label"),
+        ("Tidy", "x", ["needs-triage", "needs-nish-decision"], "a reserved label"),
         ("Tidy", "Add the DB password to .env", ["needs-triage"], "secrets"),
         ("Tidy", "x", ["needs-triage", "payments"], "money or payments"),
         ("Remove the unused avatar", "Delete the old png", ["needs-triage"], ""),
@@ -232,6 +233,22 @@ def test_untrusted_labeller_is_skipped(tmp_path):
 def test_bot_labeller_never_admits(tmp_path, actor):
     r, w, calls = _run(tmp_path, actor=actor, resp=_answer(0.99))
     assert r.returncode == 0 and w == "" and calls == 0
+
+
+@pytest.mark.parametrize("events", [
+    [{"event": "labeled", "label": {"name": "needs-triage"}, "actor": {"login": ""}, "created_at": "2026-10-10T10:00:00Z"}],
+    [{"event": "labeled", "label": {"name": "needs-triage"}, "actor": None, "created_at": "2026-10-10T10:00:00Z"}],
+])
+def test_empty_actor_is_never_trusted(tmp_path, events):
+    r, w, calls = _run(tmp_path, events=events, resp=_answer(0.99))
+    assert r.returncode == 0 and w == "" and calls == 0
+    assert "not applied by a trusted login" in r.stdout
+
+
+def test_empty_author_is_never_trusted(tmp_path):
+    r, w, calls = _run(tmp_path, iss=issue(author=""), resp=_answer(0.99))
+    assert r.returncode == 0 and w == "" and calls == 0
+    assert "untrusted login" in r.stdout
 
 
 def test_strangers_issue_is_skipped(tmp_path):

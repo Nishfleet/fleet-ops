@@ -60,9 +60,9 @@ tests:
     eval_time: 100m
     exp_alerts: []
   input_series:
-  - series: litellm_input_tokens_metric_total{requested_model="senior",model_id="synthetic-glm53flash-senior"}
+  - series: litellm_input_tokens_metric_total{requested_model="judge",model_id="alibaba-qwen38max-judge"}
     values: 0+1200x20
-  - series: litellm_input_cached_tokens_metric_total{requested_model="senior",model_id="synthetic-glm53flash-senior"}
+  - series: litellm_input_cached_tokens_metric_total{requested_model="judge",model_id="alibaba-qwen38max-judge"}
     values: 0+60000x3 240000x17
   interval: 5m
 # 4. A broken lane beside a healthy one fires for the broken one only, so the
@@ -173,9 +173,9 @@ tests:
     values: 0+6000000x20
   - series: litellm_input_cached_tokens_metric_total{requested_model="worker-cheap",model_id="opencodego2-ds41flash-worker-cheap"}
     values: 0+300000x3 900000x17
-  - series: litellm_input_tokens_metric_total{requested_model="senior",model_id="synthetic-glm53flash-senior"}
+  - series: litellm_input_tokens_metric_total{requested_model="judge",model_id="alibaba-qwen38max-judge"}
     values: 0+1200x20
-  - series: litellm_input_cached_tokens_metric_total{requested_model="senior",model_id="synthetic-glm53flash-senior"}
+  - series: litellm_input_cached_tokens_metric_total{requested_model="judge",model_id="alibaba-qwen38max-judge"}
     values: 0+60000x3 240000x17
   interval: 5m
 - promql_expr_test:

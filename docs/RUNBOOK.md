@@ -23,6 +23,130 @@ rail are in `README.md`; design and enforced rules are in
    gauge per deployment (0 healthy, 1 partial, 2 outage).
 5. `uptime` for load; merged-PR counts per repo for throughput.
 
+## The failed-unit check and leftover ad-hoc units
+
+`ansible/update.yml` fails the daily update when `systemctl list-units
+--state=failed` is not empty, for system units and for nish's user units. The
+check is strict and stays strict: a failed unit fails the run, whatever it is
+and whenever it stopped. Nothing is tolerated and nothing is reset.
+
+A leftover is cleared by hand, not by the run. `systemctl --user reset-failed
+<unit>` is one stock line, and it is the only thing that clears it: the run
+calling `reset-failed` itself would drop the record of a unit this run has not
+read yet, and it would turn a red run green without anyone reading the name.
+So the run stays red until the named units are reset. That is what it is for:
+a red daily update is a list of names, and the names are the fix.
+
+The run reads no `Transient` flag and no stop time. A tolerance window needs a
+start it cannot get: the gap between two runs varies (the drain waits up to
+150 min, apt and the tool updates run long, `FLEET_PAUSED` can hold the fleet
+for days), so a window either equals the run period and can miss a red run, or
+is wide enough to hide a failure for days. Both were tried and cut
+(fleet-ops#10211).
+
+The cause of a leftover is a `systemd-run` transient. A unit `systemd-run`
+created stays loaded in `failed` state after it stops, under the user manager
+and the system manager alike, because `systemd-run` leaves `CollectMode=
+inactive` and nothing unloads it. `reset-failed` is the only thing that clears
+it.
+
+What the launcher rule in AGENTS.md "Session-outliving work" changes is the
+detector, not the leftover. It launches a system unit as nish. node_exporter
+reads only the system bus, so a failed system unit fires `SystemUnitFailed`
+and becomes a fix job. A failed user unit is not scraped: of the 212 unit
+names node_exporter exposes, not one is a user-manager unit, and
+`fleet-sync.service` and `fleet-litellm-proxy.service`
+are all absent from them. A user unit's one other route is
+`OnFailure=fleet-unit-failed@%N.service`, which every user unit in `systemd/`
+carries and which instantiates a system unit node_exporter does scrape. That
+route is dormant on this box, because the reconcile URL file it reads is mode
+000, root-owned and empty, so the unit SKIPs and exits 0. What hears about a
+failed user unit today is the daily update, and nothing else. A leftover still
+needs a hand `reset-failed`; the difference is that somebody hears about it.
+
+To read a leftover before clearing it, `show` is the one-line form (`status`
+prints the flag too, inside its `Loaded:` and `Transient:` lines, which is not
+something a script can read):
+
+    systemctl --user show -p Transient --value <unit>       # yes = no unit file
+    systemctl --user show -p InactiveEnterTimestamp --value <unit>
+
+Then one line clears it: `systemctl --user reset-failed <unit>`.
+
+The failed-unit check itself has not been what turned a run red lately. The
+three most recent runs that reported it all read `failed units: []`, and all
+three ended red on other checks (an unpinned pi extension, runners resumed,
+one tool update failed), which is the check doing its job. A green run does not
+print the list at all, because the string only exists in the assert's failure
+message. A leftover that appears between runs is named by the next run, and
+only a hand `reset-failed` clears it.
+
+## D1 backups and the monthly restore drill (fleet-ops#10594)
+
+drive's weekly `d1-export.yml` exports every product database, seals each
+dump with `age` to the `AGE_RECIPIENT` repo variable, and uploads it as a
+GitHub artifact kept 90 days. The recipient is a public key, so a public repo's
+artifacts being publicly downloadable is not a leak: a dump without the private
+key is noise. The matrix covers drive's own database plus
+`siterep_payments`, `aiconverter`, `tinystudio_email_signups` and `0509`
+(fleet-ops#10594).
+
+Two rows in that matrix stay red on purpose, and both are open:
+`tinystudio_email_signups` answers HTTP 404 on the export endpoint
+(fleet-ops#10830, the database is not in the account the token names) and
+drive's own job is refused by the D1 export API because of FTS5 virtual tables
+(drive#1027). A missing backup that fails loudly on the run is the point: a
+matrix row that quietly passes would hide it. When the account is sorted, the
+fix is one line. Each database moves into its own repository's workflow once
+that repo has its own export credential (fleet-ops#10829).
+
+The restore drill is the other half, and it is a host unit rather than a
+workflow: the private key at `~/.config/drive/d1-backup-key.txt` lives on this
+box and on no runner, and Nish has ruled out putting it in GitHub Actions
+secrets. `fleet-d1-restore-drill.timer` runs `fleet-d1-restore-drill.service`
+on the 1st of every month at 05:30 IST, and fleet-sync step 2l links and enables
+it on every deploy (a drill that is silently off is the failure it ships to
+fix).
+
+What the drill does, in four steps and no script:
+
+1. Walks the newest completed `d1-export.yml` runs and takes the first that
+   left a `d1-backup-*` artifact. No branch filter, because the thing being
+   restored is the newest backup rather than the newest run: drive's own main
+   matrix still fails on purpose (drive#1027) and the product rows sit on a
+   branch until #10829 and #10830 land, so `-b main` would leave the drill with
+   nothing to restore every month. The escape a bad dump could use is not a
+   branch but a dot-command, so step 3 loads it with `sqlite3 -safe`.
+2. Downloads every `d1-backup-*` artifact of that run in one `gh run download`
+   call, with the one-hour Actions-write App token minted by the token unit's
+   Actions-only instance for drive, which is revoked and whose env file is
+   deleted the moment the run ends.
+3. Decrypts each dump with `age`, loads the SQL into a fresh local SQLite file
+   with `sqlite3 -safe -bail` (the export API hands back SQL text, not a
+   database file, and safe mode is what stops a dump written by anyone who can
+   run that workflow from running a shell command on this host), runs
+   `PRAGMA integrity_check`, and counts every table's rows.
+4. Writes one report to `~/workspaces/agent-state/d1-restore-drill/`.
+
+It never calls the Cloudflare API. The restore target is a local SQLite file, so
+the drill cannot create, import into or delete a D1 database and needs no D1
+token at all. Decrypted dumps never leave a 0700 runtime directory that systemd
+removes when the unit stops, and the report carries counts and integrity results
+only, never a row, a name or an email address.
+
+Read the last drill:
+
+    ls -t ~/workspaces/agent-state/d1-restore-drill/report-*.md | head -1 | xargs cat
+    journalctl --user -u fleet-d1-restore-drill.service -b
+
+Run one by hand, on the host:
+
+    systemctl --user start fleet-d1-restore-drill.service
+
+Switch it off: `systemctl --user disable --now fleet-d1-restore-drill.timer`,
+then drop step 2l and its enable line from `systemd/fleet-sync.service` and
+delete both unit files.
+
 ## Deploy and wiring
 
 `deploy-box.yml` (push to main) → `fleet-sync.service` runs
@@ -35,7 +159,12 @@ It never uses `git pull`: a polluted `FETCH_HEAD` there merges into
 `fatal: Cannot fast-forward to multiple branches` and silently stops every
 deploy (fleet-ops#8893). A trailing `merge-base --is-ancestor` pair
 asserts `HEAD == origin/main`, so a stopped deploy is a failed unit rather
-than a lagging clone.
+than a lagging clone. Two things keep that true: the workflow's two deploy steps
+come first and its security probe runs last in the same job, so a red probe still
+fails the run and can never skip a deploy step, and
+`fleet-clone-lag.timer` (every 5 min) fails the unit when the oldest commit on
+`origin/main` the clone lacks is 35 min old, printing the fix
+in its message (fleet-ops#10046).
 Its LINK-GUARD passes fail the unit while any live symlink under
 `~/.config/systemd/user/`, `~/.local/bin/`, `~/.pi/agent/` or the vault is
 broken or resolves into a throwaway root (`*worktrees/*`, `agent-state`,
@@ -46,10 +175,11 @@ per-issue copies (`reviewer-issue-<N>.md`, removed under fleet-ops#8659) are
 loaded by nothing.
 
 Wiring a new unit or prompt is one `ln -sfn` into the deploy clone, once
-(full commands in README). Every root-owned file under `/etc` that the repo
+(full commands in [Install](install.md)). Every root-owned file under `/etc` that the repo
 ships lives in `rootfs/` and is `fleet-host-config.service`'s job (Ansible's
 `ansible-pull` of `ansible/host.yml`, started by deploy-box.yml on every merge
-and by a daily timer). Its `daemon-reload` re-applies a changed slice cap to
+and once after every boot by `fleet-host-config-boot.timer`; the daily timer is
+gone, fleet-ops#10457). Its `daemon-reload` re-applies a changed slice cap to
 the running slice (fleet-ops#8862). A failed run is in
 `journalctl -u fleet-host-config.service`; a `Hand-installed` line names a file
 to add under `rootfs/`, delete, or list in `/etc/fleet-ops/box-only`. What still
@@ -61,13 +191,26 @@ After a slice change, both the unit and the cgroup must read the new cap:
 `systemctl show agent.slice -p MemorySwapMax` and
 `cat /sys/fs/cgroup/agent.slice/memory.swap.max` (1073741824, not infinity).
 
+### Version tags
+
+One tag exists, `v1`, on the first auto-merge arm (fleet-ops#4303). Tag when a
+state is worth naming: a release, a point to roll back to, or a container image
+bump. Nothing in `.github/` reads a tag, so a tag deploys and reverts nothing by
+itself: the deploy runs from `main`'s tip, and a rollback is a revert commit on
+`main` (the auto-revert organ writes that one when a deploy goes red). Create
+one with `git tag -a <name> -m "<why>"` and push it, and keep it on `main`.
+
 ### Shell startup files
 
 Interactive shells do not read `~/.config/environment.d`. The systemd user
 manager does, for user units, so a value only a unit needs goes there. Do not
 add a loader for it to `~/.bashrc` or `~/.zshrc`. Work that needs a value from
-a file runs as a unit or `systemd-run --user` transient with `EnvironmentFile=`,
-not from an interactive shell (README, "systemd by default").
+a file runs as a system unit as nish (AGENTS.md "Session-outliving work") with
+`EnvironmentFile=`, never as a `systemd-run` transient under the user manager,
+because a failed user unit is not scraped: node_exporter reads only the system
+bus, so a failed `--user` unit fires no alert and only the daily update sees it
+("The failed-unit check and leftover ad-hoc units" above). Not from an
+interactive shell either (README, "systemd by default").
 
 The loader that ran the systemd environment generator in those files from
 2026-10-07 carried the pi-grok `PI_XAI_CLIENT_VERSION` pin into shells. The pin
@@ -93,6 +236,19 @@ use instead.
 - Check both are on: `jq -r '.packages[]' ~/.pi/agent/settings.json | grep runner-guard`
   and `jq -r '.permissions.deny[]' ~/.claude/settings.json | grep -cE '^Bash\((sed|perl|git add)'`
   (prints 7).
+- The daily update keeps the Pi pin honest. It asks GitHub, once per
+  `git:github.com/` pin, whether the pinned commit is on that repo's default
+  branch, and fails the run when it is not, or when GitHub gives no answer at
+  all. A pin on a pull request head is the failure this catches, because the
+  box then runs code that no default-branch commit reaches.
+  To move a pin, merge the pull request first, then re-pin with
+  `pi update "git:github.com/<owner>/<repo>@<sha>"`, where `<sha>` is the merge
+  commit on that repo's default branch. For the runner guard that is
+  `git:github.com/Nishfleet/pi-runner-guard@<sha>`. A red run names the pin under
+  `git pins off the default branch` in
+  `journalctl -u fleet-update.service`. When that line reads
+  `no answer from GitHub`, `gh` lost its login or GitHub was unreachable, and
+  the pin is not the problem: re-run the playbook.
 
 ## Dashboards and the CI runner flip
 
@@ -113,7 +269,10 @@ compare the rule's `expression` with the repo file. Wire the pair once after mer
 `fleet-litellm-proxy-config` (README "Wiring a NEW unit"): `systemctl --user link` both
 files, then `systemctl --user enable --now fleet-grafana-provisioning.path`. Until it is
 wired, reload by hand with `systemctl --user start fleet-grafana-provisioning.service`
-once linked, or `curl -X POST` the two endpoints.
+once linked, or `curl -X POST` the two endpoints. The service never restarts itself: systemd
+fails the `.path` unit with result `unit-start-limit-hit` the moment the service it triggers
+spends its start limit, and a `.path` unit cannot restart itself, so the wait for a Grafana
+restart lives inside the one start (fleet-ops#10848).
 
 Cloudflare cost alarm (fleet-ops#9355): `config/grafana/provisioning/alerting/cloudflare-spend.yaml`
 evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy-ci
@@ -134,11 +293,32 @@ paid-plan-idle rules, prompt-cache-hit and the deploy-failed-24h rules. They pag
 page every 12 hours. Every other rule (router-dead-row, cpu-pressure, the 30-minute deploy-failed
 rules, any new rule) is `warning`: it does not page. Every firing alert, of either severity, files
 a fleet-ops issue labelled `agent-ready` (`fleet-alert-dispatch`, or the cost-alarm and
-router-dead-row variants); the webhook cannot comment or close, so a still-firing alert files a
-new issue per repeat. CI fails when a rule has no severity, overrides the tree, is critical
+router-dead-row variants; `router-dead-key-dispatch` labels its issue `needs-nish-decision`,
+because a rejected provider key is Nish's to renew); the webhook cannot comment or close, so a
+still-firing alert files a new issue per repeat. CI fails when a rule has no severity, overrides the tree, is critical
 without being on the urgent list (or the reverse), or a critical alert would re-send slower than
 hourly. To make a new rule page, add it to the list there with the reason and label it critical.
 Switch off the fleet issue route: point the policy root and the last route back at `hermes-urgent`.
+
+Router dead-row persistence (fleet-ops#9562). `router-dead-row.yaml` fires only when a row
+answered 402, 403 or 404 more than 5 times in the last hour and is still failing: at least one
+such failure in the last 10 minutes, held for 15 continuous minutes. A row that answered for a
+minute and healed files nothing, and a dead row still files while the failures continue. To fire
+on the first burst again, set `for: 0s` and drop the 10-minute factor; to silence the rule, set
+`isPaused: true`. `config/grafana/tests/router-dead-row.test.yml` holds the behaviour under
+promtool in CI, and `tests/test_grafana_fixture_drift.py` fails when that fixture and the
+deployed rule drift apart.
+
+Router dead key (fleet-ops#11063, split out in fleet-ops#11081). A second rule in the same file,
+`router-dead-key` on `signal=router-dead-key`, fires when one row parked on a 401 more than
+2 times in 6 hours and is still parking: at least one park in the last 30 minutes, held for 15
+minutes. A 401 row parks on its first failure, so a park is one cooldown, and a row cannot park
+again until that cooldown ends (15 minutes on the worker rows), which is why its bar is 2 and
+not the row rule's 5. No worker can renew a key, so this rule's issue is filed
+`needs-nish-decision`: a worker run and a hand-off on it are wasted until Nish renews the key or
+approves taking its rows out of the router. `config/grafana/tests/router-dead-key.test.yml`
+holds its bar under promtool, and `tests/alert_routes_check.py` fails when the rule, its
+threshold or its issue label drift.
 
 Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
 Authorization value and a GitHub App installation token lives an hour, so a token pasted into
@@ -148,7 +328,11 @@ a file went stale and every delivery answered `401 Bad credentials` for days.
 key, asks the REST API for an installation token limited to `Nishfleet/fleet-ops` and
 `issues:write`, writes it to `$XDG_RUNTIME_DIR/fleet-grafana-github-token/token` (tmpfs,
 0700 dir, 0600 file) and starts `fleet-grafana-provisioning.service`, the stock admin-API
-reload above. The contact points read the file with Grafana's `$__file{}`, which is
+reload above — guarded, so the reload lands only when the token Grafana has loaded
+(`$__file{}` froze it) has run down to one mint interval left: Grafana drops an
+in-flight dispatch when a reload applies, and the guard reloads at every second mint
+instead of every one, with a lost or unreadable ledger reloading once more
+(fleet-ops#11441, same cause as #11426). The contact points read the file with Grafana's `$__file{}`, which is
 re-read on every provisioning load. Wire once after merge (README "Wiring a NEW unit"):
 `systemctl --user link` both files, `systemctl --user daemon-reload`, `systemctl --user
 enable --now fleet-grafana-github-token.timer`, then restart `fleet-grafana.service` once so
@@ -185,7 +369,8 @@ that changed nothing running, because nothing read it (fleet-ops#9670).
 
 Warning: a green drive monitor does not mean drive works. The site sits behind Cloudflare
 Access until launch (Nish, 2026-10-01), so nothing outside can reach drive's own routes and
-the monitor below only proves the wall answered. The app-level check is fleet-ops#10226.
+the monitor below only proves the wall answered. The app-level check is decided
+(fleet-ops#10226, option 1) and lands at launch, not before: see "At launch" below.
 
 Sentry is the fleet's up/down detector for the product sites (fleet-ops#9014): no VPS probe,
 no agent in the loop. The token is in `~/.config/sentry/env` (0600, org read plus write on
@@ -229,7 +414,8 @@ included, and `/.well-known/cloudflare-access-protected-resource/...` is the one
 so no public monitor can reach drive's own routes. The "Drive health check" monitor (10494404)
 was deleted on 2026-10-24 for that reason: it pointed at `/api/health`, whose 404 the wall
 turned into a 302, so its last checks read green on the wall's answer rather than drive's.
-The app-level check it pretended to be is fleet-ops#10226.
+The app-level check it pretended to be is fleet-ops#10226, decided as option 1 on
+2026-10-29: it lands at launch, when the wall comes down, and not before.
 
 10494402 watches the wall instead, with a header only the Access login page sends. A PUT body
 merges into the monitor, so send only the fields you change:
@@ -244,6 +430,42 @@ stops sending that header, or if the hostname stops answering. Proven both ways 
 2026-10-24: the same assertion against `x-fleet-absent-header` failed the 07:43:47Z check
 with `assertionFailureData` naming that header, and `cf-access-domain` passed every check
 from 07:42:47Z on.
+
+### At launch: retarget the wall monitor at drive's own health endpoint
+
+Decided on 2026-10-29 (fleet-ops#10226, option 1): nothing to do before launch. When the
+Access wall comes down, drive's own routes become reachable from outside and the
+`cf-access-domain` assertion above starts failing, because that header exists only on the
+Access login page. That red is the trigger, so do not send the retarget before it fires.
+
+The monitor's target field is `url`, and a PUT body merges, so one PUT carries both fields:
+
+    PUT /api/0/projects/0509-gg/drive/uptime/10494402/
+    {"url":"https://storagebun.com/api/health",
+     "assertion":{"root":{"op":"status_code_check","value":200,"operator":{"cmp":"equals"}}}}
+
+Both are shapes already proven on this project's uptime monitors: `url` is the field the GET
+returns, and `status_code_check` with `value` and `operator` is what was measured on
+2026-10-24 (`value: 999` failed, 302 passed). The retarget is not complete until the body
+assertion below is in too.
+
+A 200 is not yet the check the issue asked for, because a 200 HTML error page from the edge
+passes it. drive's `/api/health` answers `{"ok":true}` only when its three D1s, its asset
+bucket, its nine rate limiters and its branch snapshots all answer, so the assertion has to
+reach the body with the `json_path` op. This runbook has not read that op's operand shape
+back from the API, so read it the way `header_check` was read on 2026-10-24: send the body
+and let the API's own 400 name the fields it wants.
+
+Probed on 2026-10-30 at 00:07Z, so the wall was still up and the retarget was not due:
+
+    $ curl -sSI --max-time 15 https://storagebun.com/api/health | grep -E '^HTTP|www-authenticate'
+    HTTP/2 302
+    www-authenticate: Cloudflare-Access resource_metadata="https://storagebun.com/.well-known/cloudflare-access-protected-resource/api/health"
+
+The same probe on `/` followed to a 200 carrying `cf-access-domain: storagebun.com`, which
+is what keeps the monitor green while the wall is up. The table row above is a 2026-10-24
+snapshot and names the workers.dev hostname drive later switched off; fleet-ops#10827 owns
+that row.
 
 ### The assertion shape
 
@@ -314,11 +536,10 @@ on the .path, both from the deploy clone (README "Install").
 `/jev` is a pass-through with `auth: true`, so any valid virtual key reaches it
 and each call books `cost_per_request` against the calling key. Its cap is a
 `fleet-jev` virtual key (`POST /key/generate` with `max_budget`,
-`budget_duration` `1d` and `rpm_limit`). Today worker.md step 4 and
-miss-review still read `LITELLM_JEV_KEY` from `seats/typesafe-jev.env`, which is
-not that key; the cap takes effect when the key is minted and that seat file
-holds it. LiteLLM v1.98 has no declarative key list, so minting is one
-admin-API call, not a config edit.
+`budget_duration` `1d` and `rpm_limit`). Today worker.md step 4 still reads
+`LITELLM_JEV_KEY` from `seats/typesafe-jev.env`, which is not that key; the cap
+takes effect when the key is minted and that seat file holds it. LiteLLM v1.98
+has no declarative key list, so minting is one admin-API call, not a config edit.
 
 Backup: the restic backup unit runs `pg_dump -Fc` of the `litellm` database
 into `agent-state/backups/litellm.dump` before every run, and that dump is the
@@ -335,8 +556,11 @@ because the unit files name the backup targets and this repo is public
 (Nish, 2026-10-03, "split"). `/etc/fleet-ops/box-only` lists them, so
 `fleet-host-config.service`'s drift check skips them; this repo tracks only the
 additive drop-ins under `rootfs/` and the lists in `config/restic/`, so this
-section does not schedule them. A box rebuild cannot restore these units from
-the repo — copy them off the live box to private storage before wiping it, and
+section does not schedule them — the one pair tracked whole is the monthly
+restore drill (`restic-r2-restore-drill.service` and `.timer`), which is new,
+names no backup target and no credential, and is enabled by
+`tasks/services.yml`. A box rebuild cannot restore the box-only units from the
+repo — copy them off the live box to private storage before wiping it, and
 never commit the copies here.
 
 Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service
@@ -355,8 +579,8 @@ Rollback (follow-up): delete the three `.container` files in
 ## Claude session credentials (fleet-ops#9020)
 
 The systemd `--user` manager environment carries no Claude, Exa or Browser Use
-names. The manager hands its environment to every user unit, every
-`systemd-run --user` transient and every quadlet container, so the names were
+names. The manager hands its environment to every user unit, every transient
+under the user manager and every quadlet container, so the names were
 removed from it in this order:
 
 1. Delete `~/.config/environment.d/50-agent-secrets.conf`.
@@ -394,19 +618,24 @@ the user running the manager, `/root` (`man systemd.unit`, Specifiers), not
 names gets its own file per need (`claude-token.env`, `exa.env`, ...), never
 the shared one.
 
-Readers in this repo: none (re-audited for every unit, drop-in, quadlet,
-workflow, prompt and recipe that starts `claude`, `pi`, `devin`, `opencode`,
-`cursor-agent` or a fleet worker):
+Readers of the shared file in this repo: none (re-audited for every unit,
+drop-in, quadlet, workflow, prompt and recipe that starts `claude`,
+`pi` or a fleet worker). One unit reads a
+single-name file of its own instead (fleet-ops#10222):
 
 - `claude-remote-control.service` is a system unit. A system manager never saw
-  the user manager environment, so it never inherited these names. Its header
-  says why it must stay without them: "that directory also exports
+  the user manager environment, so it never inherited these names, and it must
+  never hold `CLAUDE_CODE_OAUTH_TOKEN`: "that directory also exports
   CLAUDE_CODE_OAUTH_TOKEN, and Remote Control needs the claude.ai login
-  instead."
+  instead." For the browser MCP entry in its user config (fleet-ops#10222) it
+  loads the one name it needs from its own file, the optional
+  `EnvironmentFile=-/home/nish/.config/claude/browser-use.env`
+  (`BROWSER_USE_API_KEY` only, mode 0600): a missing file costs the browser
+  tool, not the phone bridge. The file follows the `oauth.env` rules: never
+  tracked, never printed; check it with `test -s` and `stat -c %a`.
 - `agent.yml` jobs run in the `actions.runner.Nishfleet.netcup-agent-N`
   system units (`runs-on: [self-hosted, agent]`), so they did not inherit the
-  user manager either. The worker engines read their own credentials: devin and
-  opencode their own logins, cursor `seats/cursor.env`, pi the `litellm`
+  user manager either. The pi worker reads its own credentials: the `litellm`
   provider with per-group keys plus `seats/mobbin-mcp.env`.
 - `fleet-litellm-proxy.container` took the whole manager environment through
   `--env-host` until #9020; it now passes the named `PodmanArgs=--env=` list.
@@ -420,13 +649,14 @@ The runner environment is the one thing the repo cannot show (the runner
 `.env` and the live `~/.pi/agent` extensions are outside it). If a worker
 engine ever needs one of these names, give that runner a drop-in with the line
 above for the single file it needs; nothing in this repo asks for it today. A
-hand-run `claude -p` or `systemd-run --user` that needs the token passes the
-line above.
+hand-run `claude -p`, or a transient under the user manager, that needs the
+token passes the line above.
 
 ## Unattended Claude runs (fleet-ops#9502)
 
 Two units run Claude with nobody watching: `tincan-listen-claude-vps.service`
-(user unit, the tincan inbox drainer) and `claude-remote-control.service`
+(system unit, the tincan inbox drainer; its user-level copy was retired in
+fleet-ops#10125) and `claude-remote-control.service`
 (system unit, the Remote Control server). Both used to pass
 `--permission-mode bypassPermissions`, which skips every check, so the
 `permissions.ask` rules (force-push, `reset --hard`, `reboot`, `restic forget`,
@@ -443,6 +673,32 @@ this repo under `rootfs/etc/claude-code/roles/`, installed to
 | `tincan-listen-claude-vps.service` | `tincan-listener.json` | `--settings /etc/claude-code/roles/tincan-listener.json` on `claude -p` |
 | `claude-remote-control.service` | `remote-control.json` | spawned sessions read `~/.claude/settings.json` (`claude remote-control` refuses `--settings`) |
 
+### The browser MCP entry (fleet-ops#10222)
+
+#10136 made the browser MCP entry in the user configs expand
+`${BROWSER_USE_API_KEY}` from the session's environment. Interactive shells
+get the value from `~/.config/claude/oauth.env`; these two units did not, so
+the server warned at startup and its first browser call would have failed.
+One unit drops the entry, one gets the one name:
+
+- `tincan-listen-claude-vps.service`: the entry is gone from
+  `~/.claude-vps/.claude.json` (removed 2026-10-25 with `claude mcp remove
+  browser-use -s user` under that `CLAUDE_CONFIG_DIR`). The unit is locked to
+  no keys except Jev (Nish 2026-10-22) and runs `--strict-mcp-config
+  --mcp-config tincan-listener-mcp.json`, which never loaded the entry: it was
+  a warning and a false expectation, nothing else. Any new process reading
+  that config is clean from the moment of removal; a running server picks the
+  cleaned config up at its next restart.
+- `claude-remote-control.service` keeps the entry (its `~/.claude.json` is
+  shared with interactive sessions) and loads the one name from
+  `~/.config/claude/browser-use.env`, per the unit's `EnvironmentFile=` line.
+  Only Nish restarts that unit, so the line is staged like every other change
+  to it.
+
+Check the listener side any time:
+`jq '.mcpServers | has("browser-use")' ~/.claude-vps/.claude.json` must print
+`false`.
+
 `claude remote-control` refuses `--settings` (proved 2026-10-09: `Error:
 Unknown argument: --settings`). A `Bash` allow does not swallow the ask list:
 `git stash` was still denied under dontAsk with `Bash` in allow (2026-10-09).
@@ -454,9 +710,9 @@ dontAsk on Remote Control is intended: Nish cannot approve a one-off command
 from the phone. A denied call is reported in the session and there is no
 prompt to tap.
 
-The tincan unit goes live after merge, when fleet-sync has the new file and
-the user unit is reloaded (`systemctl --user daemon-reload && systemctl
---user restart tincan-listen-claude-vps.service`). Remote Control stays on
+The tincan unit goes live after merge, when fleet-host-config has the new file and
+the root unit is reloaded (`sudo systemctl daemon-reload && sudo systemctl
+restart tincan-listen-claude-vps.service`). Remote Control stays on
 the old `ExecStart` until Nish restarts it.
 
 **Where denials show.** Each denied call is reported twice: in the unit's
@@ -469,6 +725,43 @@ them under `permission_denials`). The tincan transcript is
 line of the unit and restart it. That restores today's behaviour: the role
 file is then inert and nothing else in the unit changed. Only Nish restarts
 `claude-remote-control.service`, because that cuts the phone link.
+
+## gh-aw pilot gateway (fleet-ops#11311)
+
+`containers/quadlet/fleet-llm-gateway.container` runs a Cloudflare Tunnel that
+carries two router paths for the gh-aw pilot (`config/cloudflared/llm-gateway.yml`).
+Its credentials file is `~/.config/cloudflare/llm-gateway-tunnel.json` (0600).
+`tests/test_llm_gateway_tunnel.py` pins the ingress and the pilot rows' caps.
+
+The edge guard is in Cloudflare (account and nish.sh zone), not in this repo:
+
+- **Access app "gh-aw pilot gateway"** on the pilot hostname. Its one policy is
+  Service Auth for the service token "gh-aw-pilot". It reads the token from the
+  `Authorization` header as one JSON value (`read_service_tokens_from_header`).
+  gh-aw sends it raw with `sandbox.agent.targets.openai.auth-header: Authorization`.
+  The token is the repo secret `PILOT_GATEWAY_TOKEN`, valid for one year.
+- **Late-transform rule** on the same hostname. It sets `x-litellm-api-key` to the
+  router key `gh-aw-pilot-edge` (`models: [pilot]`, `allowed_routes: [llm_api_routes]`,
+  `rpm_limit: 30`, no money budget). That key exists only in this rule. Whatever
+  key a caller sends, the router sees the pilot key.
+- **Connector check.** cloudflared also verifies the Access JWT itself
+  (`originRequest.access`, team `nish345`, the app's AUD tag), so a deleted or
+  loosened Access app still cannot open the path. An ingress edit takes effect on the
+  next `fleet-llm-gateway` restart.
+- **Checked 2026-10-31.** Each of these got 403 at the edge: no header, the master
+  key as a Bearer token, and the master key in `x-litellm-api-key`. With the service
+  token, `/v1/models` lists only `pilot` and a pilot chat call returns 200. With the service token, the master key sent in `x-api-key`, `api-key`, `x-goog-api-key` or `x-litellm-api-key` still lands on the pilot key (403 "model not available for this API key" on `worker-capable`).
+
+- **On:** link the quadlet into `~/.config/containers/systemd/` like the
+  others, then run `systemctl --user daemon-reload && systemctl --user start fleet-llm-gateway`.
+- **Off:** run `systemctl --user stop fleet-llm-gateway`.
+- **Token leak:** revoke the service token "gh-aw-pilot" in Zero Trust. Make a new one
+  and set `PILOT_GATEWAY_TOKEN` to `{"cf-access-client-id":…,"cf-access-client-secret":…}`.
+  Even before the revoke, a leaked token reaches only the two pilot rows, each
+  capped at 10 USD a day, at 30 requests a minute.
+- **Delete:** stop the unit and remove the link and the credentials file. In
+  Cloudflare, delete the tunnel, the `llm` DNS record, the Access app, the service
+  token and the transform rule. Then delete the router key `gh-aw-pilot-edge`.
 
 ## Break-glass access (SSH is Tailscale-only)
 
@@ -486,6 +779,11 @@ cost: the netcup provider VNC console.
 - It is not a second SSH listener, not a standing open console, and not a
   live-tailscaled kill (a lockout, not an experiment — that stays a Nish
   game-day). Panel login lives in Nish's password manager; never here.
+- The bind is repo config: `rootfs/etc/systemd/system/ssh.socket.d/override.conf`
+  is installed to `/etc/systemd/system/ssh.socket.d/override.conf` by
+  `ansible/host.yml`, which restarts `ssh.socket` when it changes, and
+  `tests/test_systemd_unit_keys.py` fails if the file ever names a wildcard
+  address (fleet-ops#10541). Edit it there, never by hand.
 
 ## Rebuild the box from nothing
 
@@ -513,6 +811,17 @@ plan now fixes. Data restore is that vault's
 
 - Before: ruleset 23692529 required `ratchet`, an inline job in `ci.yml`, so a PR judged itself by its own copy (#9627). After: `ci.yml` calls `.github/workflows/ratchet.yml` and the ruleset requires `ratchet / ratchet`. 0509 and drive call the same file at `@main` and require the same context. Nothing else in the ruleset changed.
 - Order, because the PR's own head cannot report the old name: remove `ratchet` from the required list, merge, add `ratchet / ratchet`. `ci` kept `ratchet` in its `needs` the whole time.
-- A reusable workflow cannot be required from another repo on the Free plan: `gh api orgs/Nishfleet/rulesets` answers 403 "Upgrade to GitHub Team", and a repository ruleset `workflows` rule is rejected. So the caller file still lives in the PR. The reusable job fails a PR that edits the caller's `ratchet` job; a PR that repoints the caller's `uses:` is still caught only by review.
+- A reusable workflow can be required from another repo: the organization ruleset `org-required-workflows` (`config/org-ruleset.json`, fleet-ops#10554) runs `Nishfleet/fleet-ops` `.github/workflows/ratchet.yml@main` in every repo. The 403 on `gh api orgs/Nishfleet/rulesets` was the token's missing org-owner scope, not the plan. The caller file still lives in the PR. The reusable job fails a PR that edits the caller's `ratchet` job; a PR that repoints the caller's `uses:` is caught by the ruleset's own run once the rule is active.
 - Check: `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 --jq '[.rules[]|select(.type=="required_status_checks").parameters.required_status_checks[].context]'`.
 - Undo (switch the ratchet off, as the Nish-only emergency path): `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 | jq '{name,target,enforcement,bypass_actors,conditions,rules:(.rules|map(if .type=="required_status_checks" then .parameters.required_status_checks|=map(select(.context!="ratchet / ratchet")) else . end))}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`.
+
+## Only require a status context that a run reports (2026-10-25)
+
+- A required context that no workflow reports blocks every pull request and every merge-queue entry, forever. A job skipped by `if:` reports success. A job that does not exist reports nothing (drive#499, written at drive `ci.yml`'s `changes` job).
+- fleet-ops#10259 was filed on the belief that drive had gained a job named `walk`. It had not: no drive workflow on any branch has that job. drive#760's walk runs inside `verify`, as `npm test` with `DRIVE_WALK_CLI: "1"` (drive PR #1077).
+- So a red walk already fails drive's required `verify`, and drive's ruleset 24262668 `main gate` keeps `verify`, `go` and `ratchet / ratchet`. Nothing was added: a `walk` context reports on no run, so every drive PR and every queue entry would have waited on it.
+- Proof that the walk already blocks (as of 2026-10-25): drive PR #1077's `verify` failed on the walk itself, `✖ the CLI mounts, uses and uninstalls with nothing left behind` (run 40176266059).
+- Check the required list: `gh api repos/<owner>/<repo>/rulesets/<id> --jq '[.rules[]|select(.type=="required_status_checks").parameters.required_status_checks[].context]'`.
+- Check that a context is real before you require it: it must appear among the check runs of a fresh pull-request head, `gh api repos/<owner>/<repo>/commits/<pr head sha>/check-runs --jq '[.check_runs[].name]|unique'`. The check runs on a push to main list only the jobs that also run on `push`, so that list cannot clear a `pull_request`-only job on its own. A name quoted from an issue proves nothing.
+- The context must also arrive on the merge-queue entry, whose run has event `merge_group`: the queue waits on the required checks of the group commit, so a job that runs only on `pull_request` holds the queue too. drive's `ci.yml` carries that trigger for this reason (drive#499). A merged queue entry is the proof that both arrivals work.
+- Revisit when drive's `ci.yml` defines a job named `walk` that runs on `pull_request` and on `merge_group` and a pull-request head reports it. Then add it, guarded so a second run cannot duplicate it: `gh api repos/Nishfleet/drive/rulesets/24262668 | jq '.rules |= map(if .type=="required_status_checks" then .parameters.required_status_checks = ((.parameters.required_status_checks + [{"context":"walk"}]) | unique_by(.context)) else . end) | {name,target,enforcement,bypass_actors,conditions,rules}' | gh api -X PUT repos/Nishfleet/drive/rulesets/24262668 --input -`.

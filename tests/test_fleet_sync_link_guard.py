@@ -72,7 +72,7 @@ def test_a_skill_deleted_on_the_synced_source_warns_and_does_not_fail_the_unit(t
 
 def test_a_dead_link_in_the_live_wiring_roots_still_fails_the_unit(tmp_path: Path) -> None:
     home = fleet_home(tmp_path)
-    (home / ".local/bin/leviathan").symlink_to(home / ".local/share/leviathan/bin/leviathan")
+    (home / ".local/bin/tincan").symlink_to(home / ".local/share/tincan/bin/tincan")
     commands = guard_commands(home)
     results = run([commands["dead"], commands["skill"]])
     assert results[0][0] != 0
