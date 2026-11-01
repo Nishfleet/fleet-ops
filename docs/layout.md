@@ -97,15 +97,6 @@
   `PrivateTmp=yes`. fleet-host-config installs the file and `ansible/tasks/services.yml` enables
   and restarts it; `fleet-sync.service` step 2i stops and deletes the user link it replaces. Off
   switch: delete the file and that task, then `systemctl disable --now beacon-hermes-poll.service`.
-- `systemd/fleet-clone-lag.service` and `.timer` — fail, and so page through
-  `fleet-unit-failed@`, when the oldest commit on `origin/main` the deploy clone
-  does not have is more than 35 min old, so a merge that reached no deploy is loud
-  instead of silent (2026-10-22: two merges at 14:14Z were still not on the box 40
-  min later, and the review job read a retired file out of the clone). It fetches
-  `main` itself into its own ref and only reads. Every 5 min;
-  `fleet-sync.service` step 2m links both and enables the timer on every deploy.
-  Off switch: remove that step and its enable line, then
-  `systemctl --user disable --now fleet-clone-lag.timer`.
 - `systemd/syncthing.service` and `tigervnc.service` — stock vendor
   binaries (Syncthing, TigerVNC) run under systemd. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap

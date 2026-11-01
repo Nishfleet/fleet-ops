@@ -237,15 +237,12 @@ ExecStart=-/bin/sh -c 'w=%h/.config/systemd/user/default.target.wants/cua-desk-d
 #     disable --now fleet-d1-restore-drill.timer`.
 ExecStart=/bin/sh -c 'for f in fleet-d1-restore-drill.service fleet-d1-restore-drill.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-d1-restore-drill.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-d1-restore-drill.timer
-# 2m. The clone lag check (fleet-clone-lag.timer, fleet-ops#10046): link the unit pair
-#     and enable the timer on every deploy, the same way 2h links its pair, because it
-#     is the only thing that compares the clone to origin/main on a clock and a check
-#     that is silently off is the failure it ships to fix (a merge that started no
-#     deploy left the box on stale prompts for 63 min on 2026-10-22). Off switch:
-#     delete this step and the enable line below, then `systemctl --user disable --now
-#     fleet-clone-lag.timer`.
-ExecStart=/bin/sh -c 'for f in fleet-clone-lag.service fleet-clone-lag.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
-ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-clone-lag.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-clone-lag.timer
+# 2m. The clone lag check is retired (fleet-ops#10935 step 3): a deploy that does not
+#     finish already fails fleet-sync, and that failure is the symptom alert. Step
+#     2.1's shape: stop the pair while the manager still holds them, then rm the unit
+#     links and the enable link. Delete this step once a deploy has run it.
+ExecStart=-/usr/bin/systemctl --user stop fleet-clone-lag.timer fleet-clone-lag.service
+ExecStart=-/bin/rm -f %h/.config/systemd/user/fleet-clone-lag.service %h/.config/systemd/user/fleet-clone-lag.timer %h/.config/systemd/user/timers.target.wants/fleet-clone-lag.timer
 ExecStart=/usr/bin/systemctl --user daemon-reload
 # 2l. A quadlet edit never reaches a running container (fleet-ops#10820).
 #    The daemon-reload above regenerates fleet-grafana.service from
@@ -278,7 +275,6 @@ ExecStart=/usr/bin/systemctl --user daemon-reload
 #    Off switch: delete this step and ~/.config/fleet-ops/grafana-quadlet.container.
 ExecStart=/bin/sh -c 'test -f %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container && { cmp -s %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container %h/.config/fleet-ops/grafana-quadlet.container || { /usr/bin/systemctl --user try-restart fleet-grafana.service && /usr/bin/install -C -D -m 0600 %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container %h/.config/fleet-ops/grafana-quadlet.container; }; }'
 ExecStart=/usr/bin/systemctl --user enable --now fleet-d1-restore-drill.timer
-ExecStart=/usr/bin/systemctl --user enable --now fleet-clone-lag.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
 #    (rootfs/etc/systemd/system/, Ansible's ansible-pull of ansible/host.yml)
