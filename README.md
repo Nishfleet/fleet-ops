@@ -62,3 +62,5 @@ is one line and updates every gate at once.
   `config/tincan-relay/` and `ansible/tasks/tincan-relay-policy.yml` in a PR.
 - Tests: `tests/test_tincan_relay_policy.py` (roster is clean, policy renders, loud check exit
   codes, installed bytes equal the render).
+
+CI is two jobs on hosted runners: tests and a secret scan. See .github/workflows/ci.yml.
