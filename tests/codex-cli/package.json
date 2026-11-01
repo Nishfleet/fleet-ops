@@ -1,7 +1,0 @@
-{
-  "name": "codex-execpolicy-test-pin",
-  "private": true,
-  "dependencies": {
-    "@openai/codex": "0.159.2"
-  }
-}
