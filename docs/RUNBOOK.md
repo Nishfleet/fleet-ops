@@ -167,7 +167,8 @@ Its LINK-GUARD passes fail the unit while any live symlink under
 broken or resolves into a throwaway root (`*worktrees/*`, `agent-state`,
 `tmp`).
 
-`~/.pi/agent/agents/` holds only the stock agents from `template/agents/`;
+`~/.pi/agent/agents/` holds only symlinks to Pi's shipped
+`examples/extensions/subagent/agents/`, as Pi's subagent README installs them;
 per-issue copies (`reviewer-issue-<N>.md`, removed under fleet-ops#8659) are
 loaded by nothing.
 
