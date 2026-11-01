@@ -13,16 +13,19 @@
     - retired_unit_off.failed | default(false)
     - "'Could not find' not in (retired_unit_off.msg | default(''))"
 
+# stop, not disable --now: disable gives up once the unit file is gone, and a
+# loaded unit keeps running. Enable links go in retired with the unit files.
 - name: Stop and disable retired units in nish's user manager
   ansible.builtin.command:
-    argv: [systemctl, --user, --machine=nish@.host, disable, --now, "{{ item }}"]
-  loop: "{{ retired_user_units }}"
+    argv: [systemctl, --user, --machine=nish@.host, "{{ item.0 }}", "{{ item.1 }}"]
+  loop: "{{ ['stop', 'disable'] | product(retired_user_units) | list }}"
   register: retired_user_unit_off
   changed_when: retired_user_unit_off.rc == 0
   failed_when: >-
     retired_user_unit_off.rc != 0
     and 'not loaded' not in retired_user_unit_off.stderr | lower
     and 'does not exist' not in retired_user_unit_off.stderr | lower
+    and 'not found' not in retired_user_unit_off.stderr | lower
 
 - name: Remove retired host files
   ansible.builtin.file:
