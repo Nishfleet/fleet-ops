@@ -10,8 +10,7 @@
 #
 # Owner and mode: every file is root:root with its mode from git (0644, or
 # 0755 for a directory). copy follows symlinks in rootfs/, so a link to a
-# file elsewhere in the repo installs the real file (one source of truth for
-# fleet-unit-failed@.service, which the user units use too).
+# file elsewhere in the repo installs the real file.
 - name: Install fleet-ops rootfs/ onto this host
   hosts: localhost
   connection: local
@@ -89,6 +88,15 @@
       - fleet-litellm-proxy-config.path
       - fleet-grafana-provisioning.path
     retired:
+      # The Healthchecks fail ping; Prometheus SystemUnitFailed replaces it (E7).
+      - /etc/systemd/system/fleet-unit-failed@.service
+      - "{{ nish_home }}/.config/systemd/user/fleet-unit-failed@.service"
+      - /etc/systemd/system/restic-r2-backup.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-locked-copy.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-maintenance.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-restore-test.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-size-guard.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-verify.service.d/30-on-failure.conf
       # Folded into rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades.
       - /etc/apt/apt.conf.d/52nish-unattended-anthropic
       - /etc/apt/apt.conf.d/52-auto-reboot

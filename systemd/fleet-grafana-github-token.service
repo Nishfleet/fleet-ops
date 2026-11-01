@@ -26,7 +26,6 @@ Description=Mint the short-lived GitHub App token Grafana's alert webhook sends 
 # The contact points then send an empty token and the webhook answers 401; the
 # delivery rule pages hermes-urgent and spend and dead-row alerts still reach
 # Telegram.
-OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 Type=oneshot

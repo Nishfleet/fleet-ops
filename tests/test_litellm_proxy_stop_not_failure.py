@@ -24,9 +24,8 @@ def test_exit_137_from_the_stop_is_a_success() -> None:
     assert values("SuccessExitStatus") == ["137"], "only 137; 125 (podman failed to start) and 139 must stay failures"
 
 
-def test_an_oom_kill_still_fails_the_unit_and_pages() -> None:
+def test_an_oom_kill_still_fails_the_unit() -> None:
     assert values("OOMPolicy") == ["stop"], "a 137 from the kernel OOM killer must end as oom-kill, not success"
-    assert values("OnFailure") == ["fleet-unit-failed@%N.service"]
     assert values("Restart") == ["on-failure"]
 
 

@@ -139,7 +139,6 @@ def test_unit_env_defaults_match_the_test():
     assert "Environment=DRILL_KEY=%h/.config/drive/d1-backup-key.txt" in text
     assert "Environment=DRILL_STATE=%h/workspaces/agent-state/d1-restore-drill" in text
     assert "Environment=TZ=Asia/Kolkata" in text
-    assert "OnFailure=fleet-unit-failed@%N.service" in text
     assert "Requires=fleet-worker-github-token@actions:drive.service" in text
     assert "RuntimeDirectory=fleet-d1-restore-drill" in text
     assert "RuntimeDirectoryMode=0700" in text

@@ -23,7 +23,6 @@ After=fleet-litellm-postgres.service fleet-litellm-redis.service
 # fills and OnFailure never fires.
 StartLimitIntervalSec=1h
 StartLimitBurst=20
-OnFailure=fleet-unit-failed@%N.service
 
 [Container]
 Image=ghcr.io/berriai/litellm:v1.105.0@sha256:60947db020b57e204823d3fbc8bb295c85be890d7c9adcc77fb4f5fc2fe410b2

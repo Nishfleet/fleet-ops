@@ -13,7 +13,6 @@
 Description=Apply a deploy request (fleet-host-config)
 Wants=network-online.target
 After=network-online.target
-OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 Type=oneshot

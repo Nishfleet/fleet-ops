@@ -18,7 +18,6 @@ ConditionPathExists=/opt/tether/current/dist/index.js
 # hour, so neither repeats paid model calls unattended.
 StartLimitIntervalSec=3600
 StartLimitBurst=5
-OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 Type=simple
