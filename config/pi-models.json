@@ -28,7 +28,7 @@
       "name": "LiteLLM proxy (fleet seat routing, fleet-ops#4130 P2+P3a)",
       "baseUrl": "http://litellm.fleet.local:4000",
       "api": "openai-completions",
-      "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/litellm-master-key.env",
+      "apiKey": "!cut -d= -f2- /home/nish/.config/fleet-ops/seats/litellm-agent.env",
       "headers": { "x-litellm-session-id": "$FLEET_TASK_ID" },
       "models": [
         {
