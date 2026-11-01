@@ -7,7 +7,6 @@
 Description=Daily safe full update of the fleet box (ansible-pull of ansible/update.yml)
 Wants=network-online.target
 After=network-online.target
-OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 Type=oneshot

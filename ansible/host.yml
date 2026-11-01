@@ -10,8 +10,7 @@
 #
 # Owner and mode: every file is root:root with its mode from git (0644, or
 # 0755 for a directory). copy follows symlinks in rootfs/, so a link to a
-# file elsewhere in the repo installs the real file (one source of truth for
-# fleet-unit-failed@.service, which the user units use too).
+# file elsewhere in the repo installs the real file.
 - name: Install fleet-ops rootfs/ onto this host
   hosts: localhost
   connection: local
@@ -22,6 +21,7 @@
   force_handlers: true
   vars:
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
+    repo_root: "{{ (playbook_dir ~ '/..') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
     # Agent runners 1-10 stay. 11-36 are retired (fleet-ops#10480): 40 services
     # on a 12-core, 31 GB box ran at load 1. A directory goes only once its
@@ -83,8 +83,41 @@
     # Retired units and paths, removed by tasks/retired-and-drift.yml. Every
     # path the old list named was absent from the box on 2026-11-01.
     retired_units: []
-    retired_user_units: []
+    retired_user_units:
+      - fleet-sync.service
+      - fleet-litellm-proxy-config.path
+      - fleet-grafana-provisioning.path
     retired:
+      # The Healthchecks fail ping; Prometheus SystemUnitFailed replaces it (E7).
+      - /etc/systemd/system/fleet-unit-failed@.service
+      - "{{ nish_home }}/.config/systemd/user/fleet-unit-failed@.service"
+      - /etc/systemd/system/restic-r2-backup.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-locked-copy.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-maintenance.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-restore-test.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-size-guard.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-verify.service.d/30-on-failure.conf
+      # Folded into rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades.
+      - /etc/apt/apt.conf.d/52nish-unattended-anthropic
+      - /etc/apt/apt.conf.d/52-auto-reboot
+      # Codex is retired here; its rules file left the repo (fleet-ops#10935 C5).
+      - "{{ nish_home }}/.codex/rules/fleet-floor.rules"
+      # Replaced by "Install the router config" and the Grafana reload in
+      # tasks/services.yml (fleet-ops#10935 E2).
+      - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.path"
+      - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.service"
+      - "{{ nish_home }}/.config/systemd/user/fleet-grafana-provisioning.path"
+      - "{{ nish_home }}/.config/systemd/user/fleet-grafana-provisioning.service"
+      # fleet-sync's unit and the dead links it left; tasks/user-files.yml installs
+      # the files now (fleet-ops#10935 E1).
+      - "{{ nish_home }}/.config/systemd/user/fleet-sync.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/fleet-sync.service"
+      - "{{ nish_home }}/.config/fleet-worker/bootstrap.html"
+      - "{{ nish_home }}/.cursor/hooks/guard_cursor_packet.py"
+      - "{{ nish_home }}/.cursor/rules/shared-memory.mdc"
+      - "{{ nish_home }}/workspaces/tooling/fleet-ops-deploy-clone/.git/hooks/reference-transaction"
+      - /etc/tmpfiles.d/fleet-sync-metric.conf
+      - /var/lib/prometheus/node-exporter/fleet-sync.prom
       # Read only by the hand-install drift check, deleted 2026-11-01.
       - /etc/fleet-ops/box-only
     nish_home: "{{ '~nish' | expanduser }}"
@@ -168,8 +201,6 @@
 
     - ansible.builtin.import_tasks: tasks/install-config.yml
 
-    - ansible.builtin.import_tasks: tasks/agent-lock.yml
-
     - ansible.builtin.import_tasks: tasks/tincan-relay-policy.yml
 
     - ansible.builtin.import_tasks: tasks/pilot-and-retired-runners.yml
@@ -195,6 +226,8 @@
     - ansible.builtin.import_tasks: tasks/retired-and-drift.yml
 
     - ansible.builtin.import_tasks: tasks/mcp-and-agent-clis.yml
+
+    - ansible.builtin.import_tasks: tasks/user-files.yml
 
     - ansible.builtin.import_tasks: tasks/secrets.yml
 
@@ -244,6 +277,9 @@
     # then the proxy, restarted once. Fires only when a rendered Redis file changed (first
     # creation, or the password file was deleted and re-minted), never in steady state.
     # The proxy needs up to ~10 minutes to be healthy again after this.
+    - name: Restart litellm proxy
+      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host try-restart fleet-litellm-proxy.service
+
     - name: Restart litellm redis then proxy
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-litellm-redis.service fleet-litellm-proxy.service
 

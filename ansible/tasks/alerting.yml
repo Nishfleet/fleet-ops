@@ -278,6 +278,7 @@
 # push, Watchdog included, and only the dead-man outside the box would notice.
 # This is the runbook's proof, run on every deploy.
 - name: Check that alertmanager refuses the API without a credential
+  check_mode: false
   ansible.builtin.uri:
     url: http://127.0.0.1:9093/-/ready
     status_code: 401
@@ -291,6 +292,7 @@
 # the answer to the assert below, which names the status code no_log would have
 # hidden. The username comes from the prometheus config this block already read.
 - name: Check that alertmanager answers the credential Prometheus sends
+  check_mode: false
   ansible.builtin.uri:
     url: http://127.0.0.1:9093/-/ready
     url_username: "{{ (alertmanager_prometheus.content | b64decode | from_yaml).alerting.alertmanagers[0].basic_auth.username }}"

@@ -7,7 +7,6 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 UNIT = ROOT / "systemd/fleet-d1-restore-drill.service"
 TIMER = ROOT / "systemd/fleet-d1-restore-drill.timer"
-SYNC = ROOT / "systemd/fleet-sync.service"
 
 DUMP = """CREATE TABLE IF NOT EXISTS alpha (id INTEGER PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS beta (name TEXT);
@@ -140,7 +139,6 @@ def test_unit_env_defaults_match_the_test():
     assert "Environment=DRILL_KEY=%h/.config/drive/d1-backup-key.txt" in text
     assert "Environment=DRILL_STATE=%h/workspaces/agent-state/d1-restore-drill" in text
     assert "Environment=TZ=Asia/Kolkata" in text
-    assert "OnFailure=fleet-unit-failed@%N.service" in text
     assert "Requires=fleet-worker-github-token@actions:drive.service" in text
     assert "RuntimeDirectory=fleet-d1-restore-drill" in text
     assert "RuntimeDirectoryMode=0700" in text
@@ -151,16 +149,6 @@ def test_timer_runs_monthly_on_the_host_clock_and_persists():
     assert "OnCalendar=*-*-01 05:30:00 Asia/Kolkata" in text
     assert "Persistent=true" in text
     assert "WantedBy=timers.target" in text
-
-
-def test_fleet_sync_links_the_drill_pair_and_enables_the_timer():
-    text = SYNC.read_text()
-    assert "for f in fleet-d1-restore-drill.service fleet-d1-restore-drill.timer; do" in text
-    assert (
-        "systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-d1-restore-drill.service "
-        "%h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-d1-restore-drill.timer"
-    ) in text
-    assert "systemctl --user enable --now fleet-d1-restore-drill.timer" in text
 
 
 def test_the_drill_never_calls_the_cloudflare_api():

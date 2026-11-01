@@ -2,7 +2,6 @@
 Description=Agent Tincan wake for claude-vps, locked: no keys except Jev (Nish 2026-10-22)
 Wants=network-online.target user@1000.service
 After=network-online.target user@1000.service
-OnFailure=fleet-unit-failed@%N.service
 StartLimitIntervalSec=10min
 StartLimitBurst=5
 
