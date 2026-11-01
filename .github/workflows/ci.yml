@@ -1,7 +1,8 @@
 name: CI
 # Every job names the incident or rule that keeps it (owner, fleet-ops#10935,
 # 2026-11-01: "failures should be unacceptable"). No job reads anything outside
-# the PR. Hosted runners only.
+# the PR. Hosted runners only. Secret scanning and push protection are GitHub's
+# own, enabled on the repo (leaked tokens, fleet-ops#9578 and #8771); no job here.
 on:
   pull_request:
   merge_group:
@@ -25,19 +26,10 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob
-          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/claude /home/nish/.local/bin/hermes; do sudo install -D -m755 /bin/true "$b"; done
+          # Host-only binaries the units name; a stub is enough for verify.
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/claude /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /home/runner/.local/bin/tofu /opt/node-v22.23.3/bin/node /usr/bin/restic /usr/bin/rootlesskit /usr/bin/syncthing /usr/bin/tigervncserver; do sudo install -D -m755 /bin/true "$b"; done
           systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path rootfs/etc/systemd/system/*.service rootfs/etc/systemd/system/*.timer rootfs/etc/systemd/user/*.service rootfs/etc/systemd/user/*.timer
       - name: Tests under tests/, found by pytest (fleet-ops#10721)
         run: pipx run --spec pytest==8.3.5 --pip-args='pyyaml==6.0.2 jsonschema httpx jinja2' pytest -q -p no:cacheprovider tests
       - name: Workflow files lint
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
-  Gitleaks:
-    # Leaked tokens, fleet-ops#9578 and #8771.
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions: {contents: read}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false, fetch-depth: 0}
-      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
-        env: {GITHUB_TOKEN: "${{ github.token }}"}
