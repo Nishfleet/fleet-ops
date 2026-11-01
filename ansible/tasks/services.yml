@@ -40,8 +40,19 @@
     daemon_reload: true
   ignore_errors: "{{ ansible_check_mode }}"
 
-# The kept relay listener and Hermes (fleet-ops#10935): their sandbox lines
-# live in their own unit files and drop-ins, which install-config.yml copies.
+# Hermes' own installer writes hermes-gateway.service; --if-missing leaves the
+# unit it already wrote alone, and `hermes gateway restart --system` refreshes
+# it. hermes-serve.service stays ours: Hermes ships no installer for serve
+# (its desktop.md: keep `hermes serve` running under systemd). The shared
+# sandbox is hermes-.service.d/sandbox.conf (fleet-ops#10935 D9).
+- name: Install the Hermes gateway service with Hermes' own installer
+  ansible.builtin.command:
+    argv: ["{{ nish_home }}/.local/bin/hermes", gateway, install, --system, --run-as-user, nish, --if-missing, --no-start-now]
+  register: hermes_gateway_install
+  changed_when: "'already installed' not in (hermes_gateway_install.stdout | lower)"
+  when: not ansible_check_mode
+
+# The kept relay listener and Hermes (fleet-ops#10935).
 - name: Enable the relay listener and Hermes
   ansible.builtin.systemd_service:
     name: "{{ item }}"

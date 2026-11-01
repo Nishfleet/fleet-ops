@@ -106,6 +106,12 @@
       - /etc/systemd/system/timers.target.wants/fleet-runner-sandbox-apply.timer
       - /etc/polkit-1/rules.d/50-fleet-runner-restart.rules
       - /var/lib/fleet-reviewer
+      # Hermes runs on the unit its own installer writes (`hermes gateway install
+      # --system`); our drop-ins on it and on hermes-serve went (fleet-ops#10935 D9).
+      - /etc/systemd/system/hermes-gateway.service.d/60-clean-sigterm.conf
+      - /etc/systemd/system/hermes-gateway.service.d/70-oom-protect.conf
+      - /etc/systemd/system/hermes-gateway.service.d/80-hardening.conf
+      - /etc/systemd/system/hermes-serve.service.d/80-hardening.conf
       # Runner 1's pilot drop-in; fleet-runner@1.service runs it now (fleet-ops#10935).
       - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-1.service.d
       # The Healthchecks fail ping; Prometheus SystemUnitFailed replaces it (E7).
