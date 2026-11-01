@@ -8,8 +8,8 @@
   `systemctl --user disable --now fleet-grafana-github-token.timer` plus `systemctl --user mask
   fleet-grafana-github-token.service` (the quadlet also mints once per Grafana start; docs/RUNBOOK.md).
 - `rootfs/` — root-owned host config, laid out like `/` (`rootfs/etc/X` is
-  installed at `/etc/X`): system units, slices and drop-ins, `nftables.conf`,
-  `sysctl.d/`, `audit/rules.d/`, polkit rules and the prometheus config.
+  installed at `/etc/X`): system units, slices and drop-ins, polkit rules, `nftables.conf`,
+  `sysctl.d/`, `audit/rules.d/` and the prometheus config.
 - `ansible/host.yml` — the Ansible playbook that installs `rootfs/`.
   `fleet-host-config.service` runs it as root (`ansible-pull`) on every merge
   and once a day, and fails on a hand-installed file.
@@ -305,7 +305,8 @@
   user-scope `install -C` copies (`config/pi-models.json` to
   `~/.pi/agent/models.json`, `config/litellm-proxy.yaml` to
   `~/.config/fleet-ops/litellm-proxy.yaml` behind a `cmp` guard,
-  and a LINK-GUARD pass
+  a jq merge of `config/pi-packages.json` into the `packages` key of
+  `~/.pi/agent/settings.json` (fleet-ops#9302), and a LINK-GUARD pass
   that fails the unit on a throwaway-target live symlink, and on a dangling
   one outside the `~/.pi/agent/skills` mirror, which logs instead
   (fleet-ops#7743, #9967). Root-owned files (`/etc/**`, `agent.slice`, everything under

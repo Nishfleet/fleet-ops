@@ -45,3 +45,14 @@ def test_real_programs_and_missing_paths_pass(tmp_path: Path) -> None:
     real.chmod(0o755)
     proc = run(tmp_path)
     assert (proc.returncode, proc.stdout) == (0, "")
+
+
+def test_a_runner_start_script_that_is_a_copy_of_bin_true_fails_loud(tmp_path: Path) -> None:
+    """2026-10-31: a stub loop overwrote every runner's runsvc.sh, and each runner exited
+    at once on its next restart while nothing failed."""
+    d = tmp_path / ".local/share/agent-runner/20"
+    d.mkdir(parents=True)
+    shutil.copy("/bin/true", d / "runsvc.sh")
+    proc = run(tmp_path)
+    assert proc.returncode != 0
+    assert str(d / "runsvc.sh") in proc.stdout

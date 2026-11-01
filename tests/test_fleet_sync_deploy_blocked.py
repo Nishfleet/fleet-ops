@@ -133,7 +133,7 @@ def test_the_metric_directory_grants_no_write_to_an_agent() -> None:
     # over a failed deploy and silence FleetSyncFailed.
     rows = [line.split() for line in TMPFILES.read_text().splitlines() if line and not line.startswith("#")]
     assert rows == [
-        ["d", "/var/lib/prometheus/node-exporter", "0755", "root", "prometheus", "-"],
+        ["d", "/var/lib/prometheus/node-exporter", "0755", "prometheus", "prometheus", "-"],
         ["f", "/var/lib/prometheus/node-exporter/fleet-sync.prom", "0644", "nish", "nish", "-"],
     ]
 
