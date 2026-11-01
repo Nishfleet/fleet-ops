@@ -110,6 +110,8 @@ apiVersion: 1
 # leaves it live on a Grafana whose database outlives the container.
 # paid-plan-idle.yaml carries the same block for ppi-pareto, ppi-ollama and
 # ppi-cline, which fired after they left their file (fleet-ops#10198, #10206).
+# This block also names every rule the owner reset deleted from other files
+# (fleet-ops#10935).
 deleteRules:
   - orgId: 1
     uid: deploy-failed-inish-mail-filter
@@ -117,6 +119,44 @@ deleteRules:
     uid: deploy-failed-mailbox
   - orgId: 1
     uid: deploy-failed-24h-mailbox
+  - orgId: 1
+    uid: cpu-pressure-avg300
+  - orgId: 1
+    uid: scorecard-run-failure-share
+  - orgId: 1
+    uid: scorecard-products-behind
+  - orgId: 1
+    uid: scorecard-idle-runners
+  - orgId: 1
+    uid: scorecard-blocked-stale
+  - orgId: 1
+    uid: scorecard-verdict-slow
+  - orgId: 1
+    uid: scorecard-approval-slow
+  - orgId: 1
+    uid: prompt-cache-hit-low
+  - orgId: 1
+    uid: prompt-cache-share-guard
+  - orgId: 1
+    uid: queue-down-fleet-ops
+  - orgId: 1
+    uid: queue-down-2h-fleet-ops
+  - orgId: 1
+    uid: queue-stuck-pr-unmerged
+  - orgId: 1
+    uid: queue-stuck-pr-blocked
+  - orgId: 1
+    uid: queue-stuck-ask-noslip
+  - orgId: 1
+    uid: queue-stuck-issue-no-pr
+  - orgId: 1
+    uid: queue-stuck-pr-needs-split
+  - orgId: 1
+    uid: agent-runs-red-6h
+  - orgId: 1
+    uid: strong-tier-empty-worker-capable
+  - orgId: 1
+    uid: sweep-stale-fleet-ops
 
 groups:
   - orgId: 1

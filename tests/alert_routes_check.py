@@ -60,7 +60,6 @@ URGENT = {
     "Cloudflare R2 Standard storage total": "money",
     "Cloudflare R2 bucket growth": "money",
     "Cost alarm GitHub issue delivery failed": "money: the cost alarm could not report",
-    "Prompt-cache read share below 50%": "money: every request pays full input price",
     # money: a paid plan sits unused, and cancelling it is Nish's call
     "CommandCode idle": "money", "MiniMax idle": "money",
     "StepFun idle": "money", "z.ai idle": "money",
@@ -68,8 +67,6 @@ URGENT = {
     "Alibaba token-plan SG idle": "money",
     "Session hop rate above 45%": "money",
     "Session-hop alarm reads zero calls for a day": "money: the hop-rate alarm above it went blind",
-    "Queue down for 2h agent-dispatch startup_failure": "outage: the queue cannot fix itself",
-    "Agent runs red for 6h in fleet-ops": "outage: no agent run has succeeded in 6h and the runner-probe step says whether the jail or a change is the fault",
     **{f"Production deploy red for 24h {r}": "outage: the live site has not run main for a day" for r in (
         "Nishfleet/0509", "Nishfleet/aiconverter-app", "Nishfleet/drive",
         "Nishfleet/siterep-public", "Nishfleet/seo-fix-kit")},
