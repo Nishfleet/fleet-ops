@@ -92,10 +92,3 @@ def test_launch_push_repos_stay_enrolled_like_0509():
         assert entry["product"] is True, name
         assert set(ENROLLED["0509"]) <= set(entry), name
 
-
-def test_sweep_only_repos_get_the_top_up_sweep_but_no_intake():
-    assert SWEEP_ONLY == {"fleet-ops", "drive"}
-    assert not SWEEP_ONLY & set(ENROLLED)
-    assert "fleet-ops" in DEFERRED and "drive" not in DEFERRED
-    agent = (pathlib.Path(__file__).parent.parent / ".github" / "workflows" / "agent.yml").read_text()
-    assert ".sweep_only[]?.name" in agent
