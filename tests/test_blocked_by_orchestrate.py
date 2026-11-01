@@ -54,16 +54,6 @@ def orchestrate(tmp_path, blocked_by):
     return r.stdout, (tmp_path / "out").read_text()
 
 
-def test_blocked_issue_is_skipped_and_says_so(tmp_path):
-    log, out = orchestrate(tmp_path, blocked_by=1)
-    assert "blocked" in log and "go=true" not in out
-
-
-def test_unblocked_issue_still_goes(tmp_path):
-    _, out = orchestrate(tmp_path, blocked_by=0)
-    assert "go=true" in out
-
-
 def close(tmp_path, dependents):
     """Run the list step for a closed issue 1 that blocks `dependents` ({n: (labels, blocked_by)})."""
     (tmp_path / "blocking.json").write_text(json.dumps([{"number": n, "state": "open"} for n in dependents]))

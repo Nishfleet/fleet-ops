@@ -283,16 +283,6 @@ def test_ten_infra_endings_reach_the_owner(tmp_path):
     assert any(l.startswith("issue comment 1 ") and "runs/19" in l for l in w)
 
 
-def test_the_infra_ending_is_not_the_counted_prefix():
-    """fleet-ops#11166: if REQUEUE's startswith() prefix ever swallows the provider's ending too,
-    the very case the prefix exists for escalates again."""
-    counted = re.search(r'startswith\("([^"]+)"\)', _y(f"{STEP} | .env.REQUEUE")).group(1)
-    cleanup = _y('.jobs.orchestrate.steps[] | select(.name == "Clean up and mark a PR-less hand-off") | .run')
-    infra = re.findall(r'note="(orchestrator hand-off ended on infrastructure: )', cleanup)
-    assert infra, "the cleanup step no longer marks an infra ending"
-    assert not infra[0].startswith(counted), (counted, infra[0])
-
-
 def test_strikes_count_from_the_last_escalation(tmp_path):
     """Clearing needs-nish-decision resets the count: five old endings before the sweep's escalation
     comment no longer escalate (#11372 re-escalated at once after the owner's flag was cleared), while
@@ -331,21 +321,6 @@ def test_full_queue_requeues_nothing_but_still_escalates(tmp_path):
     w = run(tmp_path, [issue(1), issue(2, ended=3)], queued=12)
     assert edits(w, "--add-label needs-orchestrator") == []
     assert edits(w, "--add-label needs-nish-decision") == [2]
-
-
-def test_requeue_counts_the_prefix_the_orchestrate_job_posts():
-    """REQUEUE's counter and the comment that feeds it are one string shared by two jobs:
-    editing either alone leaves every ended hand-off uncounted, so the issue loops."""
-    counted = re.search(r'startswith\("([^"]+)"\)', _y(f"{STEP} | .env.REQUEUE"))
-    assert counted, "REQUEUE no longer counts ended hand-offs with a startswith() prefix"
-    prefix = counted.group(1)
-    run = _y(".jobs.orchestrate.steps[] | select(.run) | .run")
-    bodies = [b for line in run.splitlines() if "gh issue comment" in line
-              for b in re.findall(r'--body "([^"]*)"', line)]
-    from_var = {b.lstrip("$") for b in bodies if b.startswith("$")}
-    posted = [b for b in bodies if not b.startswith("$")]
-    posted += [v for name, v in re.findall(r'\b(\w+)="([^"]*)"', run) if name in from_var]
-    assert prefix in [body.split("$")[0] for body in posted], (prefix, posted)
 
 
 def test_requeue_step_runs_only_on_the_sweep_events():

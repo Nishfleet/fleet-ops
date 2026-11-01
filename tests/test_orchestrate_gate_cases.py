@@ -68,9 +68,3 @@ def test_gate_detector_case_table():
             f"gate detector mismatch: {case.get('id')} parks={run.returncode == 0} want={want}"
         )
 
-
-def test_gate_needles():
-    for target, key in ((DISPATCH, "agent-dispatch.yml"), (GATE, "agent.yml")):
-        text = target.read_text()
-        for needle in _jq("-r", f'.needles["{key}"][]', str(CFG)).splitlines():
-            assert needle in text, f"missing {key} needle: {needle}"

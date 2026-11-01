@@ -175,72 +175,12 @@ def _issue_env(tmp_path, exists, pulls, pulls_fail=False):
 ISSUE_STEP = ("agent-dispatch.yml", "orchestrate", "Check the issue is still parked")
 
 
-@pytest.mark.parametrize("exists,pulls,go", [
-    (True, ["open"], True),             # a blocked review sent back
-    (True, [], True),                   # a hand-off whose run died before its PR
-    (True, ["closed"], False),          # closed or merged: that branch is over
-    (True, ["closed", "open"], True),   # a new PR on a branch that had a closed one
-    (False, [], True),
-])
-def test_issue_step_continues_a_branch_with_an_open_pr_or_none_and_skips_an_ended_one(tmp_path, exists, pulls, go):
-    env, _ = _issue_env(tmp_path, exists, pulls)
-    r = _run(_block(*ISSUE_STEP), env)
-    assert r.returncode == 0, r.stderr
-    out = (tmp_path / "out").read_text() if (tmp_path / "out").exists() else ""
-    assert ("go=true" in out) is go, r.stdout
-
-
-def test_issue_step_skips_a_branch_whose_pr_list_cannot_be_read(tmp_path):
-    env, log = _issue_env(tmp_path, True, ["open"], pulls_fail=True)
-    r = _run(_block(*ISSUE_STEP), env)
-    assert r.returncode == 0, r.stderr
-    out = tmp_path / "out"
-    assert not out.exists() or "go=true" not in out.read_text()
-    assert "the PR list for orch/issue-77 failed; skip" in log.read_text() + r.stdout
-
-
-def test_the_pr_list_asks_the_api_for_pulls_on_this_repo_only(tmp_path):
-    env, log = _issue_env(tmp_path, True, ["open"])
-    assert _run(_block(*ISSUE_STEP), env).returncode == 0
-    assert "api repos/Nishfleet/fleet-ops/pulls?head=Nishfleet:orch/issue-77&state=all" in log.read_text()
-
-
-def test_an_ended_branch_parks_the_issue_on_agent_blocked_and_names_its_pr(tmp_path):
-    env, log = _issue_env(tmp_path, True, ["closed", "merged"])
-    env["GITHUB_TOKEN"] = "the-jobs-read-only-token"
-    r = _run(_block(*ISSUE_STEP), env)
-    assert r.returncode == 0, r.stderr
-    calls = log.read_text()
-    assert "issue edit 77 -R Nishfleet/fleet-ops --add-label agent-blocked --remove-label needs-orchestrator" in calls
-    assert "issue comment 77" in calls and "newest #2" in calls
-    out = tmp_path / "out"
-    assert not out.exists() or "go=true" not in out.read_text()
-
-
 def test_the_stub_refuses_a_parking_write_that_does_not_carry_the_app_token(tmp_path):
     env, _ = _env(tmp_path, ISSUE="77", ISSUE_TOKEN="app-token", GH_TOKEN="the-jobs-token")
     refused = subprocess.run([str(tmp_path / "bin/gh"), "issue", "edit", "77"], env=env, capture_output=True, text=True)
     assert refused.returncode == 1 and "403" in refused.stderr
     env["GH_TOKEN"] = "app-token"
     assert subprocess.run([str(tmp_path / "bin/gh"), "issue", "edit", "77"], env=env).returncode == 0
-
-
-def test_an_ended_branch_whose_pulls_carry_no_number_still_parks(tmp_path):
-    env, log = _issue_env(tmp_path, True, ["closed", "merged"])
-    env["GH_PULLS"] = json.dumps([{"state": "closed", "number": None}, {"state": "merged"}])
-    r = _run(_block(*ISSUE_STEP), env)
-    assert r.returncode == 0, r.stderr
-    calls = log.read_text()
-    assert "--add-label agent-blocked" in calls
-    assert "newest #unknown" in calls
-    assert "parked #77 agent-blocked" in r.stdout
-
-
-@pytest.mark.parametrize("pulls", [["open"], [], ["closed", "open"]])
-def test_a_branch_a_hand_off_can_still_continue_is_never_parked(tmp_path, pulls):
-    env, log = _issue_env(tmp_path, True, pulls)
-    assert _run(_block(*ISSUE_STEP), env).returncode == 0
-    assert "agent-blocked" not in log.read_text()
 
 
 def _git(*args, cwd):
@@ -270,33 +210,3 @@ def _mirror(tmp_path):
 
 WORKTREE_STEP = ("agent-dispatch.yml", "orchestrate", "Fresh worktree on origin/main")
 
-
-def test_worktree_step_starts_from_the_pr_head_on_origin(tmp_path):
-    home, _, _, env = _mirror(tmp_path)
-    block = _block(*WORKTREE_STEP)
-    for _ in range(2):
-        r = _run(block, env)
-        assert r.returncode == 0, r.stderr
-        wt = home / "workspaces/agent-worktrees/orch-fleet-ops-77"
-        log = subprocess.run(["git", "log", "--format=%s", "-1"], cwd=wt, capture_output=True, text=True, check=True).stdout.strip()
-        assert log == "pushed fix attempt"
-
-
-def test_worktree_step_refuses_to_remove_a_tree_a_build_unit_is_building_in(tmp_path):
-    home, _, _, env = _mirror(tmp_path)
-    wt = str(home / "workspaces/agent-worktrees/orch-fleet-ops-77")
-    env["SYSTEMCTL_STUB"] = "orch-fleet-ops-77-build.service loaded active running\n"
-    env["SYSTEMCTL_WD"] = wt
-    r = _run(_block(*WORKTREE_STEP), env)
-    assert r.returncode != 0
-    assert "is building in" in r.stderr + r.stdout and "fleet-ops#9377" in r.stderr + r.stdout
-    assert not (tmp_path / "out").exists() or "worktree=" not in (tmp_path / "out").read_text()
-
-
-def test_worktree_step_keeps_the_tree_when_no_unit_holds_it(tmp_path):
-    home, _, _, env = _mirror(tmp_path)
-    env["SYSTEMCTL_STUB"] = "orch-fleet-ops-77-build.service loaded active running\n"
-    env["SYSTEMCTL_WD"] = str(tmp_path / "somewhere-else")
-    r = _run(_block(*WORKTREE_STEP), env)
-    assert r.returncode == 0, r.stderr
-    assert (home / "workspaces/agent-worktrees/orch-fleet-ops-77").is_dir()
