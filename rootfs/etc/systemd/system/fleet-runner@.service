@@ -1,0 +1,38 @@
+# One GitHub Actions runner (instance = runner number) as the unprivileged user
+# fleet-runner, per GitHub's "Security hardening for self-hosted runners" and the
+# runner's own service template (actions/runner src/Misc/layoutbin/actions.runner.service.template).
+# fleet-runner has no sudo, no group shared with nish, and a home holding only the
+# runner installs, pi, pi's model file and the scoped router key, so a job cannot
+# read nish's logins. The worker App key reaches a job only through
+# CREDENTIALS_DIRECTORY. Installed by ansible/tasks/runners.yml (fleet-ops#10935).
+[Unit]
+Description=GitHub Actions runner netcup-agent-%i (fleet-runner)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+User=fleet-runner
+Group=fleet-runner
+WorkingDirectory=/var/lib/fleet-runner/%i
+Environment=HOME=/var/lib/fleet-runner
+Environment=VITEST_MAX_WORKERS=2
+ExecStart=/var/lib/fleet-runner/%i/runsvc.sh
+LoadCredential=nishfleet-worker.private-key.pem:/home/nish/.config/fleet-worker/nishfleet-worker.private-key.pem
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=5min
+Restart=on-failure
+RestartSec=30s
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077
+Slice=agent.slice
+MemoryHigh=4G
+MemoryMax=8G
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=40%
+
+[Install]
+WantedBy=multi-user.target

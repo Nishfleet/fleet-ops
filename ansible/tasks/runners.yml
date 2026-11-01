@@ -1,0 +1,143 @@
+# The agent runner pool (fleet-ops#10935): fleet_runner_ids run as the unprivileged
+# user fleet-runner through rootfs/etc/systemd/system/fleet-runner@.service, per
+# GitHub's "Security hardening for self-hosted runners". Its home holds only the
+# runner installs, pi, pi's model file, the scoped router key and a git credential
+# helper: no Claude, gh or Cloudflare login, and no App key (that comes in as a
+# systemd credential).
+#
+# The App cannot register runners yet (it lacks the org "Self-hosted runners"
+# permission), so each runner reuses an existing registration, copied once from
+# nish's runner directory: only while the copy has no runsvc.sh, so a re-run never
+# overwrites a live runner's state.
+- name: Create the runner user
+  ansible.builtin.user:
+    name: fleet-runner
+    system: true
+    shell: /usr/sbin/nologin
+    home: /var/lib/fleet-runner
+    create_home: true
+
+- name: Stop nish's units for the runners that move to fleet-runner
+  ansible.builtin.systemd_service:
+    name: "actions.runner.Nishfleet.netcup-agent-{{ item }}.service"
+    enabled: false
+    state: stopped
+  loop: "{{ fleet_runner_ids }}"
+  when: ('/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-' ~ item ~ '.service') is exists
+
+- name: Copy each runner registration to fleet-runner once
+  ansible.builtin.copy:
+    src: "{{ agent_runner_root }}/{{ item }}/"
+    dest: "/var/lib/fleet-runner/{{ item }}/"
+    remote_src: true
+    local_follow: false
+    owner: fleet-runner
+    group: fleet-runner
+    mode: preserve
+    directory_mode: '0750'
+  loop: "{{ fleet_runner_ids }}"
+  when:
+    - (agent_runner_root ~ '/' ~ item ~ '/runsvc.sh') is exists
+    - ('/var/lib/fleet-runner/' ~ item ~ '/runsvc.sh') is not exists
+
+# The copy keeps `bin` and `externals` as absolute links into nish's home, which
+# fleet-runner cannot enter (fleet-ops#10491), so they point at their siblings.
+- name: Read the runner links
+  ansible.builtin.stat:
+    path: "/var/lib/fleet-runner/{{ item.0 }}/{{ item.1 }}"
+  loop: "{{ fleet_runner_ids | product(['bin', 'externals']) | list }}"
+  register: fleet_runner_links
+
+- name: Point the runner links at the copy
+  ansible.builtin.file:
+    src: "{{ item.stat.lnk_target | basename }}"
+    dest: "{{ item.stat.path }}"
+    state: link
+    owner: fleet-runner
+    group: fleet-runner
+  loop: "{{ fleet_runner_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^/home/') | list }}"
+  loop_control:
+    label: "{{ item.stat.path }}"
+
+# The runner loads .env and .path over the unit's environment (fleet-ops#10510), and
+# the copies name nish's HOME, runtime dir and tool paths.
+- name: Give each runner fleet-runner's environment
+  ansible.builtin.copy:
+    content: "HOME=/var/lib/fleet-runner\nLANG=C.UTF-8\n"
+    dest: "/var/lib/fleet-runner/{{ item }}/.env"
+    owner: fleet-runner
+    group: fleet-runner
+    mode: '0644'
+  loop: "{{ fleet_runner_ids }}"
+  notify: Restart the fleet runners
+
+- name: Give each runner fleet-runner's PATH
+  ansible.builtin.copy:
+    content: "/var/lib/fleet-runner/.local/bin:/usr/local/bin:/usr/bin:/bin\n"
+    dest: "/var/lib/fleet-runner/{{ item }}/.path"
+    owner: fleet-runner
+    group: fleet-runner
+    mode: '0644'
+  loop: "{{ fleet_runner_ids }}"
+  notify: Restart the fleet runners
+
+- name: Install pi for fleet-runner
+  become: true
+  become_user: fleet-runner
+  ansible.builtin.command:
+    argv: [/usr/local/bin/npm, install, --global, --prefix, /var/lib/fleet-runner/.local, "@earendil-works/pi-coding-agent@{{ fleet_runner_pi_version }}"]
+    creates: "/var/lib/fleet-runner/.local/lib/node_modules/@earendil-works/pi-coding-agent/package.json"
+  environment:
+    HOME: /var/lib/fleet-runner
+    PATH: /usr/local/bin:/usr/bin:/bin
+
+- name: Make fleet-runner's config directories
+  ansible.builtin.file:
+    path: "/var/lib/fleet-runner/{{ item }}"
+    state: directory
+    owner: fleet-runner
+    group: fleet-runner
+    mode: '0700'
+  loop: [.pi, .pi/agent, .config, .config/fleet-ops, .config/fleet-ops/seats]
+
+- name: Install pi's model file and settings for fleet-runner
+  ansible.builtin.copy:
+    src: "{{ item.src | default(omit) }}"
+    content: "{{ item.content | default(omit) }}"
+    dest: "/var/lib/fleet-runner/.pi/agent/{{ item.dest }}"
+    owner: fleet-runner
+    group: fleet-runner
+    mode: '0600'
+  loop:
+    - {src: "{{ repo_root }}/config/pi-models.json", dest: models.json}
+    - {content: "{{ {'defaultProvider': 'litellm', 'defaultModel': 'worker-capable', 'defaultProjectTrust': 'always'} | to_nice_json }}", dest: settings.json}
+  loop_control:
+    label: "{{ item.dest }}"
+
+# The router job's scoped worker key (fleet-ops#11573): it reaches the worker model
+# groups only, never the admin API.
+- name: Give fleet-runner the scoped router key
+  ansible.builtin.copy:
+    src: "{{ nish_home }}/.config/fleet-ops/seats/litellm-agent.env"
+    dest: /var/lib/fleet-runner/.config/fleet-ops/seats/litellm-agent.env
+    remote_src: true
+    owner: fleet-runner
+    group: fleet-runner
+    mode: '0600'
+
+# What `gh auth setup-git` writes: git asks gh, and gh answers with the job's GH_TOKEN.
+- name: Let git push with the job's GitHub token
+  ansible.builtin.copy:
+    content: "[credential \"https://github.com\"]\n\thelper =\n\thelper = !/usr/bin/gh auth git-credential\n"
+    dest: /var/lib/fleet-runner/.gitconfig
+    owner: fleet-runner
+    group: fleet-runner
+    mode: '0644'
+
+- name: Start the fleet runners
+  ansible.builtin.systemd_service:
+    name: "fleet-runner@{{ item }}.service"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: "{{ fleet_runner_ids }}"
