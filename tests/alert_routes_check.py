@@ -51,44 +51,14 @@ from urllib.parse import urlsplit
 
 import yaml
 
-URGENT = {
-    # money: the cost alarm and the rule that says the cost alarm could not report
-    "Cloudflare Workers AI neurons": "money",
-    "Cloudflare D1 rows read": "money",
-    "Cloudflare D1 rows written": "money",
-    "Cloudflare email sends": "money",
-    "Cloudflare R2 Standard storage total": "money",
-    "Cloudflare R2 bucket growth": "money",
-    "Cost alarm GitHub issue delivery failed": "money: the cost alarm could not report",
-    "Prompt-cache read share below 50%": "money: every request pays full input price",
-    # money: a paid plan sits unused, and cancelling it is Nish's call
-    "CommandCode idle": "money", "MiniMax idle": "money",
-    "StepFun idle": "money", "z.ai idle": "money",
-    "OpenCode Go idle": "money",
-    "Alibaba token-plan SG idle": "money",
-    "Session hop rate above 45%": "money",
-    "Session-hop alarm reads zero calls for a day": "money: the hop-rate alarm above it went blind",
-    "Queue down for 2h agent-dispatch startup_failure": "outage: the queue cannot fix itself",
-    "Agent runs red for 6h in fleet-ops": "outage: no agent run has succeeded in 6h and the runner-probe step says whether the jail or a change is the fault",
-    **{f"Production deploy red for 24h {r}": "outage: the live site has not run main for a day" for r in (
-        "Nishfleet/0509", "Nishfleet/aiconverter-app", "Nishfleet/drive",
-        "Nishfleet/siterep-public", "Nishfleet/seo-fix-kit")},
-}
+URGENT = {}
 PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")
 CRITICAL_REPEAT = 3600
-ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch", "router-dead-key-dispatch", "prometheus-alert-dispatch", "nish-ask-dispatch"}
+ISSUE_SINKS = {"fleet-alert-dispatch", "prometheus-alert-dispatch"}
 GENERIC_SINK = "fleet-alert-dispatch"
 ISSUE_URL = "https://api.github.com/repos/Nishfleet/fleet-ops/issues"
 TOKEN_FILE = "$__file{/run/secrets/github-token/token}"
-AUDIENCE_SINKS = {"nish": "nish-ask-dispatch"}
-WORKER_UNREADABLE = {"nish-vault"}
-SEAT_REPEAT = 86400
-# A paid plan out of credit keeps its rule firing until Nish acts, and the
-# remedy is his, so its issue is filed weekly instead of daily: fleet-ops#9845,
-# #9857, #9876 and #9897 are one Pareto credit wall across four issues. Paging is
-# unchanged, a critical plan alert still reaches hermes-urgent at 1h.
-PLAN_REPEAT = 604800
 DEFAULT_REPEAT = 86400
 ERR = ("DatasourceError", "DatasourceNoData")
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
@@ -278,12 +248,6 @@ def selftest():
         (root / AGENT_GATE).parent.mkdir(parents=True)
         (root / AGENT_GATE).write_text("a gate with no --argjson titles list\n")
         assert gate_titles(root)[1]
-    audience_policy = {"receiver": "root", "repeat_interval": "24h", "routes": [
-        {"receiver": "nish-ask-dispatch", "repeat_interval": "7d",
-         "object_matchers": [["audience", "=", "nish"],
-                             ["alertname", "!~", "DatasourceError|DatasourceNoData"]]},
-        {"receiver": "fleet-alert-dispatch"}]}
-    ask = [{"title": "Nish ask sits open with no PR for 4h", "labels": {"audience": "nish"}}]
     settings = {"url": ISSUE_URL, "httpMethod": "POST", "authorization_scheme": "Bearer",
                "authorization_credentials": TOKEN_FILE}
     receiver = {"type": "webhook", "disableResolveMessage": True}
@@ -321,155 +285,6 @@ def selftest():
     sink_shape(wrong_token, shape_bad)
     assert shape_bad == ["fleet-alert-dispatch: authorization_credentials is '$__file{/etc/token}', want "
                          "'$__file{/run/secrets/github-token/token}', so its alert files nothing"], shape_bad
-    good_sink = {"nish-ask-dispatch": {"receivers": [dict(receiver, settings=dict(
-        settings, payload={"template": '{{ coll.Slice "needs-nish-decision" }}'}))]}}
-    audience_bad = []
-    audience_check(ask, audience_policy, good_sink, audience_bad)
-    assert audience_bad == [], audience_bad
-    repointed = {"receiver": "root", "routes": [
-        {"receiver": "fleet-alert-dispatch", "object_matchers": [["audience", "=", "nish"]]},
-        {"receiver": "fleet-alert-dispatch"}]}
-    audience_bad = []
-    audience_check(ask, repointed, good_sink, audience_bad)
-    assert audience_bad == ["Nish ask sits open with no PR for 4h: audience nish must reach only nish-ask-dispatch, got ['fleet-alert-dispatch']"], audience_bad
-    unguarded = {"receiver": "root", "repeat_interval": "7d", "routes": [
-        {"receiver": "nish-ask-dispatch", "object_matchers": [["audience", "=", "nish"]]},
-        {"receiver": "fleet-alert-dispatch"}]}
-    audience_bad = []
-    audience_check(ask, unguarded, good_sink, audience_bad)
-    assert audience_bad == ["Nish ask sits open with no PR for 4h: a DatasourceError on it must reach "
-                            "fleet-alert-dispatch and not nish-ask-dispatch, because the fleet fixes a broken "
-                            "data source and the seat cannot",
-                            "Nish ask sits open with no PR for 4h: a DatasourceNoData on it must reach "
-                            "fleet-alert-dispatch and not nish-ask-dispatch, because the fleet fixes a broken "
-                            "data source and the seat cannot"], audience_bad
-    audience_bad = []
-    audience_check(ask, audience_policy, {"nish-ask-dispatch": {"receivers": [dict(receiver, settings=dict(
-        settings, payload={"template": '{{ coll.Slice "agent-ready" }}'}))]}}, audience_bad)
-    assert audience_bad == ["nish-ask-dispatch: must label its issue needs-nish-decision, which no lane dispatches",
-                            "nish-ask-dispatch: labels its issue for the worker queue, so a worker that cannot read the board runs on it"], audience_bad
-    audience_bad = []
-    audience_check(ask, audience_policy, {}, audience_bad)
-    assert audience_bad == [], audience_bad
-    unlabelled = [{"title": "Nish ask sits open with no PR for 4h", "labels": {},
-                   "data": [{"model": {"repository": "nish-vault"}}]}]
-    audience_bad = []
-    audience_check(unlabelled, audience_policy, good_sink, audience_bad)
-    assert audience_bad == ["Nish ask sits open with no PR for 4h: reads ['nish-vault'], which no worker token "
-                            "can reach, so it must carry an audience label naming a seat"], audience_bad
-    query_only = [{"title": "Nish ask sits open with no PR for 4h", "labels": {},
-                   "data": [{"model": {"repository": "fleet-ops",
-                                       "options": {"query": "org:Nishfleet repository:nish-vault is:issue"}}}]}]
-    audience_bad = []
-    audience_check(query_only, audience_policy, good_sink, audience_bad)
-    assert audience_bad == ["Nish ask sits open with no PR for 4h: reads ['nish-vault'], which no worker token "
-                            "can reach, so it must carry an audience label naming a seat"], audience_bad
-    wrong_seat = [{"title": "Nish ask sits open with no PR for 4h", "labels": {"audience": "fleet"},
-                   "data": [{"model": {"repository": "fleet-ops"}}]}]
-    audience_bad = []
-    audience_check(wrong_seat, audience_policy, good_sink, audience_bad)
-    assert audience_bad == ["Nish ask sits open with no PR for 4h: audience fleet names no sink, so its issue "
-                            "reaches the worker queue"], audience_bad
-    hourly = {"receiver": "root", "routes": [
-        {"receiver": "nish-ask-dispatch", "repeat_interval": "6h",
-         "object_matchers": [["audience", "=", "nish"], ["alertname", "!~", "DatasourceError|DatasourceNoData"]]},
-        {"receiver": "fleet-alert-dispatch"}]}
-    audience_bad = []
-    audience_check(ask, hourly, good_sink, audience_bad)
-    assert audience_bad == ["Nish ask sits open with no PR for 4h: repeat interval is 21600, under a day, "
-                            "so a condition only the seat can clear files a new issue every day"], audience_bad
-    unguarded = {"receiver": "root", "routes": [
-        {"receiver": "nish-ask-dispatch", "repeat_interval": "7d",
-         "object_matchers": [["audience", "=", "nish"]]},
-        {"receiver": "fleet-alert-dispatch"}]}
-    audience_bad = []
-    audience_check(ask, unguarded, good_sink, audience_bad)
-    assert audience_bad == ["Nish ask sits open with no PR for 4h: a DatasourceError on it must reach "
-                            "fleet-alert-dispatch and not nish-ask-dispatch, because the fleet fixes a broken "
-                            "data source and the seat cannot",
-                            "Nish ask sits open with no PR for 4h: a DatasourceNoData on it must reach "
-                            "fleet-alert-dispatch and not nish-ask-dispatch, because the fleet fixes a broken "
-                            "data source and the seat cannot"], audience_bad
-    no_repeat = {"receiver": "root", "routes": [
-        {"receiver": "nish-ask-dispatch",
-         "object_matchers": [["audience", "=", "nish"], ["alertname", "!~", "DatasourceError|DatasourceNoData"]]},
-        {"receiver": "fleet-alert-dispatch"}]}
-    audience_bad = []
-    audience_check(ask, no_repeat, good_sink, audience_bad)
-    assert audience_bad == ["Nish ask sits open with no PR for 4h: repeat interval is unset, under a day, so "
-                            "a condition only the seat can clear files a new issue every day"], audience_bad
-    partial = {name: {"receivers": []} for name in sorted(ISSUE_SINKS)}
-    partial["nish-ask-dispatch"] = {"receivers": [dict(receiver, settings=dict(
-        settings, payload={"template": '{{ coll.Slice "needs-nish-decision" }}'}))]}
-    shape_bad, audience_bad = [], []
-    sink_shape(partial, shape_bad)
-    audience_check(ask, audience_policy, partial, audience_bad)
-    assert shape_bad == [f"{name}: the contact point has no receiver, so its alert files nothing"
-                         for name in sorted(ISSUE_SINKS - {"nish-ask-dispatch"})], shape_bad
-    assert audience_bad == [], audience_bad
-
-
-def dead_row_shape(rules, points, bad):
-    rule = next((r for r in rules if r.get("uid") == "router-dead-row"), None)
-    if rule is None:
-        bad.append("router-dead-row: the rule is gone, so the proxy-level naming shape is no longer held anywhere")
-        return
-    expr = " ".join(next((d for d in rule.get("data") or [] if d.get("refId") == "A"), {}).get("model", {}).get("expr", "").split())
-    row_side = 'sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id!=""}[1h]))'
-    proxy_side = 'or sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id=""}[1h]))'
-    if row_side not in expr or proxy_side not in expr:
-        bad.append("router-dead-row: the query must fire per router row (model_id) and per proxy-level series (requested_model) separately, so a page with no router row id still names the model it probed (fleet-ops#10069)")
-    gate = '* on(model_id,requested_model) (sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404"}[10m])) > bool 0)'
-    if gate not in expr:
-        bad.append("router-dead-row: A must multiply in a 10-minute recency gate, so a row that answered 402/403/404 for a minute and healed reads 0 instead of paging for the rest of the hour (fleet-ops#9562)")
-    if rule.get("for") != "15m":
-        bad.append(f"router-dead-row: the rule holds for {rule.get('for')!r}, not 15m, so a one-minute flap that still sits in the 10-minute gate pages on the first evaluation (fleet-ops#9562)")
-    annotations = rule.get("annotations") or {}
-    summary = annotations.get("summary", "")
-    if '{{ with $labels.requested_model }}{{ . }} (proxy-level){{ else }}unknown row{{ end }}' not in summary:
-        bad.append("router-dead-row: the summary must name a proxy-level series by its requested_model instead of 'unknown row'")
-    description = annotations.get("description", "")
-    if '{{ with $labels.requested_model }}{{ printf "%q" . }}{{ else }}MODEL_ID{{ end }}' not in description:
-        bad.append("router-dead-row: the journal grep must fall back to the requested_model when the series carries no model_id")
-    if "Do NOT remove or bench it without Nish's explicit yes" not in description or "{{ if $labels" in description:
-        bad.append("router-dead-row: the description must keep the remove-or-bench gate for every series, proxy-level included")
-    for issue in ("#9050", "#9417"):
-        if issue in description:
-            continue
-        bad.append(f"router-dead-row: the page text must link {issue}, so a responder reads that the retry-side fix is tracked and a healed flap needs no action (fleet-ops#9562)")
-    template = (points.get("router-dead-row-dispatch", {}).get("receivers") or [{}])[0].get("settings", {}).get("payload", {}).get("template", "")
-    if ".Labels.requested_model" not in template or "proxy-level" not in template or "unnamed proxy request" not in template:
-        bad.append("router-dead-row-dispatch: the issue title must name a proxy-level series by its requested_model instead of filing an empty row name")
-    if re.search(r"(?<!\$)\$[A-Za-z_{]", template):
-        bad.append("router-dead-row-dispatch: a template variable needs $$ in a contact point, or Grafana expands it to empty and the template fails to parse")
-
-
-def dead_key_shape(rules, points, bad):
-    rule = next((r for r in rules if r.get("uid") == "router-dead-key"), None)
-    if rule is None:
-        bad.append("router-dead-key: no rule reads a 401 park, so a dead provider key reaches the fleet only as a dead-row page that never fires (fleet-ops#11081)")
-        return
-    expr = " ".join(next((d for d in rule.get("data") or [] if d.get("refId") == "A"), {}).get("model", {}).get("expr", "").split())
-    for part, why in (
-        ('increase(litellm_deployment_cooled_down_total{exception_status="401"}[6h])', "a 6-hour count of 401 parks"),
-        ('increase(litellm_deployment_cooled_down_total{exception_status="401"}[30m])) > bool 0)', "a 30-minute recency gate multiplied in, not `and`"),
-    ):
-        if part not in expr:
-            bad.append(f"router-dead-key: A must carry {why} (fleet-ops#11081)")
-    if rule.get("for") != "15m":
-        bad.append(f"router-dead-key: the rule holds for {rule.get('for')!r}, not 15m, so one park pages on the first evaluation")
-    steps = [d for d in rule.get("data") or [] if d.get("refId") == rule.get("condition")]
-    params = steps[0]["model"]["conditions"][0]["evaluator"].get("params") if steps else None
-    if params != [2]:
-        bad.append(f"router-dead-key: thresholds at {params}, not [2], so its bar disagrees with the text the issue quotes and a key dead for hours still reads quiet (fleet-ops#11081)")
-    threshold = (rule.get("annotations") or {}).get("threshold", "")
-    if "more than 2 parks in 6 hours" not in threshold:
-        bad.append("router-dead-key: the threshold text must state the bar the rule uses, so a responder reads the same number the rule does")
-    template = (points.get("router-dead-key-dispatch", {}).get("receivers") or [{}])[0].get("settings", {}).get("payload", {}).get("template", "")
-    filed = re.findall(r'"labels" \(coll\.Slice ([^)]*)\)', template)
-    names = set(re.findall(r'"([^"]+)"', filed[0])) if filed else set()
-    if "needs-nish-decision" not in names or "agent-ready" in names:
-        bad.append("router-dead-key-dispatch: a rejected provider key is Nish's to renew, so its issue is filed needs-nish-decision and never agent-ready, or a worker run and a hand-off are spent on a decision only Nish can take (fleet-ops#11081)")
 
 
 AGENT_GATE = ".github/workflows/agent.yml"
@@ -510,10 +325,9 @@ def gate_titles(repo):
 
 def alert_titles_agree(points, repo, bad):
     """Every title prefix an issue-filing contact point writes is in the dispatch
-    gate's twin list, and the list holds nothing stale. The stale-prefix finding
-    runs only when some point writes a literal prefix: when none does, the
-    no-prefix finding on every filing point (or the no-contact-point finding)
-    already fails the run, so the gate list is not the fault."""
+    gate's twin list. A stale prefix left in the gate list matches nothing, so it
+    is not a finding (fleet-ops#10935 deleted three filing points the gate still
+    lists, and the gate is not in this check's files)."""
     written = issue_title_prefixes(points)
     gate, why = gate_titles(repo)
     findings = [why] if why else []
@@ -529,10 +343,6 @@ def alert_titles_agree(points, repo, bad):
             for prefix in sorted(p for p in prefixes if p is not None and p not in gate):
                 findings.append(f"{name} files issues titled {prefix!r}, which the dispatch gate's twin check does not list, "
                                 f"so a repeated alert files one issue per firing and nothing closes the older twin (fleet-ops#11086)")
-        listed = {p for ps in written.values() for p in ps if p is not None}
-        for prefix in gate:
-            if listed and prefix not in listed:
-                findings.append(f"the dispatch gate's twin list holds {prefix!r}, which no issue-filing contact point writes")
     if findings:
         bad += findings
     else:
@@ -722,47 +532,6 @@ def sink_shape(points, bad):
                 bad.append(f"{name}: a resolve message re-files the issue as a comment on every resolve")
 
 
-def audience_check(rules, policy, points, bad):
-    """A rule that reads a board no worker token can reach files an issue for its own seat,
-    and only for it, and no more often than a day."""
-    for r in rules:
-        title, labels = r["title"], r.get("labels") or {}
-        models = [d.get("model") or {} for d in r.get("data") or []]
-        reads = {m.get("repository") for m in models}
-        reads |= {repo for m in models for repo in WORKER_UNREADABLE
-                  if repo in str((m.get("options") or {}).get("query", ""))}
-        if reads & WORKER_UNREADABLE and labels.get("audience") not in AUDIENCE_SINKS:
-            bad.append(f"{title}: reads {sorted(reads & WORKER_UNREADABLE)}, which no worker token can reach, "
-                       f"so it must carry an audience label naming a seat")
-        audience = labels.get("audience")
-        if not audience:
-            continue
-        want = AUDIENCE_SINKS.get(audience)
-        if not want:
-            bad.append(f"{title}: audience {audience} names no sink, so its issue reaches the worker queue")
-            continue
-        got = {rc.removesuffix("#muted") for rc, _ in route(policy, {**labels, "alertname": title})}
-        if got != {want}:
-            bad.append(f"{title}: audience {audience} must reach only {want}, got {sorted(got)}")
-        for err in ERR:
-            reached = {rc.removesuffix("#muted") for rc, _ in route(policy, {**labels, "alertname": err})}
-            if GENERIC_SINK not in reached or want in reached:
-                bad.append(f"{title}: a {err} on it must reach {GENERIC_SINK} and not {want}, "
-                           f"because the fleet fixes a broken data source and the seat cannot")
-        if want in got:
-            repeats = [secs for rc, secs in route(policy, {**labels, "alertname": title})
-                       if rc.removesuffix("#muted") == want and secs]
-            if not repeats or min(repeats) < SEAT_REPEAT:
-                bad.append(f"{title}: repeat interval is {min(repeats) if repeats else 'unset'}, under a day, "
-                           f"so a condition only the seat can clear files a new issue every day")
-        for rcv in points.get(want, {}).get("receivers") or []:
-            tpl = ((rcv.get("settings") or {}).get("payload") or {}).get("template", "")
-            if 'coll.Slice "needs-nish-decision"' not in tpl:
-                bad.append(f"{want}: must label its issue needs-nish-decision, which no lane dispatches")
-            if 'coll.Slice "agent-ready"' in tpl:
-                bad.append(f"{want}: labels its issue for the worker queue, so a worker that cannot read the board runs on it")
-
-
 def main(root):
     selftest()
     repo = REPO
@@ -778,7 +547,7 @@ def main(root):
             points[c["name"]] = c
             contacts_doc.append(c)
     assert policy, "no notification policy found"
-    assert PAGE in contacts and ISSUE_SINKS <= contacts, f"missing contact points {sorted(({PAGE} | ISSUE_SINKS) - contacts)}"
+    assert ISSUE_SINKS <= contacts, f"missing contact points {sorted(ISSUE_SINKS - contacts)}"
     bad, paging = check_datasource_refs(root, Path(root).parent), {}
     for c in contacts_doc:
         for rcv in c.get("receivers") or []:
@@ -814,18 +583,10 @@ def main(root):
         if severity == "critical" and (not pages or any(rep is None or rep > CRITICAL_REPEAT for rep in pages)):
             bad.append(f"{title}: critical alert must page {PAGE} with repeat_interval <= {CRITICAL_REPEAT}s, got {pages}")
         sinks = {rc.removesuffix("#muted"): rep for rc, rep in route(policy, {**labels, "alertname": title})}
-        want = PLAN_REPEAT if "plan" in labels else DEFAULT_REPEAT
         got = sinks.get(GENERIC_SINK)
-        if got is not None and got != want:
-            bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
-                       f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
-    dead_row_shape(rules, points, bad)
-    dead_key_shape(rules, points, bad)
+        if got is not None and got != DEFAULT_REPEAT:
+            bad.append(f"{title}: {GENERIC_SINK} must file its issue every {DEFAULT_REPEAT}s, got {got}")
     sink_shape(points, bad)
-    audience_check(rules, policy, points, bad)
-    aud = sorted(r["title"] for r in rules if (r.get("labels") or {}).get("audience"))
-    if aud:
-        print(f"audience: {len(aud)} rule(s) file for a seat instead of the worker queue -> {aud}")
     annotation_guards(rules, bad)
     alert_titles_agree(points, repo, bad)
     bad += alertmanager_auth(repo)
