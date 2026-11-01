@@ -3,7 +3,7 @@
 # No row for opencode, 2026-11-01: usage-wall fix #11245, dropped by the owner keep rule (fleet-ops#10935).
 # No row for commandcode, 2026-11-01: order fix #11378, dropped by the owner keep rule (fleet-ops#10935).
 # No row for minimax, 2026-11-01: 429 parking #11494, dropped by the owner keep rule (fleet-ops#10935).
-# No row for stepfun, 2026-11-01: wall parking #11148 and a 400 on every call since 2026-10-30, dropped by the owner keep rule (fleet-ops#10935).
+# No row for stepfun, 2026-11-01: wall parking #11148, and no row has answered a call since 2026-10-30, dropped by the owner keep rule (fleet-ops#10935).
 # No row for synthetic, 2026-11-01: wall parking #11479 and order fix #11285, dropped by the owner keep rule (fleet-ops#10935).
 # Approved zai: glm-5.3-flash
 # No row for straitly, 2026-11-01: free credit, dropped by the owner keep rule (fleet-ops#10935).
