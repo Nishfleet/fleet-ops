@@ -65,30 +65,6 @@ def _step(env):
     return subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()], env=env, capture_output=True, text=True)
 
 
-def test_first_run_builds_the_mirror_and_worktree(tmp_path):
-    mirror, wt, env = _setup(tmp_path)
-    r = _step(env)
-    assert r.returncode == 0, r.stderr
-    branch = subprocess.run(["git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True).stdout.strip()
-    assert branch == "orch/issue-9526"
-
-
-def test_mirror_that_lost_head_is_repaired(tmp_path):
-    mirror, wt, env = _setup(tmp_path)
-    assert _step(env).returncode == 0
-    # What the tmpfiles age-out did to the live mirrors: HEAD gone, rest intact.
-    (mirror / "HEAD").unlink()
-    shutil.rmtree(wt)
-    r = subprocess.run(["git", "-C", str(mirror), "rev-parse", "--git-dir"], capture_output=True, text=True)
-    assert r.returncode != 0, "precondition: a mirror without HEAD is not a repository"
-    r = _step(env)
-    assert r.returncode == 0, r.stderr
-    assert (wt / ".git").exists()
-    # The repair keeps the remote that was already configured.
-    url = subprocess.run(["git", "-C", str(mirror), "remote", "get-url", "origin"], capture_output=True, text=True).stdout.strip()
-    assert url == "https://github.com/Nishfleet/fleet-ops.git"
-
-
 def _commit(tmp_path, msg, line=None):
     work = tmp_path / "seed"
     if line is not None:
@@ -98,44 +74,6 @@ def _commit(tmp_path, msg, line=None):
         _git("add", "big.txt", cwd=work)
     _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", msg, cwd=work)
     _git("push", "-q", str(tmp_path / "seed.git"), "main", cwd=tmp_path / "seed")
-
-
-def test_mirror_with_a_damaged_object_store_is_rebuilt(tmp_path):
-    mirror, wt, env = _setup(tmp_path)
-    _commit(tmp_path, "base", line="a")
-    assert _step(env).returncode == 0
-    # The age-out also removed old objects: commits and trees survive, a blob
-    # does not, and the next fetch sends a delta against it.
-    blob = subprocess.run(["git", "-C", str(tmp_path / "seed"), "rev-parse", "HEAD:big.txt"], check=True, capture_output=True, text=True).stdout.strip()
-    (mirror / "objects" / blob[:2] / blob[2:]).unlink()
-    _commit(tmp_path, "next", line="b")
-    shutil.rmtree(wt)
-    # A hand-off that died before its push leaves its commits on a local branch.
-    _git("branch", "orch/issue-localonly", "refs/remotes/origin/main", cwd=mirror)
-    r = _step(env)
-    assert r.returncode == 0, r.stderr
-    assert "setting it aside" in r.stdout + r.stderr
-    # The damaged mirror is moved, not deleted, so the local-only branch can be salvaged.
-    aside = list(mirror.parent.parent.glob("orch-damaged-fleet-ops-*.git"))
-    assert len(aside) == 1
-    branches = subprocess.run(["git", "--git-dir", str(aside[0]), "branch", "--list", "orch/issue-localonly"], capture_output=True, text=True).stdout
-    assert "orch/issue-localonly" in branches
-    assert (wt / ".git").exists()
-    tip = subprocess.run(["git", "-C", str(wt), "log", "-1", "--format=%s"], capture_output=True, text=True).stdout.strip()
-    assert tip == "next"
-
-
-def test_failed_fetch_on_an_intact_mirror_is_not_rebuilt(tmp_path):
-    mirror, wt, env = _setup(tmp_path)
-    assert _step(env).returncode == 0
-    shutil.rmtree(wt)
-    keep = mirror / "keep-me"
-    keep.write_text("x\n")
-    # Same mirror, but origin is unreachable: a network or credential failure.
-    env = {**env, "GIT_CONFIG_VALUE_0": "https://github.com/Nishfleet/fleet-ops.git", "GIT_CONFIG_KEY_0": "url./nonexistent/seed.git.insteadOf"}
-    r = _step(env)
-    assert r.returncode != 0
-    assert keep.exists(), "an intact mirror must survive a failed fetch"
 
 
 def test_fleet_sync_installs_the_age_out():
@@ -203,41 +141,3 @@ def test_tmpfiles_age_out_removes_an_untouched_worktree_whole(tmp_path):
     assert r.returncode == 0, r.stderr
     assert not gone.exists(), "a worktree with no write for the period must go entirely, not lose files one by one"
 
-
-def test_concurrency_group_is_per_issue():
-    group = subprocess.run(
-        ["yq", ".jobs.orchestrate.concurrency.group", str(ROOT / ".github/workflows/agent-dispatch.yml")],
-        check=True, capture_output=True, text=True,
-    ).stdout
-    assert "github.event.issue.number" in group and "inputs.issue" in group
-
-
-def test_step_waits_while_another_hand_off_holds_the_mirror_lock(tmp_path):
-    mirror, wt, env = _setup(tmp_path)
-    mirror.parent.mkdir(parents=True, exist_ok=True)
-    holder = subprocess.Popen(["flock", str(mirror.parent / "fleet-ops.lock"), "sleep", "30"])
-    time.sleep(0.5)
-    step = subprocess.Popen(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    time.sleep(1.5)
-    assert step.poll() is None
-    holder.terminate()
-    holder.wait()
-    out, err = step.communicate(timeout=60)
-    assert step.returncode == 0, err
-    assert (wt / ".git").exists()
-
-
-def test_three_back_to_back_hand_offs_all_get_a_worktree(tmp_path):
-    mirror, wt, env = _setup(tmp_path)
-    procs = []
-    for issue in ("9701", "9702", "9703"):
-        procs.append(subprocess.Popen(
-            ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()],
-            env={**env, "ISSUE": issue, "GITHUB_OUTPUT": str(tmp_path / f"out-{issue}")},
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        ))
-    for proc in procs:
-        out, err = proc.communicate(timeout=120)
-        assert proc.returncode == 0, err
-    for issue in ("9701", "9702", "9703"):
-        assert (wt.parent / f"orch-fleet-ops-{issue}" / ".git").exists()

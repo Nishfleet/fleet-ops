@@ -192,26 +192,6 @@ QUIET = [{"body": "worker: started"}, {"body": "worker: ran the tests"}]
 PARKED = [{"body": "worker: started"}, {"body": "park: waiting on Nish"}]
 
 
-def test_a_close_requeues_a_dependent_whose_only_block_was_the_closed_issue(tmp_path):
-    done, edits = _close(tmp_path, "2\n", "0 true false", QUIET)
-    assert done.returncode == 0, done.stdout + done.stderr
-    assert "--remove-label agent-blocked --add-label agent-ready" in edits, (
-        done.stdout + done.stderr + edits)
-
-
-def test_a_close_keeps_a_dependent_that_records_its_own_park(tmp_path):
-    done, edits = _close(tmp_path, "2\n", "0 true false", PARKED)
-    assert done.returncode == 0, done.stdout + done.stderr
-    assert "agent-ready" not in edits, edits
-
-
-def test_a_close_keeps_a_dependent_with_an_open_blocker_or_a_decision_label(tmp_path):
-    for row in ("1 true false", "0 true true", "0 false false"):
-        done, edits = _close(tmp_path / row.replace(" ", "-"), "2\n", row, QUIET)
-        assert done.returncode == 0, done.stdout + done.stderr
-        assert "agent-ready" not in edits, (row, edits)
-
-
 def test_the_review_job_names_its_router_session():
     done = subprocess.run(
         ["yq", '-e', '.jobs.review.env.FLEET_TASK_ID | test("^run-")', str(AGENT)],

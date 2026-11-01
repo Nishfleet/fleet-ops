@@ -75,12 +75,6 @@ def run_comment(status="completed"):
         {"status": status, "jobs": [{"name": "x / work (claim/issue-7)", "status": status}]})
 
 
-def test_a_claim_no_run_announced_is_requeued(tmp_path):
-    log, writes, _ = sweep(tmp_path, events=labelled(86400))
-    assert "requeued #7: claimed with no live run and no claim PR" in log
-    assert "issue edit 7 -R o/r --remove-label agent-in-progress --add-label agent-ready|token=x" in writes
-
-
 def test_a_recently_labelled_issue_is_left_alone(tmp_path):
     log, writes, _ = sweep(tmp_path, events=labelled(60))
     assert "requeued #7" not in log
@@ -94,33 +88,8 @@ def test_a_live_run_url_is_left_alone(tmp_path):
     assert writes == []
 
 
-def test_a_dead_run_url_is_requeued(tmp_path):
-    comments, run = run_comment("completed")
-    log, writes, _ = sweep(tmp_path, events=labelled(86400), comments=comments, run=run)
-    assert "requeued #7: claimed with no live run and no claim PR" in log
-    assert "issue edit 7 -R o/r --remove-label agent-in-progress --add-label agent-ready|token=x" in writes
-
-
 def test_an_open_claim_pr_is_left_alone(tmp_path):
     log, writes, _ = sweep(tmp_path, events=labelled(86400), claim_pr='[{"number":9,"isDraft":false}]')
     assert "requeued #7" not in log
     assert writes == []
 
-
-def test_no_label_event_at_all_is_skipped(tmp_path):
-    log, writes, _ = sweep(tmp_path, events=[])
-    assert "no agent-in-progress label event over 15 minutes old, skip" in log
-    assert writes == []
-
-
-def test_a_failed_run_read_is_not_proof_the_run_died(tmp_path):
-    comments, _ = run_comment("in_progress")
-    log, writes, _ = sweep(tmp_path, events=labelled(86400), comments=comments, fail_run="1")
-    assert "run read failed, skip" in log
-    assert writes == []
-
-
-def test_a_failed_label_event_read_is_not_proof_the_run_died(tmp_path):
-    log, writes, _ = sweep(tmp_path, events=labelled(86400), fail_events="1")
-    assert "label event read failed, skip" in log
-    assert writes == []

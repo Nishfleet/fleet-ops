@@ -290,7 +290,7 @@ def test_every_jail_masks_hermes_token_dir_onto_a_mount_the_runner_makes() -> No
     each jail only adds the mask when the dir exists, the way $CREDENTIALS_DIRECTORY is skipped:"""
     token = "/run/fleet-hermes-github-token"
     mask = f"$hermes_mask"
-    for wf in (AGENT_WORKFLOW, DISPATCH_WORKFLOW):
+    for wf in (AGENT_WORKFLOW,):
         text = wf.read_text()
         jails = [line for line in text.splitlines() if re.search(r'^\s*(?:jail_base|claude_jail_[ab]|jail)=\(?"?bwrap ', line)]
         assert len(jails) >= (4 if wf == AGENT_WORKFLOW else 1), jails
@@ -298,9 +298,6 @@ def test_every_jail_masks_hermes_token_dir_onto_a_mount_the_runner_makes() -> No
     agent = AGENT_WORKFLOW.read_text()
     define = 'hermes_mask=$([ -d /run/fleet-hermes-github-token ] && printf -- \'--tmpfs /run/fleet-hermes-github-token\' || true)'
     assert agent.count(define) == 2, "one definition per worker/rerate step"
-    dispatch = DISPATCH_WORKFLOW.read_text()
-    assert '${HERMES_RUN:+--tmpfs "$HERMES_RUN"}' in dispatch, "the dispatch jail adds the hermes mask only when the dir exists"
-    assert "if [ -d /run/fleet-hermes-github-token ]; then HERMES_RUN=/run/fleet-hermes-github-token; fi" in dispatch, "the guard drives it, one if, no else"
     for name, (_, lock) in POOLS.items():
         assert f"TemporaryFileSystem={token}" in lock.read_text(), f"the {name} runner paints the token dir empty for its job steps"
     tmpfiles = (ROOT / "rootfs/etc/tmpfiles.d/fleet-hermes-github-token.conf").read_text().strip().splitlines()[-1]

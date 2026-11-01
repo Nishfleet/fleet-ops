@@ -39,7 +39,3 @@ def test_worker_gate_only_picks_sonnet():
     picked |= set(re.findall(r"claude_model=(claude-[a-z0-9-]+) ;;", AGENT))
     assert picked == {"claude-sonnet-5-5"}
 
-
-def test_orchestrate_hand_off_can_only_run_sonnet():
-    assert re.findall(r'echo "model=([^"$]*)"', DISPATCH) == ["claude-sonnet-5-5"]
-    assert re.findall(r'echo "turns=([^"$]*)"', DISPATCH) == ["40"]

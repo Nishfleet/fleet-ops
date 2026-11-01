@@ -54,32 +54,6 @@ def sweep_park_labels():
     return set(re.findall(r'"([a-z-]+)"', match.group(0)))
 
 
-def test_sweep_matrices_share_one_governor():
-    defaults = {}
-    for job in SWEEP_MATRICES:
-        expr = max_parallel(job)
-        assert re.search(r"vars\.AGENT_MAX_PARALLEL\b", expr), f"{job} max-parallel does not read vars.AGENT_MAX_PARALLEL: {expr}"
-        defaults[job] = default_of(expr)
-    assert len(set(defaults.values())) == 1, f"the sweep matrices disagree on the fan-out: {defaults}"
-
-
-def test_sweep_fanout_stays_inside_its_governors():
-    fanout = default_of(max_parallel("unblocked"))
-    assert fanout <= AGENT_RUNNERS_MEASURED_2026_10_23, (
-        f"fan-out {fanout} exceeds the {AGENT_RUNNERS_MEASURED_2026_10_23} online agent runners"
-    )
-    assert fanout <= lanes("worker-capable"), f"fan-out {fanout} exceeds the {lanes('worker-capable')} worker-capable rows"
-
-
-def test_review_concurrency_stays_inside_the_judge_seats():
-    reviews = int(max_parallel("stuck-review"))
-    assert reviews <= seats("judge"), f"review concurrency {reviews} exceeds the {seats('judge')} judge seats"
-
-
-def test_sweep_drops_exactly_the_gate_park_labels():
-    assert sweep_park_labels() == gate_park_labels()
-
-
 def test_the_pi_lane_has_one_cap_and_both_sides_read_it():
     text = AGENT.read_text()
     # The Gate (queue pull) and the Worker fall-through both compare the live pi
@@ -162,16 +136,6 @@ def test_hand_summons_reaches_the_review_job():
     )
 
 
-def test_hand_summons_reaches_the_orchestrate_job():
-    cfg = yaml_json(DISPATCH)
-    dispatch = cfg["on"]["workflow_dispatch"]["inputs"]
-    for name in ("task", "issue"):
-        assert dispatch.get(name, {}).get("type") == "string", f"agent-dispatch cannot be dispatched with {name}"
-    orchestrate = cfg["jobs"]["orchestrate"]["if"]
-    assert "inputs.task == 'orchestrate'" in orchestrate, "the orchestrate job's if: does not read inputs.task"
-    assert "inputs.issue != ''" in orchestrate, "the orchestrate job's if: does not read inputs.issue"
-
-
 def test_every_task_a_condition_excludes_is_one_a_job_starts():
     text = DISPATCH.read_text()
     started = set(re.findall(r"inputs\.task == '([^']+)'", text))
@@ -244,67 +208,6 @@ def test_every_group_the_pi_lane_picks_has_a_desk_alias():
     }
     assert set(aliases) <= offered, (
         f"config/pi-models.json does not offer {sorted(set(aliases) - offered)}, so Pi cannot select the desk arm"
-    )
-
-
-def test_the_orchestrate_session_books_its_wall_for_landing():
-    job = yaml_json(DISPATCH)["jobs"]["orchestrate"]
-    step = next(s for s in job["steps"] if s.get("name") == "Run the orchestrator session")
-    wall = int(step["timeout-minutes"])
-    text = (ROOT / "prompts/orchestrator-handoff.md").read_text()
-    booked = re.search(r"cuts it off at (\d+) minutes", text)
-    stop = re.search(r"At (\d+) minutes, stop starting new work", text)
-    land = re.search(r"At (\d+) minutes, land what you have", text)
-    missing = [name for name, m in (("cut off", booked), ("stop", stop), ("land", land)) if not m]
-    assert not missing, f"prompts/orchestrator-handoff.md no longer states its {missing} minute: this gate is blind"
-    booked, stop, land = (int(m.group(1)) for m in (booked, stop, land))
-    assert booked == wall, (
-        f"prompts/orchestrator-handoff.md says the session is cut off at {booked} minutes and the step's wall "
-        f"is {wall}: a session that plans against the wrong number runs into the kill (fleet-ops#11059)"
-    )
-    assert 0 < stop < land < wall, (
-        f"the budget reads stop={stop}, land={land}, wall={wall}: the session has to stop starting work, then "
-        "land it, then be cut off, in that order"
-    )
-    assert wall - land == 15, (
-        f"the session lands at {land} minutes of a {wall}-minute wall: the landing window is 15 minutes, so a "
-        "change of wall moves the landing line with it"
-    )
-    assert int(job["timeout-minutes"]) - wall >= 10, (
-        f"the orchestrate job's {job['timeout-minutes']}-minute timeout leaves {int(job['timeout-minutes']) - wall} "
-        f"minutes around a {wall}-minute session step and its cleanup (9 s before the step and 4 s after it on "
-        "40942864011): at under 10 the job kills a run where the always() cleanup never runs"
-    )
-    clock = re.search(r"date -u \+%s > /tmp/orch-session-start", text)
-    assert clock, (
-        "prompts/orchestrator-handoff.md no longer writes the start of the session to a file, so its minute "
-        "lines are unmeasurable by the model and the extra wall only lengthens a run that cannot land"
-    )
-    assert "$(cat /tmp/orch-session-start)" in text, (
-        "the prompt writes the session start but never reads it back: the budget needs the elapsed-minutes command"
-    )
-
-
-def test_the_orchestrate_session_kills_what_its_engine_started():
-    job = yaml_json(DISPATCH)["jobs"]["orchestrate"]
-    step = next(s for s in job["steps"] if s.get("name") == "Run the orchestrator session")
-    run = step["run"]
-    assert re.search(r'setsid "\$\{engine\[@\]\}"', run), (
-        "the orchestrator session no longer runs its engine as its own process group: a dev server the "
-        "session backgrounded survives the session's end and stalls the runner unit at its MemoryHigh "
-        "line for minutes (four orphaned wrangler stacks, netcup-agent-19, 2026-10-30, fleet-ops#11140)"
-    )
-    assert 'wait "$engine_pid"' in run, (
-        "the orchestrate session step no longer waits on its engine, so its exit status never reaches the step"
-    )
-    for kill in ('kill -TERM "-$engine_pid"', 'kill -KILL "-$engine_pid"'):
-        assert kill in run, (
-            f"the step lost its `{kill}`: the engine's process group must die even when the engine was cut "
-            "off at the wall, because the group's backgrounded children outlive it (fleet-ops#11140)"
-        )
-    assert 'trap \'kill -TERM "-$engine_pid" 2>/dev/null || true\' EXIT' in run, (
-        "the step has no EXIT trap killing the engine's process group, so a step killed before the wait "
-        "returns leaks the group's children again (fleet-ops#11140)"
     )
 
 

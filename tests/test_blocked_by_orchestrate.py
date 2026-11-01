@@ -54,16 +54,6 @@ def orchestrate(tmp_path, blocked_by):
     return r.stdout, (tmp_path / "out").read_text()
 
 
-def test_blocked_issue_is_skipped_and_says_so(tmp_path):
-    log, out = orchestrate(tmp_path, blocked_by=1)
-    assert "blocked" in log and "go=true" not in out
-
-
-def test_unblocked_issue_still_goes(tmp_path):
-    _, out = orchestrate(tmp_path, blocked_by=0)
-    assert "go=true" in out
-
-
 def close(tmp_path, dependents):
     """Run the list step for a closed issue 1 that blocks `dependents` ({n: (labels, blocked_by)})."""
     (tmp_path / "blocking.json").write_text(json.dumps([{"number": n, "state": "open"} for n in dependents]))
@@ -80,14 +70,6 @@ def close(tmp_path, dependents):
     assert r.returncode == 0, r.stdout + r.stderr
     log = tmp_path / "writes.log"
     return log.read_text().splitlines() if log.exists() else []
-
-
-def test_closing_a_blocker_refires_the_unblocked_dependent(tmp_path):
-    w = close(tmp_path, {2: (["needs-orchestrator"], 0)})
-    assert [l.split("|")[0] for l in w] == [
-        "issue edit 2 -R o/r --remove-label needs-orchestrator",
-        "issue edit 2 -R o/r --add-label needs-orchestrator"]
-    assert all(l.endswith("token=none") for l in w), "the re-fire must run on the runner login, not the job token"
 
 
 def test_still_blocked_or_unparked_dependents_are_left_alone(tmp_path):

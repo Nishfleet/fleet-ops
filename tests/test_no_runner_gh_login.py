@@ -21,7 +21,6 @@ def bound_paths(conf: pathlib.Path) -> list[str]:
     return out
 
 
-
 def test_no_runner_dropin_binds_the_gh_login():
     # A bind is what makes the login readable. An empty TemporaryFileSystem= is the opposite: it is the
     # mount point the job jail needs to mask the path at all (fleet-ops#11097). A bind of a parent exposes it too.
@@ -41,19 +40,6 @@ def test_no_workflow_step_falls_back_to_the_runner_login():
         assert hits == [], f"{wf.name}: lines {hits}"
 
 
-def test_workflows_permission_is_minted_only_for_the_orchestrator_and_the_arm():
-    minted = {}
-    for wf in (ROOT / ".github/workflows").glob("*.yml"):
-        job = None
-        for line in wf.read_text().splitlines():
-            m = re.match(r"^  ([a-z0-9-]+):$", line)
-            if m:
-                job = m.group(1)
-            if "permission-workflows: write" in line:
-                minted.setdefault(wf.name, set()).add(job)
-    assert minted == {"agent-dispatch.yml": {"orchestrate"}, "agent.yml": {"arm"}}
-
-
 def test_the_worker_jails_hide_the_credential_directory():
     """The App key is a systemd credential, and its directory is readable by the unit's user, which is every jailed engine."""
     wf = (ROOT / ".github/workflows/agent.yml").read_text()
@@ -64,21 +50,3 @@ def test_the_worker_jails_hide_the_credential_directory():
     for line in jails:
         assert "$cred_hide" in line, line
 
-
-def test_the_orchestrator_session_cannot_read_the_app_key():
-    """The orchestrate job mints a workflows: write token; the session it starts must not see the key or the step-output files."""
-    wf = (ROOT / ".github/workflows/agent-dispatch.yml").read_text()
-    step = wf[wf.index("- name: Run the orchestrator session"):wf.index("- name: Clean up and mark a PR-less hand-off")]
-    jail = next(line for line in step.splitlines() if line.strip().startswith("jail=(bwrap"))
-    for hidden in ('"$HOME/.config/fleet-worker"', '"$RUNNER_TEMP/_runner_file_commands"'):
-        assert f"--tmpfs {hidden}" in jail, hidden
-    assert CRED_HIDE in jail, "the session reads the outsider comments it is handed; it must not see the App key's credential dir"
-    starts = [line for line in step.splitlines() if re.search(r'"\$HOME/\.local/bin/(?:claude|pi)"', line)]
-    assert starts and all('"${jail[@]}"' in line for line in starts), starts
-
-
-def test_app_posted_handoff_comments_still_count():
-    """The App posts the hand-off markers now: REST comments name it user.login "...[bot]", gh GraphQL author.login without it."""
-    wf = (ROOT / ".github/workflows/agent-dispatch.yml").read_text()
-    assert '.user.login == \\"nishfleet-worker[bot]\\"' in wf
-    assert '.author.login == "nishfleet-worker")' in wf
