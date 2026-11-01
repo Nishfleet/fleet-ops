@@ -489,3 +489,10 @@ commit of this workflow's own first queue entry is main before the move, where t
 sat under the `hold-risky` job, so the rules read either layout. `ci.yml` runs this block against
 a fake `gh` with each read failing.
 
+Every commit in a group must map to the PR that brought it: a squash subject ends in `(#N)` and a
+merge-commit subject starts with `Merge pull request #N`, but a merge-commit or rebase merge also
+lands the branch's own commits, whose subjects carry no number. 0509 merges that way, and its first
+two gate runs failed on exactly those commits (runs 40992530675, 41016620699). An unmapped subject
+now falls back to the commits API's pull-request association for that sha, and a commit with no
+association still fails the check.
+
