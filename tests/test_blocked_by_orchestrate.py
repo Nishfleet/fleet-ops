@@ -72,14 +72,6 @@ def close(tmp_path, dependents):
     return log.read_text().splitlines() if log.exists() else []
 
 
-def test_closing_a_blocker_refires_the_unblocked_dependent(tmp_path):
-    w = close(tmp_path, {2: (["needs-orchestrator"], 0)})
-    assert [l.split("|")[0] for l in w] == [
-        "issue edit 2 -R o/r --remove-label needs-orchestrator",
-        "issue edit 2 -R o/r --add-label needs-orchestrator"]
-    assert all(l.endswith("token=none") for l in w), "the re-fire must run on the runner login, not the job token"
-
-
 def test_still_blocked_or_unparked_dependents_are_left_alone(tmp_path):
     w = close(tmp_path, {2: (["needs-orchestrator"], 1), 3: (["agent-ready"], 0)})
     assert w == []

@@ -172,9 +172,6 @@ def _issue_env(tmp_path, exists, pulls, pulls_fail=False):
     return env, log
 
 
-ISSUE_STEP = ("agent-dispatch.yml", "orchestrate", "Check the issue is still parked")
-
-
 def test_the_stub_refuses_a_parking_write_that_does_not_carry_the_app_token(tmp_path):
     env, _ = _env(tmp_path, ISSUE="77", ISSUE_TOKEN="app-token", GH_TOKEN="the-jobs-token")
     refused = subprocess.run([str(tmp_path / "bin/gh"), "issue", "edit", "77"], env=env, capture_output=True, text=True)

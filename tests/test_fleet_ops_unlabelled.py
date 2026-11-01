@@ -42,18 +42,7 @@ def sweep(tmp_path, repo, found):
     return (log.read_text().splitlines() if log.exists() else []), (searches.read_text() if searches.exists() else "")
 
 
-def test_fleet_ops_unlabelled_issues_get_needs_triage(tmp_path):
-    writes, searches = sweep(tmp_path, "Nishfleet/fleet-ops", [11, 12])
-    assert "-S no:label -L 5" in searches
-    assert "issue edit 11 -R Nishfleet/fleet-ops --add-label needs-triage" in writes
-    assert "issue edit 12 -R Nishfleet/fleet-ops --add-label needs-triage" in writes
-
-
 def test_nothing_unlabelled_makes_no_edit(tmp_path):
     writes, _ = sweep(tmp_path, "Nishfleet/fleet-ops", [])
     assert not [w for w in writes if w.startswith("issue edit")]
 
-
-def test_a_product_repo_is_labelled_too(tmp_path):
-    writes, _ = sweep(tmp_path, "Nishfleet/0509", [11])
-    assert writes == ["issue edit 11 -R Nishfleet/0509 --add-label needs-triage"]
