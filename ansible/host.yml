@@ -87,6 +87,8 @@
       - fleet-litellm-proxy-config.path
       - fleet-grafana-provisioning.path
     retired:
+      # Codex is retired here; its rules file left the repo (fleet-ops#10935 C5).
+      - "{{ nish_home }}/.codex/rules/fleet-floor.rules"
       # Replaced by "Install the router config" and the Grafana reload in
       # tasks/services.yml (fleet-ops#10935 E2).
       - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.path"
@@ -175,8 +177,6 @@
     - ansible.builtin.import_tasks: tasks/review-runners.yml
 
     - ansible.builtin.import_tasks: tasks/install-config.yml
-
-    - ansible.builtin.import_tasks: tasks/agent-lock.yml
 
     - ansible.builtin.import_tasks: tasks/tincan-relay-policy.yml
 
