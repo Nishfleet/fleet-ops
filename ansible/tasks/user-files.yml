@@ -27,7 +27,6 @@
     - cloudflare-tokens-apply.timer
     - fleet-d1-restore-drill.service
     - fleet-d1-restore-drill.timer
-    - fleet-unit-failed@.service
     - fleet-worker-github-token@.service
     - syncthing.service
     - tigervnc.service
