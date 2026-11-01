@@ -1,5 +1,12 @@
-# Scripts, wrappers and script dirs no longer wait for Nish (fleet-ops#10336, Nish 2026-10-25:
-# "I need claude vps to be my tech head"). config/risky-paths.json holds them, and its guard list makes all three reviewers approve.
-/.github/CODEOWNERS @nish3451
-# Paid-plan lock (fleet-ops#9224): removing a paid plan from the router needs Nish's yes. CI fails when a listed plan loses its last row.
-/config/paid-plans.json @nish3451
+# Fleet plumbing needs the owner's approval (Nish, 2026-11-01: "make sure it stays this
+# way, the other agents don't bloat it up ever again"). GitHub's code-owner review is the
+# gate: a PR that touches these paths cannot merge without Nish. The reviewer App covers
+# everything else.
+/.github/           @nish3451
+/ansible/           @nish3451
+/systemd/           @nish3451
+/rootfs/            @nish3451
+/containers/        @nish3451
+/config/            @nish3451
+/infra/             @nish3451
+/AGENTS.md          @nish3451
