@@ -33,7 +33,6 @@
 Description=Renew the per-repo Cloudflare tokens (tofu apply)
 After=network-online.target
 Wants=network-online.target
-OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 # Address freshness (fleet-ops#10969): nothing else compares the tfvars file

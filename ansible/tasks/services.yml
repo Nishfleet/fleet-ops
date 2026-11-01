@@ -102,7 +102,7 @@
   ignore_errors: true
 
 # The engine is one unit among many: the eval's own run fails until it is
-# fixed, and a failed unit is listed by fleet-unit-failed@.service.
+# fixed, and a failed unit shows in the SystemUnitFailed Prometheus alert.
 - name: Report a rootless Docker engine that did not start
   ansible.builtin.debug:
     msg: "dockerd-eval.service did not start ({{ dockerd_eval_up.msg | default('no message') | trim }}). drive's agent eval fails until it does."
