@@ -57,8 +57,11 @@ def test_outsider_prefixes_are_dropped_and_trusted_authors_kept():
         comment("park: c", "COLLABORATOR"),
         comment("agent run started: u", "CONTRIBUTOR", "nishfleet-worker"),
         comment("agent run infra-failed: u", "NONE", "github-actions"),
+        # The App's own real-world identity: gh shows login with the [bot]
+        # suffix and association CONTRIBUTOR.
+        comment("agent run failed: u", "CONTRIBUTOR", "nishfleet-worker[bot]"),
     ]
-    assert len(jq(prog, kept)) == 5
+    assert len(jq(prog, kept)) == 6
 
 
 def test_outsider_park_does_not_reset_the_attempt_cap():

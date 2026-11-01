@@ -53,7 +53,7 @@ permissions: {}
 # authors: a repo OWNER, MEMBER or COLLABORATOR, or the worker App and the
 # Actions bot that write them (fleet-ops#9273). A comment read starts its
 # jq with $TRUSTED_JQ and selects trusted.
-env: {TRUSTED_JQ: 'def trusted: (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login | IN("nishfleet-worker", "app/nishfleet-worker", "github-actions", "app/github-actions"));'}
+env: {TRUSTED_JQ: 'def trusted: (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login | IN("nishfleet-worker", "app/nishfleet-worker", "nishfleet-worker[bot]", "github-actions", "app/github-actions", "github-actions[bot]"));'}
 jobs:
   work:
     if: inputs.ref

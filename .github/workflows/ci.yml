@@ -1182,12 +1182,12 @@ jobs:
           done
           # The guard constants ship with the block; the Worker outcome, clock
           # and Host sample values are per case.
-          WORKER_TIMEOUT_SECS=$(block env.WORKER_TIMEOUT_SECS)
+          WORKER_TIMEOUT_SECS=$(block env.WORKER_TIMEOUT_SECS) TRUSTED_JQ=$(yq '.env.TRUSTED_JQ' "$f")
           CPU_LOAD_FACTOR=$(block env.CPU_LOAD_FACTOR)
           SWAP_GUARD_KB=$(block env.SWAP_GUARD_KB)
           INFRA_REQUEUE_CAP=$(block env.INFRA_REQUEUE_CAP)
           SHORT_RUN_SECS=$(block env.SHORT_RUN_SECS)
-          export WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP SHORT_RUN_SECS
+          export TRUSTED_JQ WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP SHORT_RUN_SECS
           # The classifier reads the Worker step's own outcome and two clocks,
           # not the jobs API (the job conclusion is still null while the job runs).
           block env.WORKER_OUTCOME | grep -qF 'steps.worker.outcome' || { echo "WORKER_OUTCOME not wired to steps.worker.outcome"; exit 1; }
@@ -1245,9 +1245,9 @@ jobs:
             mkdir -p "$STATE"
             : > "$STATE/commented"; : > "$STATE/edited"
             jq -n --arg u "https://github.com/Nishfleet/fleet-ops/actions/runs/$GITHUB_RUN_ID" --argjson s "$started_comment" --argjson p "$prior" --argjson n "$infra" \
-              '{comments: ([if $s == 1 then {body: ("agent run started: " + $u), authorAssociation: "NONE"} else empty end]
-                + [if $p == 1 then {body: "agent run failed: https://github.com/Nishfleet/fleet-ops/actions/runs/111", authorAssociation: "NONE"} else empty end]
-                + [range($n) | {body: "agent run infra-failed: https://github.com/Nishfleet/fleet-ops/actions/runs/222", authorAssociation: "NONE"}])}' > "$COMMENTS"
+              '{comments: ([if $s == 1 then {body: ("agent run started: " + $u), author: {login: "nishfleet-worker[bot]"}, authorAssociation: "CONTRIBUTOR"} else empty end]
+                + [if $p == 1 then {body: "agent run failed: https://github.com/Nishfleet/fleet-ops/actions/runs/111", author: {login: "nishfleet-worker[bot]"}, authorAssociation: "CONTRIBUTOR"} else empty end]
+                + [range($n) | {body: "agent run infra-failed: https://github.com/Nishfleet/fleet-ops/actions/runs/222", author: {login: "nishfleet-worker[bot]"}, authorAssociation: "CONTRIBUTOR"}])}' > "$COMMENTS"
             export REF=$ref WORKER_OUTCOME=$outcome STARTED=$started ENDED=$ended LOAD1=$l1 CORES=$co SWAP_USED_KB=$sw ROUTER_ERR=$rerr ENGINE=$engine
             rc=0
             PATH="$t/bin:$PATH" bash "$t/report.sh" > "$STATE/out" 2>&1 || rc=$?
