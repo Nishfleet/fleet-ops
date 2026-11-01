@@ -1,4 +1,6 @@
 name: agent-dispatch
+# One lane (fleet-ops#10935, owner reset 2026-11-01): an issue enters the lane only when a person or Jev adds agent-ready.
+# The Jev triage job (admit) and the orchestrator hand-off (orchestrate) are deleted, and agent.yml no longer parks work for them.
 on:
   # issue_comment fired ≈7,000 all-skipped runs in 30 days here and no job
   # consumes it, so the trigger is gone; fleet-ops#10944.
@@ -14,7 +16,7 @@ on:
         description: 'Issue number to dispatch, overrides the sweep and its claim-PR append'
         type: string
       task:
-        description: 'orchestrate to hand a parked issue to the orchestrator, empty for a normal sweep'
+        description: 'unused since the orchestrator was deleted (fleet-ops#10935); callers still pass it'
         type: string
   # Nishfleet/0509 keeps only a trigger stub that calls this file, so the
   # dispatch logic has one copy. github.* is the caller's, so every job below
@@ -846,21 +848,6 @@ jobs:
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       ref: ${{ matrix.ref }}
-  stuck-file:
-    needs: stuck-prs
-    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.file != '' && needs.stuck-prs.outputs.file != '[]'"
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix:
-        x: ${{ fromJSON(needs.stuck-prs.outputs.file) }}
-    permissions: {contents: read, issues: write, pull-requests: write}
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    with:
-      stuck_pr: ${{ matrix.x.pr }}
-      stuck_sha: ${{ matrix.x.sha }}
-      stuck_reason: ${{ matrix.x.reason }}
-      stuck_url: ${{ matrix.x.url }}
   red-main:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' && vars.RED_MAIN != 'off' && github.repository != 'Nishfleet/fleet-ops' &&

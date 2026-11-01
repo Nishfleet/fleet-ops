@@ -40,6 +40,19 @@ def test_no_workflow_step_falls_back_to_the_runner_login():
         assert hits == [], f"{wf.name}: lines {hits}"
 
 
+def test_workflows_permission_is_minted_only_for_the_arm():
+    minted = {}
+    for wf in (ROOT / ".github/workflows").glob("*.yml"):
+        job = None
+        for line in wf.read_text().splitlines():
+            m = re.match(r"^  ([a-z0-9-]+):$", line)
+            if m:
+                job = m.group(1)
+            if "permission-workflows: write" in line:
+                minted.setdefault(wf.name, set()).add(job)
+    assert minted == {"agent.yml": {"arm"}}
+
+
 def test_the_worker_jails_hide_the_credential_directory():
     """The App key is a systemd credential, and its directory is readable by the unit's user, which is every jailed engine."""
     wf = (ROOT / ".github/workflows/agent.yml").read_text()

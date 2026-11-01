@@ -20,60 +20,7 @@ import time
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-STEP = "Fresh worktree on origin/main"
 CONF = ROOT / "config/user-tmpfiles.d/agent-worktrees.conf"
-
-
-def _run_block():
-    out = subprocess.run(
-        ["yq", f'.jobs.orchestrate.steps[] | select(.name == "{STEP}") | .run', str(ROOT / ".github/workflows/agent-dispatch.yml")],
-        check=True, capture_output=True, text=True,
-    ).stdout
-    assert out.strip(), f"step {STEP!r} not found"
-    return out
-
-
-def _git(*args, cwd):
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
-
-
-def _setup(tmp_path):
-    home = tmp_path / "home"
-    base = home / "workspaces/agent-worktrees"
-    base.mkdir(parents=True)
-    seed = tmp_path / "seed.git"
-    work = tmp_path / "seed"
-    work.mkdir()
-    _git("init", "-q", "-b", "main", cwd=work)
-    _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "i", cwd=work)
-    _git("clone", "-q", "--bare", str(work), str(seed), cwd=tmp_path)
-    env = {
-        **os.environ,
-        "HOME": str(home),
-        "REPO": "Nishfleet/fleet-ops",
-        "ISSUE": "9526",
-        "GITHUB_OUTPUT": str(tmp_path / "out"),
-        # The step fetches https://github.com/<repo>.git; point that at the seed.
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": f"url.{seed}.insteadOf",
-        "GIT_CONFIG_VALUE_0": "https://github.com/Nishfleet/fleet-ops.git",
-    }
-    return base / ".orch-mirror/fleet-ops.git", base / "orch-fleet-ops-9526", env
-
-
-def _step(env):
-    return subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()], env=env, capture_output=True, text=True)
-
-
-def _commit(tmp_path, msg, line=None):
-    work = tmp_path / "seed"
-    if line is not None:
-        # A big file with one changed line: the next fetch sends a thin delta
-        # against a blob the mirror is expected to hold.
-        (work / "big.txt").write_text("".join(f"line {i}\n" for i in range(5000)) + f"{line}\n")
-        _git("add", "big.txt", cwd=work)
-    _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", msg, cwd=work)
-    _git("push", "-q", str(tmp_path / "seed.git"), "main", cwd=tmp_path / "seed")
 
 
 def test_fleet_sync_installs_the_age_out():

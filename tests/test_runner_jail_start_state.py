@@ -290,11 +290,9 @@ def test_every_jail_masks_hermes_token_dir_onto_a_mount_the_runner_makes() -> No
     each jail only adds the mask when the dir exists, the way $CREDENTIALS_DIRECTORY is skipped:"""
     token = "/run/fleet-hermes-github-token"
     mask = f"$hermes_mask"
-    for wf in (AGENT_WORKFLOW,):
-        text = wf.read_text()
-        jails = [line for line in text.splitlines() if re.search(r'^\s*(?:jail_base|claude_jail_[ab]|jail)=\(?"?bwrap ', line)]
-        assert len(jails) >= (4 if wf == AGENT_WORKFLOW else 1), jails
-        assert all(mask in line or "${HERMES_RUN:+--tmpfs " in line for line in jails), f"{wf.name}: one jail misses the hermes mask"
+    jails = [line for line in AGENT_WORKFLOW.read_text().splitlines() if re.search(r'^\s*(?:jail_base|claude_jail_[ab]|jail)=\(?"?bwrap ', line)]
+    assert len(jails) >= 4, jails
+    assert all(mask in line for line in jails), "one jail misses the hermes mask"
     agent = AGENT_WORKFLOW.read_text()
     define = 'hermes_mask=$([ -d /run/fleet-hermes-github-token ] && printf -- \'--tmpfs /run/fleet-hermes-github-token\' || true)'
     assert agent.count(define) == 2, "one definition per worker/rerate step"

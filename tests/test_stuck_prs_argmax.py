@@ -187,9 +187,3 @@ def test_a_report_with_no_marker_is_untouched(tmp_path):
     assert "issue close" not in _writes(tmp_path)
     assert outputs["file"] == "[]"
 
-
-@pytest.mark.parametrize("job", ["stuck-review", "stuck-arm", "stuck-rework", "stuck-file"])
-def test_dispatch_jobs_run_after_a_failed_sweep(job):
-    cond = " ".join(_y(f'.jobs."{job}".if').split())
-    assert cond.startswith("!cancelled() && ")
-    assert "needs.stuck-prs.outputs." in cond

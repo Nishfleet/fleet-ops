@@ -35,20 +35,6 @@ def _jq(args, stdin=""):
     return subprocess.run(["jq", *args], check=True, capture_output=True, text=True, input=stdin).stdout
 
 
-def test_stuck_wiring():
-    prog = _yq(f'{FIND} | .env.STUCK')
-    who = _yq(f'{FIND} | .env.APPROVERS')
-    assert prog and prog != "null", "STUCK missing"
-    assert who == _yq(".env.APPROVERS"), "APPROVERS not the coordinator-approval gate"
-    run = _yq(f'{FIND} | .run')
-    for needle in NEEDLES:
-        assert needle in run, f"missing stuck-prs wiring: {needle}"
-    for job, slot in LISTS.items():
-        assert _yq(f'.jobs."{job}".needs').strip() == "stuck-prs", f"{job} is not wired to stuck-prs"
-        assert _yq(f'.jobs."{job}".with.{slot}').strip() != "null", f"{job} is not wired to stuck-prs"
-    assert _yq(".jobs.stuck.if", GATE).strip() != "null", "agent.yml has no stuck job"
-
-
 def test_stuck_case_table():
     prog = _yq(f'{FIND} | .env.STUCK').strip()
     who = _yq(f'{FIND} | .env.APPROVERS').strip()

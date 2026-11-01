@@ -11,7 +11,6 @@ import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WF = str(ROOT / ".github/workflows/agent-dispatch.yml")
-ISSUE_STEP = '.jobs.orchestrate.steps[] | select(.id == "issue")'
 LIST_STEP = '.jobs.list.steps[] | select(.id == "list")'
 
 FAKE_GH = r"""#!/usr/bin/env bash
@@ -39,19 +38,6 @@ def _fake(tmp_path):
     gh.write_text(FAKE_GH)
     gh.chmod(0o755)
     return {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "FAKE_DIR": str(tmp_path)}
-
-
-def orchestrate(tmp_path, blocked_by):
-    (tmp_path / "issue.json").write_text(json.dumps({
-        "state": "OPEN", "labels": [{"name": "needs-orchestrator"}],
-        "issue_dependencies_summary": {"blocked_by": blocked_by}}))
-    (tmp_path / "out").write_text("")
-    env = {**_fake(tmp_path), "REPO": "o/r", "ISSUE": "5", "GH_TOKEN": "x", "GITHUB_SERVER_URL": "https://github.com",
-           "GITHUB_RUN_ID": "1", "GITHUB_OUTPUT": str(tmp_path / "out"), "DAILY_MAX": "5"}
-    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{ISSUE_STEP} | .run")],
-                       env=env, capture_output=True, text=True)
-    assert r.returncode == 0, r.stdout + r.stderr
-    return r.stdout, (tmp_path / "out").read_text()
 
 
 def close(tmp_path, dependents):

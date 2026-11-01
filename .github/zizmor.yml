@@ -16,7 +16,6 @@ rules:
         Nishfleet/fleet-ops/.github/actions/runner-probe: ref-pin
         # agent.yml's per-job steps live in actions from main, so every agent.yml job
         # runs one definition and parallel PRs edit disjoint files (fleet-ops#10723).
-        Nishfleet/fleet-ops/.github/actions/stuck: ref-pin
         # The App private key is read in one action, so the key handling is audited once
         # instead of once per job that mints a token (fleet-ops#10990).
         Nishfleet/fleet-ops/.github/actions/app-key: ref-pin

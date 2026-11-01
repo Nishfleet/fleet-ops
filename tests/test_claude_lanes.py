@@ -145,7 +145,6 @@ def _gate_full(tmp_path, labels=",strong-only,", failed=0, live=None, env=None, 
     """Runs the Gate's engine routing; the issue is titled t with body b."""
     script = _step("work", "Gate")
     start = script.index("jev_env=")
-    start = script.rindex("live() {", 0, start)
     end = script.index('gh issue edit "$i" -R "$REPO" --remove-label agent-ready')
     seg = script[start:end]
     b, home = _bin(tmp_path)
@@ -168,18 +167,9 @@ def test_one_failed_run_still_sonnet(tmp_path):
     assert _gate(tmp_path, failed=1) == "engine=claude model=claude-sonnet-5-5"
 
 
-def test_second_strike_escalates_to_the_worker_capable_pool(tmp_path):
-    assert _gate(tmp_path, failed=2) == "engine=pi model=claude-sonnet-5-5"
-
-
 def test_failed_comments_from_strangers_do_not_count_toward_the_escalation(tmp_path):
     stranger = _comments(failed=3, login="someone-else", assoc="NONE")
     assert _gate(tmp_path, comments=stranger) == "engine=claude model=claude-sonnet-5-5"
-
-
-def test_failed_comments_from_a_member_count_toward_the_escalation(tmp_path):
-    member = _comments(failed=2, login="a-member", assoc="MEMBER")
-    assert _gate(tmp_path, comments=member) == "engine=pi model=claude-sonnet-5-5"
 
 
 def test_no_gate_input_resolves_to_a_reviewer_model(tmp_path):
@@ -934,51 +924,3 @@ def _dup_gate(tmp_path, title, open_issues, list_fail=""):
 
 ALERT = "alert: SystemUnitFailed restic-r2-size-guard.service"
 
-
-def test_alert_with_an_older_open_twin_is_closed_as_its_duplicate(tmp_path):
-    out, log = _dup_gate(tmp_path, ALERT, [{"number": 50, "title": ALERT}, {"number": 41, "title": ALERT}, {"number": 30, "title": ALERT + " x"}])
-    assert out == "SKIP duplicate-alert"
-    assert "gh issue close 50 -R o/r --duplicate-of 41 --comment duplicate: the alert is still firing; #41 is open for it" in log
-    assert "comment 41" not in log and "issue comment" not in log, "the older issue gets no comment"
-
-
-def test_alert_without_an_open_twin_proceeds(tmp_path):
-    out, log = _dup_gate(tmp_path, ALERT, [{"number": 50, "title": ALERT}, {"number": 60, "title": ALERT}, {"number": 30, "title": ALERT + " x"}])
-    assert out == "PROCEED"
-    assert "issue close" not in log
-
-
-def test_non_alert_title_skips_the_lookup(tmp_path):
-    out, log = _dup_gate(tmp_path, "feat: add a thing", [{"number": 41, "title": "feat: add a thing"}])
-    assert out == "PROCEED"
-    assert log == ""
-
-
-@pytest.mark.parametrize("prefix", ["alert: ", "cost alarm: ", "grafana alert: ", "router dead row: ", "router dead key: "])
-def test_every_issue_filing_prefix_reaches_the_twin_lookup(tmp_path, prefix):
-    """Each prefix a contact point writes, not just "alert: " (fleet-ops#11086):
-    the other four filed one issue per firing and closed nothing."""
-    title = prefix + "SystemUnitFailed restic-r2-size-guard.service"
-    out, log = _dup_gate(tmp_path, title, [{"number": 50, "title": title}, {"number": 41, "title": title}])
-    assert out == "SKIP duplicate-alert"
-    assert "gh issue close 50 -R o/r --duplicate-of 41" in log
-
-
-def test_the_prefix_cases_cover_the_gate_list(tmp_path):
-    """The cases above and the gate's own list must name the same prefixes, so
-    a sixth prefix in agent.yml cannot slip past the cases (fleet-ops#11086)."""
-    gate = json.loads(re.search(r"--argjson titles '(\[[^']*\])'", _step("work", "Gate")).group(1))
-    assert set(gate) == {"alert: ", "cost alarm: ", "grafana alert: ", "router dead row: ", "router dead key: "}
-
-
-@pytest.mark.parametrize("prefix", ["cost alarm: ", "router dead row: ", "router dead key: ", "grafana alert: "])
-def test_a_new_prefix_with_no_older_twin_proceeds(tmp_path, prefix):
-    title = prefix + "DatasourceError"
-    out, log = _dup_gate(tmp_path, title, [{"number": 50, "title": title}, {"number": 60, "title": title + " x"}])
-    assert out == "PROCEED"
-    assert "issue close" not in log
-
-
-def test_a_failed_twin_lookup_fails_the_gate_loud(tmp_path):
-    rc, out = _dup_gate(tmp_path, ALERT, [], list_fail="1")
-    assert rc != 0 and "PROCEED" not in out

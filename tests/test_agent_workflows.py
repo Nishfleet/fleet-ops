@@ -133,14 +133,6 @@ def test_the_arm_step_keeps_no_path_list_of_its_own():
             f"the arm step carries a path list again ({gone}): config/risky-paths.json is the one source")
 
 
-def test_the_start_next_step_dispatches_the_issue_it_picked():
-    run = step(AGENT, '.jobs.work.steps[] | select(.name == "Start the next ready issue") | .run')
-    assert "--remove-label agent-ready" not in run, (
-        "the start-next step toggles agent-ready again: the second label event cancels the dispatch "
-        "the first one started, so dispatch the issue by number")
-    assert 'gh workflow run agent-dispatch.yml -R "$REPO" -f "issue=$n"' in run
-
-
 CLOSE = ".jobs.close-claim.steps[0].run"
 
 CLOSE_GH = r"""#!/usr/bin/env bash
