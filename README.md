@@ -6,36 +6,27 @@ script, or prompt lands unseen.
 
 How the fleet runs, in one page: [docs/README.md](docs/README.md).
 
-One doc per topic under `docs/`. Each topic below was a README section; add new
-operational prose to the topic's own file, not here.
+One doc per topic under `docs/`. Add new operational prose to the topic's own
+file, not here.
 
-- [What lives here](docs/layout.md)
 - [Install](docs/install.md)
 - [systemd by default](docs/systemd-by-default.md)
-- [Claim shared files before editing (interactive sessions)](docs/claim-shared-files.md)
 - [Daily update](docs/daily-update.md)
 - [Mac daily update](docs/mac-daily-update.md)
-- [Daily digest prompts and the waiting count (fleet-ops#10072)](docs/digest-prompts.md)
-- [Tether: our own always-on agent (fleet-ops#9980)](docs/tether.md)
-- [Agent lock (fleet-ops#9977)](docs/agent-lock.md)
-- [Remote Control stays on (OOM storm 2026-10-09)](docs/remote-control.md)
+- [Remote Control](docs/remote-control.md)
 - [Managed-settings defaults](docs/managed-settings-defaults.md)
 - [Agent autonomy drop-in](docs/agent-autonomy-drop-in.md)
-- [Claude plugin drop-ins](docs/claude-plugin-drop-ins.md)
 - [claude.ai connectors off on the server](docs/claudeai-connectors-off.md)
-- [Browser tool: Chrome DevTools MCP](docs/browser-tool.md)
+- [Browser tool](docs/browser-tool.md)
 - [Drive filesystem server](docs/drive-filesystem-server.md)
-- [CI](docs/ci.md)
-- [Allowlist](docs/allowlist.md)
-- [Intake enrolment](docs/intake-enrolment.md)
-- [Triage admission (needs-triage)](docs/triage-admission.md)
-- [Red main issues](docs/red-main-issues.md)
-- [Workflow notes](docs/workflow-notes.md)
-- [Worker capacity](docs/worker-capacity.md)
+- [Triage admission](docs/triage-admission.md)
 - [Private detail scan](docs/private-detail-scan.md)
+- [Router notes](docs/litellm-router-notes.md)
+- [Cloudflare credentials](docs/cloudflare-credentials.md)
+- [D1 migrations](docs/d1-migrations.md) and [D1 backup](docs/d1-backup-mechanism.md)
 
-Design and enforced rules: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Recovery steps:
-[docs/RUNBOOK.md](docs/RUNBOOK.md).
+Recovery steps: [docs/RUNBOOK.md](docs/RUNBOOK.md). Postmortems stay in
+[docs/incidents/](docs/incidents/).
 
 ## Tincan relay approval policy
 

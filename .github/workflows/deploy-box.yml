@@ -31,4 +31,3 @@ jobs:
           stamp="run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; echo "deploy request: $stamp"; printf '%s\n' "$stamp" > /var/lib/fleet-deploy/request
           until line=$(grep "^$stamp " /var/lib/fleet-deploy/result 2>/dev/null); do sleep 10; done
           echo "deploy verdict: $line"; read -r _ res status _ <<<"$line"; [ "$res" = success ] && [ "$status" = 0 ] || { sed -n '1,100p' /var/lib/fleet-deploy/log; exit 1; }
-      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main

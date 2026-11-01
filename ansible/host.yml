@@ -10,8 +10,7 @@
 #
 # Owner and mode: every file is root:root with its mode from git (0644, or
 # 0755 for a directory). copy follows symlinks in rootfs/, so a link to a
-# file elsewhere in the repo installs the real file (one source of truth for
-# fleet-unit-failed@.service, which the user units use too).
+# file elsewhere in the repo installs the real file.
 - name: Install fleet-ops rootfs/ onto this host
   hosts: localhost
   connection: local
@@ -22,14 +21,19 @@
   force_handlers: true
   vars:
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
+    repo_root: "{{ (playbook_dir ~ '/..') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
-    # Agent runners 1-10 stay. 11-36 are retired (fleet-ops#10480): 40 services
-    # on a 12-core, 31 GB box ran at load 1. A directory goes only once its
-    # registration is gone (fleet-ops#10632): the registration lives at GitHub
-    # and removing it needs an org admin token that the VPS key does not carry,
-    # so until `config.sh remove` has taken .runner and .credentials away, the
-    # directory is the only thing left that can still deregister the runner.
-    agent_runner_retired_ids: "{{ range(31, 37) | list }}"
+    # Every runner unit that ran as nish or as fleet-reviewer is retired: the agent
+    # lane runs on fleet_runner_ids as fleet-runner, and no workflow asks for the
+    # `review` label any more (fleet-ops#10935). 23 stays: its directory serves the
+    # nish-vault runner. A retired registration is not removed at GitHub, because no
+    # credential on this box may do that; GitHub drops a self-hosted runner that has
+    # not connected for 14 days (docs: "Removing self-hosted runners").
+    agent_runner_retired_ids: "{{ range(1, 37) | reject('equalto', 23) | list }}"
+    # The agent pool: netcup-agent-1 to 15 (Nish, fleet-ops#10935, 2026-11-01: 15,
+    # raised only after measuring), run as fleet-runner by tasks/runners.yml.
+    fleet_runner_ids: "{{ range(1, 16) | list }}"
+    fleet_runner_pi_version: 1.4.0
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
     # release's SHASUMS256.txt (https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
@@ -82,9 +86,64 @@
     tether_space_nft_src: "{{ playbook_dir }}/templates/tether-space.nft.j2"
     # Retired units and paths, removed by tasks/retired-and-drift.yml. Every
     # path the old list named was absent from the box on 2026-11-01.
-    retired_units: []
-    retired_user_units: []
+    retired_units:
+      - fleet-runner-sandbox-apply.timer
+      - fleet-runner-sandbox-apply.service
+    retired_user_units:
+      - fleet-sync.service
+      - fleet-litellm-proxy-config.path
+      - fleet-grafana-provisioning.path
     retired:
+      # The nish runner jails, their re-apply timer and restart grant, and the review
+      # runners' user state; fleet-runner@.service replaces them (fleet-ops#10935).
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-9.service.d
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-10.service.d
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-11.service.d
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-12.service.d
+      - /etc/systemd/system/fleet-runner-sandbox-apply.service
+      - /etc/systemd/system/fleet-runner-sandbox-apply.timer
+      - /etc/systemd/system/timers.target.wants/fleet-runner-sandbox-apply.timer
+      - /etc/polkit-1/rules.d/50-fleet-runner-restart.rules
+      - /var/lib/fleet-reviewer
+      # Hermes runs on the unit its own installer writes (`hermes gateway install
+      # --system`); our drop-ins on it and on hermes-serve went (fleet-ops#10935 D9).
+      - /etc/systemd/system/hermes-gateway.service.d/60-clean-sigterm.conf
+      - /etc/systemd/system/hermes-gateway.service.d/70-oom-protect.conf
+      - /etc/systemd/system/hermes-gateway.service.d/80-hardening.conf
+      - /etc/systemd/system/hermes-serve.service.d/80-hardening.conf
+      # Runner 1's pilot drop-in; fleet-runner@1.service runs it now (fleet-ops#10935).
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-1.service.d
+      # The Healthchecks fail ping; Prometheus SystemUnitFailed replaces it (E7).
+      - /etc/systemd/system/fleet-unit-failed@.service
+      - "{{ nish_home }}/.config/systemd/user/fleet-unit-failed@.service"
+      - /etc/systemd/system/restic-r2-backup.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-locked-copy.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-maintenance.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-restore-test.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-size-guard.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-verify.service.d/30-on-failure.conf
+      # Folded into rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades.
+      - /etc/apt/apt.conf.d/52nish-unattended-anthropic
+      - /etc/apt/apt.conf.d/52-auto-reboot
+      # Codex is retired here; its rules file left the repo (fleet-ops#10935 C5).
+      - "{{ nish_home }}/.codex/rules/fleet-floor.rules"
+      # Replaced by "Install the router config" and the Grafana reload in
+      # tasks/services.yml (fleet-ops#10935 E2).
+      - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.path"
+      - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.service"
+      - "{{ nish_home }}/.config/systemd/user/fleet-grafana-provisioning.path"
+      - "{{ nish_home }}/.config/systemd/user/fleet-grafana-provisioning.service"
+      # fleet-sync's unit and the dead links it left; tasks/user-files.yml installs
+      # the files now (fleet-ops#10935 E1).
+      - "{{ nish_home }}/.config/systemd/user/fleet-sync.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/fleet-sync.service"
+      - "{{ nish_home }}/.config/fleet-worker/bootstrap.html"
+      - "{{ nish_home }}/.cursor/hooks/guard_cursor_packet.py"
+      - "{{ nish_home }}/.cursor/rules/shared-memory.mdc"
+      - "{{ nish_home }}/workspaces/tooling/fleet-ops-deploy-clone/.git/hooks/reference-transaction"
+      - /etc/tmpfiles.d/fleet-sync-metric.conf
+      - /var/lib/prometheus/node-exporter/fleet-sync.prom
       # Read only by the hand-install drift check, deleted 2026-11-01.
       - /etc/fleet-ops/box-only
     nish_home: "{{ '~nish' | expanduser }}"
@@ -161,16 +220,11 @@
          | reject('match', '^(#|$)') | unique | list }}
 
   tasks:
-    # The review runners' user and registration exist before install-config.yml copies their
-    # drop-ins: a drop-in names a credential the deploy may not have, and a unit whose
-    # LoadCredential= is unreadable does not start.
-    - ansible.builtin.import_tasks: tasks/review-runners.yml
-
     - ansible.builtin.import_tasks: tasks/install-config.yml
 
-    - ansible.builtin.import_tasks: tasks/agent-lock.yml
-
     - ansible.builtin.import_tasks: tasks/tincan-relay-policy.yml
+
+    - ansible.builtin.import_tasks: tasks/runners.yml
 
     - ansible.builtin.import_tasks: tasks/pilot-and-retired-runners.yml
 
@@ -196,39 +250,30 @@
 
     - ansible.builtin.import_tasks: tasks/mcp-and-agent-clis.yml
 
+    - ansible.builtin.import_tasks: tasks/user-files.yml
+
     - ansible.builtin.import_tasks: tasks/secrets.yml
 
     - ansible.builtin.import_tasks: tasks/final-checks.yml
 
 
   handlers:
-    # The runner sandbox is read at unit start, so an installed drop-in waits for a start.
-    # This play reloads the daemon and then applies the change to the pool: the handler
-    # below starts fleet-runner-sandbox-apply.service, which restarts only the runner
-    # units whose drop-in is newer than their start and that hold no Runner.Worker
-    # process (idle), so no job is ever killed. A runner that was busy at the deploy is
-    # restarted when its job ends, within 5 min (fleet-runner-sandbox-apply.timer).
-    # Before fleet-ops#11248 this play restarted no runner and a jail tightening reached
-    # the pool only at the nightly drain, so from #11245 and #11226's merge at 18:27Z to
-    # the hand restart at 18:47Z every job failed the probe with "/run/user is readable
-    # from this job" on a unit that was running before the drop-in was installed.
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
-
-    # Runs after the reload above (handlers run in file order), so the manager applies
-    # the drop-in into its loaded unit list before the apply pass compares mtimes.
-    - name: Start the runner sandbox apply
-      ansible.builtin.systemd_service:
-        name: fleet-runner-sandbox-apply.service
-        state: started
-      # Under --check the copies above installed nothing, so the unit file may not exist.
-      ignore_errors: "{{ ansible_check_mode }}"
 
     # The Hermes units restart from tasks/services.yml, not from a handler: the
     # restart waits there for the deploy to have a minted gh login and a proof
     # that reads an issue through it, and a handler can flush before that proof
     # runs (fleet-ops#10267).
+
+    # Only when a runner's .env or .path changed, which is its first deploy as fleet-runner.
+    - name: Restart the fleet runners
+      ansible.builtin.systemd_service:
+        name: "fleet-runner@{{ item }}.service"
+        state: restarted
+        daemon_reload: true
+      loop: "{{ fleet_runner_ids }}"
 
     # Established SSH sessions live in ssh@.service and survive this (fleet-ops#10541).
     - name: Restart ssh.socket
@@ -244,6 +289,9 @@
     # then the proxy, restarted once. Fires only when a rendered Redis file changed (first
     # creation, or the password file was deleted and re-minted), never in steady state.
     # The proxy needs up to ~10 minutes to be healthy again after this.
+    - name: Restart litellm proxy
+      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host try-restart fleet-litellm-proxy.service
+
     - name: Restart litellm redis then proxy
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-litellm-redis.service fleet-litellm-proxy.service
 

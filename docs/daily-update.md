@@ -43,6 +43,8 @@ stay on; `rootfs/etc/needrestart/conf.d/50-fleet.conf` makes them only list
 services on old libraries, so they never restart a service mid-job.
 `hermes-gateway.service` and `hermes-serve.service` are not restarted by it
 either, so they run on old system libraries until the next reboot.
+`hermes-gateway.service` is the unit Hermes' own installer writes; `sudo hermes
+gateway restart --system` restarts it and rewrites it when Hermes changes it.
 `claude-remote-control.service` is never restarted, by either path. A change to
 it is therefore staged on merge: the file is copied in and the running server
 keeps its old session until Nish restarts it, because that restart cuts his

@@ -17,7 +17,6 @@ Description=Mint a one-hour nishfleet-worker App token for Nishfleet/%i (fleet-o
 #
 # Switch off: `systemctl --user mask 'fleet-worker-github-token@*.service'`;
 # every detached launch then refuses to start.
-OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 Type=oneshot

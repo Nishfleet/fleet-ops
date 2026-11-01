@@ -64,7 +64,6 @@
 
 [Unit]
 Description=Monthly restore drill over the newest D1 backups (fleet-ops#10594)
-OnFailure=fleet-unit-failed@%N.service
 Requires=fleet-worker-github-token@actions:drive.service
 After=fleet-worker-github-token@actions:drive.service
 

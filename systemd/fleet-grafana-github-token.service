@@ -9,8 +9,9 @@ Description=Mint the short-lived GitHub App token Grafana's alert webhook sends 
 # read `$__file{/run/secrets/github-token/token}`, which Grafana expands each
 # time provisioning loads, and this oneshot (fired every 20 min by
 # fleet-grafana-github-token.timer) writes a fresh token there and makes Grafana
-# reload it when the loaded token has run down. The reload is the stock admin API
-# call that fleet-grafana-provisioning.service already makes.
+# reload it when the loaded token has run down. The reload is Grafana's admin API
+# POST /api/admin/provisioning/alerting/reload (Grafana HTTP API docs, "Admin
+# API"), the call the deleted fleet-grafana-provisioning.service made.
 #
 # The token is minted from the nishfleet-worker App key that fleet-grafana
 # already mounts, scoped by the request body to issues:write on this one repo
@@ -26,7 +27,6 @@ Description=Mint the short-lived GitHub App token Grafana's alert webhook sends 
 # The contact points then send an empty token and the webhook answers 401; the
 # delivery rule pages hermes-urgent and spend and dead-row alerts still reach
 # Telegram.
-OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 Type=oneshot
@@ -80,9 +80,7 @@ ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
 # gone mid-run) reloads again at the next mint: an extra reload costs one
 # more in-flight dispatch, never a lost delivery.
 #
-# The `-` prefix: the token is minted and the file is in place, and a reload
-# that cannot get through pages through the reload unit's own OnFailure=, so
-# failing the mint with it only adds a second failed unit. On 2026-10-29 the
-# reload failed for 2.5 h and this unit failed four times with it.
-ExecStartPost=-/bin/bash -c 'set -euo pipefail; l="$$RUNTIME_DIRECTORY/provisioned-token-mint"; m="$$(stat -c %%Y "$$RUNTIME_DIRECTORY/token" 2>/dev/null || echo 0)"; loaded="$$(cat "$$l" 2>/dev/null || echo 0)"; case "$$loaded" in ""|*[!0-9]*) loaded=0;; esac; now=$$(date +%%s); if test "$$loaded" -le "$$(($$now - 2400))"; then /usr/bin/systemctl --user start fleet-grafana-provisioning.service && echo "$$m" > "$$l"; fi'
+# No `-` prefix: the reload unit is gone, so a reload that cannot get through
+# fails this unit and shows in systemctl --failed.
+ExecStartPost=/bin/bash -c 'set -euo pipefail; l="$$RUNTIME_DIRECTORY/provisioned-token-mint"; m="$$(stat -c %%Y "$$RUNTIME_DIRECTORY/token" 2>/dev/null || echo 0)"; loaded="$$(cat "$$l" 2>/dev/null || echo 0)"; case "$$loaded" in ""|*[!0-9]*) loaded=0;; esac; now=$$(date +%%s); if test "$$loaded" -le "$$(($$now - 2400))"; then if /usr/bin/systemctl --user is-active --quiet fleet-grafana.service; then curl -fsS --connect-timeout 5 --max-time 30 --retry 3 --retry-all-errors -o /dev/null -X POST --config <(printf "user = \\"admin:%%s\\"\\n" "$$(cat %h/.config/fleet-ops/grafana-admin-password)") http://127.0.0.1:3001/api/admin/provisioning/alerting/reload; echo "$$m" > "$$l"; fi; fi'
 TimeoutStartSec=300

@@ -40,17 +40,31 @@
     daemon_reload: true
   ignore_errors: "{{ ansible_check_mode }}"
 
-# The runner sandbox apply unit (fleet-ops#11248) restarts the runner units whose
-# drop-in is newer than their start and that hold no Runner.Worker process: the
-# handler covers the deploy and this timer catches a runner that was busy then,
-# within 5 min of its job ending. Starting the timer schedules the first pass;
-# it never runs the service now.
-- name: Enable the runner sandbox apply timer
+# Hermes' own installer writes hermes-gateway.service; --if-missing leaves the
+# unit it already wrote alone, and `hermes gateway restart --system` refreshes
+# it. hermes-serve.service stays ours: Hermes ships no installer for serve
+# (its desktop.md: keep `hermes serve` running under systemd). The shared
+# sandbox is hermes-.service.d/sandbox.conf (fleet-ops#10935 D9).
+- name: Install the Hermes gateway service with Hermes' own installer
+  ansible.builtin.command:
+    argv: ["{{ nish_home }}/.local/bin/hermes", gateway, install, --system, --run-as-user, nish, --if-missing, --no-start-now]
+  environment:
+    HERMES_HOME: "{{ nish_home }}/.hermes"
+  register: hermes_gateway_install
+  changed_when: "'already installed' not in (hermes_gateway_install.stdout | lower)"
+  when: not ansible_check_mode
+
+# The kept relay listener and Hermes (fleet-ops#10935).
+- name: Enable the relay listener and Hermes
   ansible.builtin.systemd_service:
-    name: fleet-runner-sandbox-apply.timer
+    name: "{{ item }}"
     enabled: true
     state: started
     daemon_reload: true
+  loop:
+    - tincan-listen-claude-vps.service
+    - hermes-gateway.service
+    - hermes-serve.service
   ignore_errors: "{{ ansible_check_mode }}"
 
 # The monthly full restore drill (fleet-ops#9770). Its units are shipped under
@@ -88,7 +102,7 @@
   ignore_errors: true
 
 # The engine is one unit among many: the eval's own run fails until it is
-# fixed, and a failed unit is listed by fleet-unit-failed@.service.
+# fixed, and a failed unit shows in the SystemUnitFailed Prometheus alert.
 - name: Report a rootless Docker engine that did not start
   ansible.builtin.debug:
     msg: "dockerd-eval.service did not start ({{ dockerd_eval_up.msg | default('no message') | trim }}). drive's agent eval fails until it does."
@@ -241,3 +255,55 @@
     - hermes_installed_sandbox_dropin.stat.exists
     - "hermes_installed_sandbox_dropin.stat.mtime | int > ([hermes_gateway_start.stdout | int, hermes_serve_start.stdout | int] | min)"
     - not (hermes_login_file.stat.exists and (hermes_login_proof is skipped or hermes_login_proof is succeeded))
+
+# The router container mounts this copy. A changed file restarts the router.
+- name: Install the router config
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../config/litellm-proxy.yaml"
+    dest: "{{ nish_config }}/fleet-ops/litellm-proxy.yaml"
+    owner: nish
+    group: nish
+    mode: "0644"
+  notify: Restart litellm proxy
+
+# Grafana reads alerting and datasource provisioning only at start or on this
+# admin API call (grafana.com/docs/grafana/latest/developers/http_api/admin/).
+- name: Read whether Grafana runs
+  ansible.builtin.command:
+    argv: [systemctl, --user, --machine=nish@.host, is-active, --quiet, fleet-grafana.service]
+  register: grafana_active
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Reload Grafana alerting and datasource provisioning
+  when: grafana_active.rc == 0
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:3001/api/admin/provisioning/{{ item }}/reload"
+    method: POST
+    url_username: admin
+    url_password: "{{ lookup('ansible.builtin.file', nish_config ~ '/fleet-ops/grafana-admin-password') }}"
+    force_basic_auth: true
+  loop: [alerting, datasources]
+  register: grafana_reload
+  until: grafana_reload is succeeded
+  retries: 6
+  delay: 10
+  changed_when: false
+  check_mode: false
+
+# Ubuntu, Claude Code, gh, Syncthing, Tailscale and Chrome update through
+# unattended-upgrades (Debian wiki UnattendedUpgrades, Origins-Pattern).
+- name: Install the unattended-upgrades origins
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/apt/apt.conf.d/52fleet-unattended-upgrades"
+    dest: /etc/apt/apt.conf.d/52fleet-unattended-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+
+# The router's Redis is labelled AutoUpdate=registry; podman's own timer pulls it.
+- name: Enable podman's image auto-update for nish's containers
+  ansible.builtin.command:
+    argv: [systemctl, --user, --machine=nish@.host, enable, --now, podman-auto-update.timer]
+  changed_when: false

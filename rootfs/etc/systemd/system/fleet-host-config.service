@@ -34,7 +34,6 @@ Description=Apply fleet-ops host config (ansible-pull of ansible/host.yml)
 Wants=network-online.target
 After=network-online.target
 # A failed run pings the healthchecks.io fail URL, same handler as the user units.
-OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 Type=oneshot

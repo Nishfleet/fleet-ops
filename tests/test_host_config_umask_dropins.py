@@ -11,10 +11,6 @@ UNITS = (
     "rootfs/etc/systemd/system/fleet-update.service",
 )
 
-# GitHub's svc.sh writes the netcup-agent unit files, so the repo holds only
-# their prefix drop-in directory.
-RUNNER_PREFIX_DROPINS = "rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d"
-
 LOGIN_PROFILE = "rootfs/etc/zsh/zprofile"
 
 
@@ -40,28 +36,14 @@ def test_rootfs_unit_does_not_set_umask_itself(unit: str) -> None:
     )
 
 
-def test_agent_runner_prefix_dropin_sets_owner_only() -> None:
-    dropin = ROOT / RUNNER_PREFIX_DROPINS / "20-umask.conf"
-    assert dropin.is_file(), f"{dropin} is missing"
-    lines = [line.strip() for line in dropin.read_text().splitlines()]
-    assert "[Service]" in lines
-    assert [line for line in lines if line.startswith("UMask=")] == ["UMask=0077"]
-
-
-def test_only_the_umask_dropin_sets_umask_on_the_runners() -> None:
-    setting = sorted(
-        dropin.name
-        for dropin in (ROOT / RUNNER_PREFIX_DROPINS).glob("*.conf")
-        if any(line.startswith("UMask=") for line in dropin.read_text().splitlines())
-    )
-    assert setting == ["20-umask.conf"], "keep UMask in 20-umask.conf only"
-
-
 def test_login_profile_sets_owner_only_umask() -> None:
     profile = ROOT / LOGIN_PROFILE
     assert profile.is_file(), f"{profile} is missing"
-    lines = [line.strip() for line in profile.read_text().splitlines() if line.strip() and not line.startswith("#")]
-    assert lines == ["umask 077"]
+    top_level = [line for line in profile.read_text().splitlines()
+                 if line and not line[0].isspace() and not line.startswith("#")]
+    assert top_level == ["umask 077", "claude() {", "}"], (
+        "the login profile holds only the umask line and the claude seats-sandbox wrapper"
+    )
 
 
 def test_host_yml_installs_the_login_profile() -> None:

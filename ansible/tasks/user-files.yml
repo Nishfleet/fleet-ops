@@ -1,0 +1,113 @@
+# nish's user units, quadlets and config files, copied from this checkout on every
+# deploy. This replaces fleet-sync.service, which symlinked them into the deploy clone
+# (fleet-ops#10935 E1). ansible.builtin.copy replaces a symlink at dest with the file
+# (follow defaults to false). The router config and Grafana provisioning are
+# tasks/services.yml's.
+- name: Keep the deploy clone on main for the units that still read it
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.git:
+    repo: https://github.com/Nishfleet/fleet-ops.git
+    dest: "{{ nish_home }}/workspaces/tooling/fleet-ops-deploy-clone"
+    version: main
+    # Adds --force to the fetch, so a moved upstream tag (v1, 2026-11-01) cannot
+    # stop the deploy with "would clobber existing tag".
+    force: true
+
+- name: Install nish's user units
+  become: true
+  become_user: nish
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/systemd/{{ item }}"
+    dest: "{{ nish_home }}/.config/systemd/user/{{ item }}"
+    mode: '0644'
+  loop:
+    - app-litellm.slice
+    - app-litellm-postgres.slice
+    - app-litellm-redis.slice
+    - cloudflare-tokens-apply.service
+    - cloudflare-tokens-apply.timer
+    - fleet-d1-restore-drill.service
+    - fleet-d1-restore-drill.timer
+    - fleet-grafana-github-token.service
+    - fleet-grafana-github-token.timer
+    - fleet-worker-github-token@.service
+    - syncthing.service
+    - tigervnc.service
+    - tincan-relay.service
+    - tmux-spawn-.scope.d/50-interactive-cpu-priority.conf
+  notify: Reload nish's user manager
+
+- name: Install nish's quadlets
+  become: true
+  become_user: nish
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/containers/quadlet/{{ item }}"
+    dest: "{{ nish_home }}/.config/containers/systemd/{{ item }}"
+    mode: '0644'
+  loop:
+    - fleet-grafana.container
+    - fleet-litellm-postgres.container
+    - fleet-litellm-proxy.container
+    - fleet-litellm-redis.container
+  notify: Reload nish's user manager
+
+- name: Install nish's agent and tool config files
+  become: true
+  become_user: nish
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/{{ item.src }}"
+    dest: "{{ nish_home }}/{{ item.dest }}"
+    mode: '0644'
+  loop:
+    - {src: AGENTS.md, dest: .pi/agent/AGENTS.md}
+    - {src: prompts/worker.md, dest: .pi/agent/prompts/worker.md}
+    - {src: config/pi-models.json, dest: .pi/agent/models.json}
+    - {src: config/claude-agents/helper.md, dest: .claude/agents/helper.md}
+    - {src: config/claude-agents/scout.md, dest: .claude/agents/scout.md}
+    - {src: config/user-tmpfiles.d/claude-max-agents.conf, dest: .config/user-tmpfiles.d/claude-max-agents.conf}
+    - {src: config/user-tmpfiles.d/agent-worktrees.conf, dest: .config/user-tmpfiles.d/agent-worktrees.conf}
+    - {src: config/intake-repos.json, dest: .config/fleet-ops/intake-repos.json}
+    - {src: credentials/app-manifest.json, dest: .config/fleet-worker/app-manifest.json}
+  loop_control:
+    label: "{{ item.dest }}"
+
+# pi rewrites its own keys in settings.json at runtime, so only .packages comes from the repo.
+- name: Read pi's settings
+  become: true
+  become_user: nish
+  ansible.builtin.slurp:
+    src: "{{ nish_home }}/.pi/agent/settings.json"
+  register: pi_settings
+
+- name: Pin pi's packages from the repo
+  become: true
+  become_user: nish
+  ansible.builtin.copy:
+    content: "{{ (pi_settings.content | b64decode | from_json) | combine(lookup('ansible.builtin.file', repo_root ~ '/config/pi-packages.json') | from_json) | to_nice_json(indent=2) }}"
+    dest: "{{ nish_home }}/.pi/agent/settings.json"
+    mode: preserve
+  when: (pi_settings.content | b64decode | from_json | combine(lookup('ansible.builtin.file', repo_root ~ '/config/pi-packages.json') | from_json)) != (pi_settings.content | b64decode | from_json)
+
+- name: Apply nish's tmpfiles rules
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command: systemd-tmpfiles --user --create
+  changed_when: false
+
+- name: Apply the user manager reload before enabling
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable nish's user timers and services
+  ansible.builtin.command:
+    argv: [systemctl, --user, --machine=nish@.host, enable, --now, "{{ item }}"]
+  loop:
+    - cloudflare-tokens-apply.timer
+    - fleet-d1-restore-drill.timer
+    - fleet-grafana-github-token.timer
+    - syncthing.service
+    - tigervnc.service
+    - tincan-relay.service
+  changed_when: false

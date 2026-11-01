@@ -1,0 +1,20 @@
+# Grafana keeps a file-provisioned rule after its file is deleted. deleteRules is
+# Grafana's documented way to remove it ("Provision alerting resources", file
+# provisioning). These 7 read the GitHub data source that #11645 deleted.
+apiVersion: 1
+
+deleteRules:
+  - orgId: 1
+    uid: deploy-failed-0509
+  - orgId: 1
+    uid: deploy-failed-aiconverter-app
+  - orgId: 1
+    uid: deploy-failed-drive
+  - orgId: 1
+    uid: deploy-failed-inish-site
+  - orgId: 1
+    uid: deploy-failed-siterep-public
+  - orgId: 1
+    uid: deploy-failed-seo-fix-kit
+  - orgId: 1
+    uid: deploy-failed-tinystudio-io-public

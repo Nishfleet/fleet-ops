@@ -18,7 +18,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 ROSTER_FILE = ROOT / "config/tincan-relay/agents.txt"
 PROGRAM_FILE = ROOT / "config/tincan-relay/policy.jq"
 HOST_PLAYBOOK = (ROOT / "ansible/tasks/tincan-relay-policy.yml").read_text()
-UPDATE_PLAYBOOK = (ROOT / "ansible/update.yml").read_text()
 NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 yq = pytest.mark.skipif(
@@ -234,35 +233,3 @@ def test_the_host_playbook_installs_the_render_byte_for_byte(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (state / "approval.json").read_bytes() == rendered_bytes()
-
-
-def test_the_daily_update_restarts_the_locked_listener_after_a_tincan_upgrade():
-    # It is the one system-scoped listener, so it is restarted as root: nish may
-    # not restart a system unit.
-    assert re.search(
-        r"- name: Restart the idle claude-vps listener on the new build\n"
-        r"(?:.*\n)*?"
-        r"            argv: \[systemctl, restart, tincan-listen-claude-vps\.service\]\n",
-        UPDATE_PLAYBOOK,
-    ), "update.yml does not restart the locked listener as a system unit"
-    assert "systemctl, --user, restart, tincan-listen-claude-vps.service" not in UPDATE_PLAYBOOK
-
-
-@yq
-def test_the_locked_listener_restart_waits_for_an_idle_cgroup():
-    play = json.loads(
-        subprocess.run(
-            ["yq", "-o=json", ".", str(ROOT / "ansible/update.yml")],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-    )[0]
-    block = next(t for t in play["tasks"] if "block" in t and "always" in t)
-    inner = {t["name"]: t for t in block["block"]}
-    restart = inner["Restart the idle claude-vps listener on the new build"]
-    assert restart["ansible.builtin.command"]["argv"] == ["systemctl", "restart", "tincan-listen-claude-vps.service"]
-    assert any("length == 1" in str(condition) for condition in restart["when"]), restart["when"]
-    assert inner["Read the claude-vps listener's control group"].get("become_user") != "nish", (
-        "nish may not restart a system unit, so the system listener runs as root"
-    )

@@ -5,9 +5,8 @@
 # pressure in the same minute (Avg10 91.33), and oomd killed all of them
 # in the same second. A cap on the parent throttles the whole group, so
 # the slice carries no MemoryHigh. What enforces now: the per-runner
-# MemoryHigh=4G and oomd rule in the template drop-in
-# (actions.runner.Nishfleet.netcup-agent-.service.d/10-agent.conf, applied
-# to every runner unit; #9091's guarantee is unchanged), and MemoryMax=28G
+# MemoryHigh=4G and oomd rule in fleet-runner@.service (every agent
+# runner; #9091's guarantee is unchanged), and MemoryMax=28G
 # below — at it the kernel ends an overflow
 # in seconds by killing the single biggest task inside the slice, instead
 # of holding every runner in a throttle.

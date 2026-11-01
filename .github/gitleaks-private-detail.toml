@@ -72,9 +72,9 @@ regexes = ['''fleet-prometheus-reload|blacksmith-flip''']
 condition = "AND"
 
 [[allowlists]]
-description = "The pilot runner drop-in hands the worker App key over with LoadCredential=, which must name the key's source path (no %h for a system unit, no inline comment to carry gitleaks:allow); fleet-ops#10153"
+description = "The fleet-runner unit hands the worker App key over with LoadCredential=, which must name the key's source path (no %h for a system unit, no inline comment to carry gitleaks:allow); fleet-ops#10153"
 targetRules = ["private-home-path"]
-paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.Nishfleet\.netcup-agent-1\.service\.d/30-pilot-user\.conf$''']
+paths = ['''(^|/)rootfs/etc/systemd/system/fleet-runner@\.service$''']
 regexes = ['''^home/nish/\.config/fleet-worker/nishfleet-worker\.private-key\.pem$''']
 condition = "AND"
 
@@ -240,22 +240,6 @@ regexes = [
 condition = "AND"
 
 [[allowlists]]
-description = "The four review runners' drop-ins hand the reviewer App key, the worker App key, the router key and one seat token over with LoadCredential= and EnvironmentFile=, and bind the tools, the rules and the deploy clone; a unit line cannot carry an inline gitleaks:allow comment and a system unit has no %h. The test reads those lines back, so it spells out one of them. Only the paths these files carry are allowed, so a new home path in any drop-in still fails the scan; fleet-ops#10950, four runners since #11069"
-targetRules = ["private-home-path", "private-fleet-seats-config"]
-paths = [
-  '''(^|/)rootfs/etc/systemd/system/actions\.runner\.Nishfleet\.netcup-agent-(9|10|11|12)\.service\.d/30-review-user\.conf$''',
-  '''^tests/test_review_runner_key\.py$''',
-]
-regexes = [
-  '''^home/nish/\.config/fleet-ops/seats/claude-seat-b\.env$''',
-  '''^home/nish/\.config/fleet-ops/seats/typesafe-jev\.env$''',
-  '''^home/nish/\.config/fleet-worker/(nishfleet-worker\.private-key\.pem)?$''',
-  '''^home/nish/(\.local/bin|\.local/lib|\.nvm|AGENTS\.md|workspaces/tooling/fleet-ops-deploy-clone)$''',
-  '''^\.config/fleet-ops/seats$''',
-]
-condition = "AND"
-
-[[allowlists]]
 description = "The review job and the arm job read the router key, and a shell line inside $( ) cannot carry a trailing gitleaks:allow comment without closing the substitution. The file reads it through ${CREDENTIALS_DIRECTORY:-$HOME/...}, so only the relative seats directory is allowed here; fleet-ops#10950"
 targetRules = ["private-fleet-seats-config"]
 paths = ['''(^|/)\.github/workflows/agent\.yml$''']
@@ -289,4 +273,32 @@ targetRules = ["private-fleet-seats-config"]
 paths = ['''^config/pi-models\.json$''']
 regexTarget = "line"
 regexes = ['''"apiKey": "!cut -d= -f2- \$HOME/\.config/fleet-ops/seats/litellm-agent\.env",$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The runner pool task gives fleet-runner the scoped key at the path pi-models.json reads (fleet-ops#10935), so it names that seats directory; only the directory itself is allowed"
+targetRules = ["private-fleet-seats-config"]
+paths = ['''^ansible/tasks/runners\.yml$''']
+regexes = ['''^\.config/fleet-ops/seats$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The login-shell claude wrapper must name the seat directory its --tmpfs hides, and that line sits inside a shell line continuation, so no line of the file can carry gitleaks:allow. Only the one relative seats directory is allowed, so a new path in this file still fails the scan; fleet-ops#11320"
+targetRules = ["private-fleet-seats-config"]
+paths = ['''(^|/)rootfs/etc/zsh/zprofile$''']
+regexes = ['''^\.config/fleet-ops/seats$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The seats-sandbox doc and its test spell the seat directory the sandbox hides, and the test runs its probe against a synthetic home, so neither file has a free comment line for every match. Only the one relative seats directory is allowed, so a new path in either file still fails the scan; fleet-ops#11320"
+targetRules = ["private-fleet-seats-config"]
+paths = ['''(^|/)(docs/managed-settings-defaults\.md|tests/test_interactive_seats_sandbox\.py)$''']
+regexes = ['''^\.config/fleet-ops/seats$''']
+condition = "AND"
+
+[[allowlists]]
+description = "Remote Control's hardening drop-in binds absolute /home/nish paths, because it is a system unit and %h there is /root, not the User= home (systemd.unit(5), Specifiers); fleet-ops#11290."
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/systemd/system/claude-remote-control\.service\.d/80-hardening\.conf$''']
+regexes = ['''^home/nish/(workspaces|\.claude|\.claude\.json|\.local/bin|\.local/share/claude|\.gitconfig|\.config/claude/browser-use\.env)$''']
 condition = "AND"
