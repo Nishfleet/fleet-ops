@@ -21,3 +21,17 @@ def test_the_tunnel_carries_two_router_paths_and_nothing_else():
 def test_the_connector_requires_a_valid_access_token():
     access = yaml.safe_load((ROOT / "config/cloudflared/llm-gateway.yml").read_text())["ingress"][0]["originRequest"]["access"]
     assert access["required"] is True and access["teamName"] and len(access["audTag"]) == 1
+
+
+def test_every_pilot_row_keeps_a_daily_spend_cap():
+    rows = [r for r in yaml.safe_load((ROOT / "config/litellm-proxy.yaml").read_text())["model_list"] if r["model_name"] == "pilot"]
+    for row in rows:
+        params = row["litellm_params"]
+        assert params.get("max_budget") and params.get("budget_duration") == "1d", row["model_info"]["id"]
+
+
+def test_the_pilot_group_never_falls_back_to_another_group():
+    settings = yaml.safe_load((ROOT / "config/litellm-proxy.yaml").read_text())["router_settings"]
+    for entry in settings.get("fallbacks") or []:
+        assert "pilot" not in entry, entry
+        assert all("pilot" not in targets for targets in entry.values()), entry
