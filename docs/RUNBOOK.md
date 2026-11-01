@@ -346,8 +346,21 @@ reload above — guarded, so the reload lands only when the token Grafana has lo
 (`$__file{}` froze it) has run down to one mint interval left: Grafana drops an
 in-flight dispatch when a reload applies, and the guard reloads at every second mint
 instead of every one, with a lost or unreadable ledger reloading once more
-(fleet-ops#11441, same cause as #11426). The contact points read the file with Grafana's `$__file{}`, which is
-re-read on every provisioning load. Wire once after merge (README "Wiring a NEW unit"):
+(fleet-ops#11441, same cause as #11426). The contact points read the file with Grafana's
+`$__file{}`, which Grafana re-reads at every provisioning reload: the token a webhook sends
+is what the file held at the last load. So a token file swap needs no Grafana restart —
+replace the file by rename — the quadlet mounts the token's directory, not the file
+(containers/quadlet/fleet-grafana.container comment line 48), so the rename lands — and POST
+the stock admin reload (`api/admin/provisioning/<target>/reload`, admin basic auth; in
+practice `fleet-grafana-provisioning.service` sends it): the next delivery carries the new
+token. The reload changes only what `$__file{}` expands to; nothing here makes any
+claim about how often a cost alarm pages or re-files its issue (the dispatch gate closes
+same-title re-files). CI holds the behaviour for real: .github/workflows/ci.yml step "A
+provisioning reload re-reads the token file the contact points name (fleet-ops#9445)"
+boots the pinned Grafana image with the real contact-point file against a local webhook
+sink, waits for a delivery carrying the first token, replaces the token file by rename,
+POSTs the admin reload, and fails the run unless the next delivery carries the second
+token. Wire once after merge (README "Wiring a NEW unit"):
 `systemctl --user link` both files, `systemctl --user daemon-reload`, `systemctl --user
 enable --now fleet-grafana-github-token.timer`, then restart `fleet-grafana.service` once so
 the quadlet's new mount takes effect. Do it right after the merge deploys: until Grafana restarts, the
@@ -362,6 +375,38 @@ fleet-grafana-github-token.timer` and `systemctl --user mask fleet-grafana-githu
 rule pages hermes-urgent, and spend alerts still reach Telegram. CI proof:
 `tests/github_app_stub.py` plus the "GitHub App token unit mints and refreshes" step run the
 unit's real ExecStart under systemd against a stub that checks the JWT the way GitHub does.
+
+Hermes' GitHub login (fleet-ops#10267). The chat agent runs `gh` for this repo's issues and
+pull requests, and until this unit it did that with nish's admin login in `~/.config/gh`. The
+Hermes units now hide that path (`InaccessiblePaths=` in `hermes-.service.d/sandbox.conf`) and
+read `GH_CONFIG_DIR=/run/fleet-hermes-github-token` instead, which
+`fleet-hermes-github-token.timer` (every 20 min, 2 min after boot) fills through
+`fleet-hermes-github-token.service`: an RS256 App JWT with the same nishfleet-worker key, then
+an installation token with `issues:write`, `pull_requests:read` and `actions:read` and no
+`repositories` key (the digest counts with `gh repo list Nishfleet`), then a `hosts.yml` in the
+0700 `/run` directory (0600 file, so the token lives in tmpfs, never on disk). The directory is
+not private to Hermes, so the agent lock's shared drop-in hides it too
+(`fleet-agent-lock.service.d/50-shared.conf`, `config/agent-locks.json` `must_hide`). The deploy
+enables the timer and mints once; a failed mint is reported and does not stop the rest of the
+host config, and the Hermes units restart onto the new login only once the `hosts.yml` exists
+and a `gh issue view` through it has succeeded, and also only when the sandbox drop-in on
+disk is newer than the unit's start (`ActiveEnterTimestamp`), the staleness comparison
+`fleet-runner-sandbox-apply.service` makes for the runners, so a natural restart after the
+install never re-queues a restart and no state file holds a parked restart. A Hermes start
+needs the mint to have succeeded (`Wants=` and `After=` in the drop-in; the mint skips a
+token younger than 15 min, so a restart spends no
+extra API calls), and a failed mint keeps the previous `hosts.yml`, pages through `OnFailure=`
+and is capped by the unit's `StartLimitBurst=6` per ten minutes (the timer retries in 20
+minutes). Read
+it: `systemctl show fleet-hermes-github-token.service -p Result -p ExecMainStartTimestamp` and
+the journal line `minted the nishfleet-worker App token as the Hermes gh login`.
+`sudo -u nish env GH_CONFIG_DIR=/run/fleet-hermes-github-token gh issue view 10267 --repo
+Nishfleet/fleet-ops` runs the deploy's proof by hand. Switch off: `systemctl disable --now
+fleet-hermes-github-token.timer` and `systemctl mask fleet-hermes-github-token.service` (they only `Wants=` it, so the mask stops the refreshes and the last token dies within an
+hour; `systemctl stop hermes-gateway.service hermes-serve.service` stops them), then remove
+the `Wants=`
+and `After=` lines, `GH_CONFIG_DIR` and the `InaccessiblePaths=` line from the drop-in. CI proof: `tests/test_worker_github_token.py`, which `ci.yml` already runs, starts
+this unit under systemd against `tests/github_app_stub.py` and checks the `hosts.yml` it writes.
 
 `CI_RUNNER` is absent by default and only exists while CI runs on Blacksmith. Set it by hand
 (fleet-ops#9670 retired the hourly auto-flip, and deleted the variable it left behind):

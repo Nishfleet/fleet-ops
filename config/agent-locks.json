@@ -35,6 +35,7 @@
         "~/.config/tincan/hermes-webhook.secret",
         "~/.config/tincan/opencode.json",
         "~/.config/tincan/agentmail.key",
+        "/run/fleet-hermes-github-token",
         "/run/user/1000",
         "/run/docker.sock",
         "~/.config/tincan/claude-vps.json",
@@ -74,6 +75,7 @@
         "~/.config/tincan/opencode.json",
         "~/.config/tincan/pi.json",
         "~/.config/tincan/agentmail.key",
+        "/run/fleet-hermes-github-token",
         "/run/user/1000",
         "/run/docker.sock",
         "~/.config/tincan/claude-vps.json",
@@ -111,6 +113,7 @@
         "~/.config/tincan/pi.json",
         "~/.config/tincan/fleet-worker.json",
         "~/.config/tincan/issue-desk.json",
+        "/run/fleet-hermes-github-token",
         "/run/user/1000",
         "/run/docker.sock"
       ]
@@ -120,7 +123,6 @@
       "needs": [
         "~/.hermes",
         "~/.local/state/hermes",
-        "~/.config/gh",
         "~/.config/tincan",
         "~/.cua",
         "~/.local/bin",
@@ -187,6 +189,7 @@
         "~/.beacon-preinstall-backup-2026-10-21",
         "~/.config/fleet-ops",
         "~/.config/fleet-worker",
+        "~/.config/gh",
         "~/.config/0509-canary.env",
         "~/.local/share/agent-runner",
         "~/.local/share/actions-runner",
@@ -241,6 +244,7 @@
         "~/.config/tincan/opencode.json",
         "~/.config/tincan/pi.json",
         "~/.config/tincan/agentmail.key",
+        "/run/fleet-hermes-github-token",
         "/run/user/1000",
         "/run/docker.sock",
         "~/.config/tincan/claude-vps.json"
@@ -251,7 +255,6 @@
       "needs": [
         "~/.hermes",
         "~/.local/state/hermes",
-        "~/.config/gh",
         "~/.config/tincan",
         "~/.cua",
         "~/.local/bin",
@@ -318,6 +321,7 @@
         "~/.beacon-preinstall-backup-2026-10-21",
         "~/.config/fleet-ops",
         "~/.config/fleet-worker",
+        "~/.config/gh",
         "~/.config/0509-canary.env",
         "~/.local/share/agent-runner",
         "~/.local/share/actions-runner",
@@ -344,6 +348,12 @@
     "systemd/tincan-listen-issue-desk.service": "The unlocked user form of a listener that now runs as a system unit (#10813). The host config pipeline installs the system unit and agent-lock.yml retires this one; deleting the file is #10912."
   },
   "gaps": [
+    {
+      "agent": "hermes-gateway and hermes-serve",
+      "unit": "rootfs/etc/systemd/system/hermes-gateway.service",
+      "reason": "System units with a drop-in already: the drop-in hides ~/.config/fleet-ops, ~/.config/cloudflare, every other agent's relay login and gh's admin one, and points gh at its own minted one-hour login (fleet-ops#10267; the mint dir /run/fleet-hermes-github-token is on the other listeners' must_hide). The gap is what the probe cannot see: ~/.hermes, Hermes' own state where its relay identity lives, and whatever a future credential drop lands in an already-open home directory. Closing that needs its own probe, because the gateway also drives Claude Code and the vault.",
+      "issue": "#9981"
+    },
     {
       "agent": "claude-remote-control",
       "unit": "rootfs/etc/systemd/system/claude-remote-control.service",

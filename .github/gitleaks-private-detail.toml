@@ -47,6 +47,19 @@ description = "This file names the patterns it looks for"
 paths = ['''(^|/)gitleaks-private-detail\.toml$''']
 
 [[allowlists]]
+description = "The Hermes mint unit spells out nish's App key path, because a system unit expands %u (systemd.unit 255, Specifiers) to the manager's name 'root', not to User=, so the spelled-out path is the one that reads the key; the review of PR #11116 asked for the spelled-out path."
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/systemd/system/fleet-hermes-github-token\.service$''']
+# One entry like every other allowlist here: pin the range to the one real
+# path in that unit (the APP_KEY line), so a new home path in the file is a
+# finding again instead of a free pass (fleet-ops#11502 review, 7c7c8df).
+regexes = ['''home/nish/\.config/fleet-worker/nishfleet-worker\.private-key\.pem$''']
+# AND pins the join: gitleaks joins paths and regexes with OR by default, so without it a
+# new home path anywhere in the unit would be a free pass (the pause of PR #11116 at
+# 828a03f named the missing AND; the comment above stays true with it).
+condition = "AND"
+
+[[allowlists]]
 description = "The agent lock must name real paths: every relay listener unit is a system unit, where %h is /root and is not influenced by User= (systemd.unit(5)), so the units and the shared drop-in spell out /home/nish paths, and the contract and the drop-ins list each agent's home paths because the lock is a list of paths. fleet-ops#9985 wrote them absolute in its first commit and a PR scan reads every commit, so both spellings stay in the range."
 targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = ['''(^|/)rootfs/etc/systemd/system/tincan-listen-.*\.service(\.d/.*)?$''', '''(^|/)rootfs/etc/systemd/system/fleet-agent-lock\.service\.d/''', '''(^|/)config/agent-locks\.json$''']

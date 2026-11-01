@@ -473,11 +473,10 @@
       # Under --check the copies above installed nothing, so the unit file may not exist.
       ignore_errors: "{{ ansible_check_mode }}"
 
-    # A drop-in is read at unit start. One systemctl call, gateway then serve, after the
-    # daemon reload above (handlers run in file order). A unit that is not installed
-    # fails the call, which fails the deploy loudly (fleet-ops#11185).
-    - name: Restart hermes units for their sandbox
-      ansible.builtin.command: /usr/bin/systemctl restart hermes-gateway.service hermes-serve.service
+    # The Hermes units restart from tasks/services.yml, not from a handler: the
+    # restart waits there for the deploy to have a minted gh login and a proof
+    # that reads an issue through it, and a handler can flush before that proof
+    # runs (fleet-ops#10267).
 
     # Established SSH sessions live in ssh@.service and survive this (fleet-ops#10541).
     - name: Restart ssh.socket

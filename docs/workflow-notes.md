@@ -171,17 +171,21 @@ The workflow file is 48 lines (fleet-ops#10947). Every reason that used to sit a
   cannot fail it. It is not a required check. The conditions are on the steps, so the job always
   reports. Switch it off with the repository variable `PRIVATE_DETAIL_SCAN=off` (see README.md).
 
-### deploy-box.yml: what the two oneshots are
+### deploy-box.yml: how the request reaches the deploy units
 
-Push-triggered. Starts the `fleet-sync.service` user oneshot (the user-scope deploy steps), then
-the `fleet-host-config.service` system oneshot (Ansible applies `rootfs/` as root); each exit code
-is a verdict. polkit lets this runner's user start that one system unit, so no step uses sudo, and
-the unit's own guards still gate every step (fleet-ops#8519). The unit allows
-`TimeoutStartSec=300` for the steps alone, so the job's `timeout-minutes: 10` leaves headroom
-without letting a hung step park a runner. The security probe is the job's last step, not its
-first: a red probe still fails the run, and it can no longer mark the two deploy steps `skipped`,
-which is how two merges on 2026-10-22 reached no deploy for 40 min (fleet-ops#10046;
-`tests/test_deploy_box_trigger.py` locks the order).
+Push-triggered. It writes a request stamp to `/var/lib/fleet-deploy/request` and
+waits for that stamp's verdict line in `/var/lib/fleet-deploy/result`.
+`fleet-deploy.path` starts `fleet-deploy.service`, which runs the
+`fleet-sync.service` user oneshot (the user-scope deploy steps) and then the
+`fleet-host-config.service` system oneshot (Ansible applies `rootfs/` as root);
+the result line's exit status is the verdict. No step runs from the runner and
+no CI job can start a system unit, so the unit's own guards still gate every step
+(fleet-ops#8519, #10043). The unit allows `TimeoutStartSec=900` for both steps, so
+the job's `timeout-minutes: 35` leaves headroom for a request that queues behind
+another without letting a hung step park a runner. The security probe is the job's
+last step, not its first: a red probe still fails the run, and it can no longer
+skip the deploy request, which is how two merges on 2026-10-22 reached no deploy
+for 40 min (fleet-ops#10046; `tests/test_deploy_box_trigger.py` locks the order).
 
 ### ratchet.yml: how the rule reaches every repo
 

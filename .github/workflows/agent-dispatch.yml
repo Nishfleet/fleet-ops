@@ -1137,8 +1137,7 @@ jobs:
                 echo "::warning::admit: Jev gave no usable answer on the admit and wall questions for #$n; left as needs-triage for the next sweep"
                 continue
               fi
-              p=$(jq -r '.answers.admit.probability' <<<"$resp")
-              pwall=$(jq -r '.answers.wall.probability' <<<"$resp")
+              p=$(jq -r '.answers.admit.probability' <<<"$resp"); pwall=$(jq -r '.answers.wall.probability' <<<"$resp")
               model=$(jq -r '(.model // "jev-latest") | tostring | gsub("[^A-Za-z0-9._/-]"; "")' <<<"$resp")
               band=$(jq -nr --argjson p "$p" --argjson wall "$pwall" "$BAND")
               verdict="Jev p=$(jq -nr --argjson p "$p" '($p * 1000 | round) / 1000'), wall fit p=$(jq -nr --argjson p "$pwall" '($p * 1000 | round) / 1000') (model $model).$(jq -rjn --argjson wall "$pwall" 'if $wall >= 0.9 then "" else " A wall fit under 0.9 means the estimate does not fit one worker session, so the orchestrator can split the issue." end')"
@@ -1191,11 +1190,10 @@ jobs:
       - name: Count the wall timeouts in the last 24 hours
         env: {GH_TOKEN: "${{ github.token }}"}
         run: |
-          set -euo pipefail
+          set -euo pipefail; total=0 timed=0
           # The runs-list read is the metric's pulse: a dead read must go red, never
           # read as an empty denominator (the silent-green failure the review named).
           since=$(date -u -d '24 hours ago' +%FT%TZ); list=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/agent-dispatch.yml/runs?created=%3E%3D$since&status=completed&per_page=100" --jq '.workflow_runs[] | [.id, (.conclusion // ""), (.run_started_at // .created_at), .updated_at] | join("|")') || { echo "::error::wall-rate: the runs-list read failed; nothing counted"; exit 1; }
-          total=0 timed=0
           while IFS='|' read -r id conclusion started ended; do dur=$(( $(date -u -d "$ended" +%s) - $(date -u -d "$started" +%s) )); [ "$dur" -ge "$WALL_MIN_SECS" ] || continue
             # Every worker job of the run counts (the read is paginated), so a
             # work job after the first is never missed and the denominator is
@@ -1205,11 +1203,9 @@ jobs:
               # A run that hit the wall can conclude failure or cancelled (the audit
               # counted both); a success run is denominator only.
               ann=$(gh api "repos/$GITHUB_REPOSITORY/check-runs/$jobid/annotations" --jq '[.[].message] | join("\n")') || { echo "::error::wall-rate: the annotations read for run $id (job $jobid) failed"; exit 1; }
-              case $ann in *"has timed out after $WALL_MINUTES minutes"*) timed=$((timed+1)) ;; *"exceeded the maximum execution time of $WALL_MINUTES minutes"*) timed=$((timed+1)) ;; esac
-            done
+              case $ann in *"has timed out after $WALL_MINUTES minutes"*) timed=$((timed+1)) ;; *"exceeded the maximum execution time of $WALL_MINUTES minutes"*) timed=$((timed+1)) ;; esac; done
           done <<<"$list"; [ "$total" -gt 0 ] || { echo "wall-rate: no worker job in a finished agent-dispatch run in the last 24 hours; nothing to report"; exit 0; }
-          echo "wall-rate: $timed of $total worker jobs in the last 24 hours hit $WALL_MINUTES minutes (target: below $WALL_RATE_MAX%)"
-          [ $((timed * 100)) -lt $((total * WALL_RATE_MAX)) ] || { echo "::error::$timed of $total worker jobs in $GITHUB_REPOSITORY hit the $WALL_MINUTES-minute wall in the last 24 hours (target: below $WALL_RATE_MAX%)."; exit 1; }
+          echo "wall-rate: $timed of $total worker jobs in the last 24 hours hit $WALL_MINUTES minutes (target: below $WALL_RATE_MAX%)"; [ $((timed * 100)) -lt $((total * WALL_RATE_MAX)) ] || { echo "::error::$timed of $total worker jobs in $GITHUB_REPOSITORY hit the $WALL_MINUTES-minute wall in the last 24 hours (target: below $WALL_RATE_MAX%)."; exit 1; }
 
   # A parked issue is one the fleet cannot finish: the attempt cap, two failed
   # runs, or a worker parking it. The label was the whole hand-off and nothing
@@ -1432,7 +1428,7 @@ jobs:
           HOOKS: ${{ vars.ORCHESTRATE_HOOKS }}
         run: |
           set -euo pipefail
-          cd "$WORKTREE"
+          cd "$WORKTREE"; if [ -d /run/fleet-hermes-github-token ]; then HERMES_RUN=/run/fleet-hermes-github-token; fi
           # The prompt from THIS checkout; a repo without one falls back to the fleet copy.
           prompt="prompts/orchestrator-handoff.md"
           if [ ! -f "$prompt" ]; then
@@ -1448,7 +1444,7 @@ jobs:
           # session reads outsider issue text, so the jail hides the unit's credential directory
           # and the store that holds it, which leaves a sibling runner's copy of the same key out
           # of reach too (fleet-ops#10957).
-          jail=(bwrap --dev-bind / / --tmpfs "$HOME/.config/fleet-worker" --tmpfs "$RUNNER_TEMP/_runner_file_commands" ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"} --die-with-parent --)
+          jail=(bwrap --dev-bind / / --tmpfs "$HOME/.config/fleet-worker" --tmpfs "$RUNNER_TEMP/_runner_file_commands" ${HERMES_RUN:+--tmpfs "$HERMES_RUN"} ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"} --die-with-parent --)
           if [ "$ORCH_RUNNER" = pi ]; then
             # No Claude spend and no turn cap: the step's timeout-minutes is the wall
             # (fleet-ops#10349).
