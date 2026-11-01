@@ -153,13 +153,6 @@
       - "{{ nish_home }}/.config/systemd/user/amp-runner-rajeev.service"
       - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-nish.service"
       - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-rajeev.service"
-      # The Beacon Hermes poll watcher became a system unit (fleet-ops#11089): it
-      # reads Telegram-derived text, so it needs the mount sandbox a user unit
-      # does not get on this box. fleet-sync.service step 2i stops it and drops
-      # the link on every deploy; these entries drop it too, because a boot run
-      # of this playbook does not wait for that step.
-      - "{{ nish_home }}/.config/systemd/user/beacon-hermes-poll.service"
-      - "{{ nish_home }}/.config/systemd/user/default.target.wants/beacon-hermes-poll.service"
       # The Leviathan session-log index and the Executor MCP hub (#10625):
       # removed from the repo, and Nish's runtime cut stopped and disabled them
       # on 2026-10-28. Stop and disable does not remove a hand `ln -s` link or
