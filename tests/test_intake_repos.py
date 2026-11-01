@@ -7,7 +7,7 @@ ENROLLED = {r["name"]: r for r in CFG["repos"]}
 DEFERRED = {r["name"]: r for r in CFG["deferred"]}
 SWEEP_ONLY = {r["name"] for r in CFG["sweep_only"]}
 EXCLUDED = {r["name"] for r in CFG["excluded"]}
-NEW = ("TinyStudio.io-public", "aiconverter-app", "rera-report-card")
+NEW = ("TinyStudio.io-public", "aiconverter-app")
 UNHOOKED = (
     "nish-vault",
     "claude-mods",
