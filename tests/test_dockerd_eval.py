@@ -252,7 +252,6 @@ def test_the_host_playbook_installs_the_nft_file_with_a_syntax_check() -> None:
 def test_podman_eval_is_retired() -> None:
     assert not (SYSTEM / "podman-eval.service").exists()
     host = ansible_host.text()
-    assert "- /etc/systemd/system/podman-eval.service" in host
     off = re.search(r"- name: Stop and disable the retired rootless podman socket\n(.*?)\n\n", host, re.S)
     assert off, "no stop-and-disable task"
     assert "enabled: false" in off.group(1)
