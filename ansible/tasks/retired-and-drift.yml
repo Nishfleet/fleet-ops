@@ -114,6 +114,7 @@
     - tincan-listen-cursor-vps.service
     - tincan-listen-devin-vps.service
     - tincan-listen-opencode.service
+    - beacon-hermes-poll.service
   register: retired_cli_listener_off
   failed_when:
     - retired_cli_listener_off.failed | default(false)
