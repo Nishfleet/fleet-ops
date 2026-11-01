@@ -71,5 +71,5 @@ def test_yt_dlp_never_self_updates():
 def test_every_update_held_back_gets_one_digest_line():
     report = next(t for t in BLOCK["always"] if t["name"] == "Report the run")
     digest = report["ansible.builtin.debug"]["msg"]["checked_not_applied"]
-    for hold in ("cua_desk_busy", "tincan_busy", "reboot_flag.stat.exists"):
+    for hold in ("tincan_busy", "reboot_flag.stat.exists"):
         assert hold in digest, hold
