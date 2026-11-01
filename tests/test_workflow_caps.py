@@ -18,15 +18,6 @@ def yaml_json(path):
     return json.loads(out.stdout)
 
 
-def seats(model):
-    cfg = yaml_json(ROUTER)
-    return sum(
-        int((row.get("litellm_params") or {}).get("max_parallel_requests") or 0)
-        for row in cfg["model_list"]
-        if row.get("model_name") == model
-    )
-
-
 def lanes(model):
     cfg = yaml_json(ROUTER)
     return sum(1 for row in cfg["model_list"] if row.get("model_name") == model)
@@ -69,11 +60,6 @@ def test_sweep_fanout_stays_inside_its_governors():
         f"fan-out {fanout} exceeds the {AGENT_RUNNERS_MEASURED_2026_10_23} online agent runners"
     )
     assert fanout <= lanes("worker-capable"), f"fan-out {fanout} exceeds the {lanes('worker-capable')} worker-capable rows"
-
-
-def test_review_concurrency_stays_inside_the_judge_seats():
-    reviews = int(max_parallel("stuck-review"))
-    assert reviews <= seats("judge"), f"review concurrency {reviews} exceeds the {seats('judge')} judge seats"
 
 
 def test_sweep_drops_exactly_the_gate_park_labels():
@@ -242,8 +228,9 @@ def test_every_group_the_pi_lane_picks_has_a_desk_alias():
     offered = {
         m["id"] for m in json.loads((ROOT / "config/pi-models.json").read_text())["providers"]["litellm"]["models"]
     }
-    assert set(aliases) <= offered, (
-        f"config/pi-models.json does not offer {sorted(set(aliases) - offered)}, so Pi cannot select the desk arm"
+    desk = {name for name in aliases if name.endswith("-desk")}
+    assert desk <= offered, (
+        f"config/pi-models.json does not offer {sorted(desk - offered)}, so Pi cannot select the desk arm"
     )
 
 

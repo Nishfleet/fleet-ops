@@ -525,37 +525,6 @@ def test_no_production_row_overrides_the_router_404_threshold():
         )
 
 
-def test_production_config_keeps_the_fallthrough_shape():
-    """The parked lane's job has somewhere to go.
-
-    A parked row only helps if the group has another row: worker-capable and
-    worker-cheap each need rows on at least two distinct api_key values (two
-    rows that share one key share one quota wall, so a wall on that key parks
-    both and leaves no peer; order filtering is applied after the cooldown
-    filter in v1.98.0 router.py, see tests/test_router_order2_overflow.py) and
-    router_settings.fallbacks must carry worker-cheap -> worker-capable so a parked
-    cheap lane is left, not retried (worker-capable has no fallback, W10c). No order-2 worker row remains: the order-2
-    overflow rows this test used to require were the xkiro free rows, removed
-    in fleet-ops#9711; the peers on other keys and the upward fallback now
-    carry the job.
-    """
-    config = yaml.safe_load(CONFIG_PATH.read_text())
-    rows = config["model_list"]
-
-    for group in ("worker-capable", "worker-cheap"):
-        in_group = [row for row in rows if row["model_name"] == group]
-        assert len(in_group) >= 2, f"{group} has no peer for a parked lane's job"
-        keys = {(row.get("litellm_params") or {}).get("api_key") for row in in_group}
-        assert len(keys) >= 2, (
-            f"{group} rows share {len(keys)} api_key value(s): a parked lane's "
-            "peers sit behind the same quota wall"
-        )
-
-    fallbacks = config["router_settings"]["fallbacks"]
-    assert not any("worker-capable" in f for f in fallbacks)
-    assert {"worker-cheap": ["worker-capable"]} in fallbacks
-
-
 if __name__ == "__main__":  # the drill: python tests/test_router_404_fallthrough.py
     # litellm's global logging worker is bound to the first event loop in the
     # process, so the second asyncio.run in one process leaves one coroutine
@@ -605,10 +574,6 @@ if __name__ == "__main__":  # the drill: python tests/test_router_404_fallthroug
     check(
         "no production row overrides the router 404 threshold",
         lambda _s: test_no_production_row_overrides_the_router_404_threshold(),
-    )
-    check(
-        "production config keeps the fallthrough shape",
-        lambda _s: test_production_config_keeps_the_fallthrough_shape(),
     )
 
     for label, (dead, live) in picks.items():

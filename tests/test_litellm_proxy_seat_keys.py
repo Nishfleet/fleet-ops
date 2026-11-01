@@ -45,13 +45,7 @@ def test_the_container_sets_ollama_api_base_exactly_while_an_ollama_row_needs_it
 
 
 SEAT_FILE = {
-    "ALIBABA_CODING_API_KEY": "alibaba-coding",
     "ANTHROPIC_API_KEY": "anthropic-api",
-    "COMMANDCODE_API_KEY": "commandcode",
-    "MINIMAX_API_KEY": "minimax",
-    "OPENCODE_API_KEY": "opencode",
-    "STEPFUN_API_KEY": "stepfun",
-    "SYNTHETIC_API_KEY": "synthetic",
     "VERCEL_AI_GATEWAY_JEV_KEY": "typesafe-jev",
     "ZAI_API_KEY": "zai",
 }

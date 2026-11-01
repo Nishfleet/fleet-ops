@@ -32,19 +32,6 @@
       "headers": { "x-litellm-session-id": "$FLEET_TASK_ID" },
       "models": [
         {
-          "id": "judge",
-          "name": "LiteLLM judge group (Qwen first, DeepSeek behind it)",
-          "contextWindow": 500000,
-          "maxTokens": 8192,
-          "reasoning": true,
-          "cost": {
-            "input": 0,
-            "output": 0,
-            "cacheRead": 0,
-            "cacheWrite": 0
-          }
-        },
-        {
           "id": "worker-cheap",
           "name": "LiteLLM worker-cheap (free lanes first)",
           "contextWindow": 140000,
@@ -73,104 +60,6 @@
           "name": "LiteLLM worker-public-desk (alias of worker-public; fleet-ops#9330 desk arm)",
           "contextWindow": 140000,
           "maxTokens": 32768
-        }
-      ]
-    },
-    "minimax": {
-      "models": [
-        {
-          "id": "MiniMax-M3.1-Flash-Preview",
-          "name": "MiniMax M3.1 Flash Preview (Token Plan)",
-          "reasoning": true,
-          "input": [
-            "text"
-          ],
-          "contextWindow": 1000000,
-          "maxTokens": 131072,
-          "cost": {
-            "input": 0.30,
-            "output": 1.20,
-            "cacheRead": 0.06,
-            "cacheWrite": 0.375
-          }
-        }
-      ]
-    },
-    "stepfun": {
-      "name": "StepFun Step Plan",
-      "baseUrl": "https://api.stepfun.ai/step_plan/v1",
-      "api": "openai-completions",
-      "apiKey": "!sed -n 's/^STEPFUN_API_KEY=//p' /home/nish/.config/fleet-ops/seats/stepfun.env",
-      "compat": {
-        "supportsStore": false,
-        "supportsDeveloperRole": false,
-        "maxTokensField": "max_tokens"
-      },
-      "models": [
-        {
-          "id": "step-5-preview",
-          "name": "Step 5 Preview",
-          "reasoning": true,
-          "input": [
-            "text",
-            "image"
-          ],
-          "contextWindow": 1000000,
-          "maxTokens": 131072,
-          "cost": {
-            "input": 0,
-            "output": 0,
-            "cacheRead": 0,
-            "cacheWrite": 0
-          },
-          "thinkingLevelMap": {
-            "off": null,
-            "minimal": null,
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "xhigh": null,
-            "max": null
-          }
-        }
-      ]
-    },
-    "synthetic": {
-      "name": "Synthetic (cancelled, lapses ~2026-10-11, fleet-ops#9048)",
-      "baseUrl": "https://api.synthetic.new/openai/v1",
-      "api": "openai-completions",
-      "apiKey": "!sed -n 's/^SYNTHETIC_API_KEY=//p' /home/nish/.config/fleet-ops/seats/synthetic.env",
-      "compat": {
-        "supportsStore": false,
-        "supportsDeveloperRole": false,
-        "maxTokensField": "max_tokens"
-      },
-      "models": [
-        {
-          "id": "hf:zai-org/GLM-5.3-Flash",
-          "name": "GLM 5.3 Flash (Synthetic)",
-          "reasoning": true,
-          "input": [
-            "text",
-            "image"
-          ],
-          "contextWindow": 524288,
-          "maxTokens": 65536,
-          "cost": {
-            "input": 0,
-            "output": 0,
-            "cacheRead": 0,
-            "cacheWrite": 0
-          },
-          "thinkingLevelMap": {
-            "off": null,
-            "minimal": null,
-            "low": "low",
-            "medium": null,
-            "high": "high",
-            "xhigh": null,
-            "max": "max"
-          }
         }
       ]
     }
