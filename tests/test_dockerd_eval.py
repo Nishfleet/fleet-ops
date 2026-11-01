@@ -14,7 +14,6 @@ SYSTEM = ROOT / "rootfs/etc/systemd/system"
 UNIT = SYSTEM / "dockerd-eval.service"
 CI3 = SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-3.service.d/30-eval.conf"
 OTHER_POOLS = [
-    SYSTEM / "actions.runner.nish3451-nish-vault.netcup-vault-1.service.d/20-lockdown.conf",
     SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-1.service.d/25-no-eval.conf",
     SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-2.service.d/25-no-eval.conf",
 ]

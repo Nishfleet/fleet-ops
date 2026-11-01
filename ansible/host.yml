@@ -25,8 +25,9 @@
     tether_off_marker: /etc/fleet-ops/tether-off
     # Every runner unit that ran as nish or as fleet-reviewer is retired: the agent
     # lane runs on fleet_runner_ids as fleet-runner, and no workflow asks for the
-    # `review` label any more (fleet-ops#10935). 23 stays: its directory serves the
-    # nish-vault runner. A retired registration is not removed at GitHub, because no
+    # `review` label any more (fleet-ops#10935). 23 was the nish-vault runner's
+    # directory; `retired` removes it after retired_units stops that runner, so it is
+    # left out here. A retired registration is not removed at GitHub, because no
     # credential on this box may do that; GitHub drops a self-hosted runner that has
     # not connected for 14 days (docs: "Removing self-hosted runners").
     agent_runner_retired_ids: "{{ range(1, 37) | reject('equalto', 23) | list }}"
@@ -89,11 +90,18 @@
     retired_units:
       - fleet-runner-sandbox-apply.timer
       - fleet-runner-sandbox-apply.service
+      # The nish-vault runner; its workflows run on GitHub-hosted runners
+      # (Nishfleet/nish-vault, fleet-ops#10935).
+      - actions.runner.nish3451-nish-vault.netcup-vault-1.service
     retired_user_units:
       - fleet-sync.service
       - fleet-litellm-proxy-config.path
       - fleet-grafana-provisioning.path
     retired:
+      - /etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service
+      - /etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service.d
+      - /etc/systemd/system/multi-user.target.wants/actions.runner.nish3451-nish-vault.netcup-vault-1.service
+      - "{{ agent_runner_root }}/23"
       # The nish runner jails, their re-apply timer and restart grant, and the review
       # runners' user state; fleet-runner@.service replaces them (fleet-ops#10935).
       - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d
