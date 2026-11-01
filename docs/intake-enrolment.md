@@ -31,11 +31,10 @@ https://github.com/Nishfleet/<name>.git <dest>` (fleet-ops#1213).
    for the types its own repo's stub lists, and `pull_request_target` reads
    that stub from the base branch — so a short list leaves the repo with no
    review and no coordinator gate on risky PRs (fleet-ops#9722, #9726).
-   fleet-ops's own stub is the reference. This precondition is suspended
-   while product dispatch is paused under fleet-ops#10935 (owner's call,
-   2026-11-01), so no CI gate checks it: repos without a stub move from
-   `repos` to `deferred` (fleet-ops#11579, which owns the `preconditions`
-   text in `config/intake-repos.json`).
+   fleet-ops's own stub is the reference. No CI job checks it, because a
+   job that reads other repos goes red when they change, not when the PR
+   does (fleet-ops#10935). A repo that deletes its stub moves from `repos`
+   to `deferred` in the same reset.
 
 `excluded` in the file lists repos that are never enrolled (fleet2: no
 second dispatcher, ever; archived repos). `deferred` lists repos paused with
