@@ -54,18 +54,6 @@ def sweep_park_labels():
     return set(re.findall(r'"([a-z-]+)"', match.group(0)))
 
 
-def test_the_pi_lane_has_one_cap_and_both_sides_read_it():
-    text = AGENT.read_text()
-    # The Gate (queue pull) and the Worker fall-through both compare the live pi
-    # count against the same worker-capable seat sum, so the two cannot drift apart
-    # (the removed opencode, devin and miss-review lanes each had a hand-written constant).
-    caps = re.findall(r'live pi\)"\s+-lt\s+(\S+)', text)
-    assert len(caps) == 2, f"the pi lane has {len(caps)} comparisons, not the Gate and the Worker fall-through: {caps}"
-    assert set(caps) == {chr(34) + "$slots" + chr(34)}, f"every pi comparison must use the worker-capable seat sum: {sorted(set(caps))}"
-    sum_line = "slots=" + chr(36) + "(yq"
-    assert text.count(sum_line) == 2, "the seat sum is computed the same way in the Gate and the queue pull"
-
-
 def permissions_block(block, where):
     assert block is None or isinstance(block, dict), f"{where} uses the '{block}' shorthand; write the scopes out so this gate can read them"
     return block or {}

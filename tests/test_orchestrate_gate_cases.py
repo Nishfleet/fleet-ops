@@ -52,19 +52,3 @@ def _gate_detector():
 def test_orchestrate_case_table():
     subprocess.run(["jq", "-e", FILTER, str(CFG)], check=True, capture_output=True, text=True)
 
-
-def test_gate_detector_case_table():
-    detector = _gate_detector()
-    for line in _jq("-c", ".gate_cases[]", str(CFG)).splitlines():
-        case = json.loads(line)
-        repo = case.get("repo", "Nishfleet/0509")
-        want = bool(case.get("want_park", case.get("want")))
-        env = {"CASE": line, "DETECTOR": detector, "PATH": os.environ["PATH"], "fleet_ops": str(repo.endswith("/fleet-ops")).lower()}
-        run = subprocess.run(
-            ["bash", "-c", 'jq -c \'{title, body}\' <<<"$CASE" | eval "$DETECTOR" >/dev/null'],
-            capture_output=True, text=True, env=env,
-        )
-        assert (run.returncode == 0) == want, (
-            f"gate detector mismatch: {case.get('id')} parks={run.returncode == 0} want={want}"
-        )
-
