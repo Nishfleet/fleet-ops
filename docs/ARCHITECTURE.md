@@ -13,9 +13,7 @@ One VPS (netcup), one `nish` user. Everything the fleet runs is a
 `deploy-box.yml` runs `fleet-sync.service`, a fetch plus `--ff-only` merge,
 never `git pull` (RUNBOOK, fleet-ops#8893), and the workflow's security probe runs
 last in that same job, so a red probe still fails the run and cannot skip the
-deploy steps before it;
-`fleet-clone-lag.timer` fails the unit and pages when the clone is 35 min behind
-`origin/main` (fleet-ops#10046). GitHub is the durable copy of
+deploy steps before it. GitHub is the durable copy of
 code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
