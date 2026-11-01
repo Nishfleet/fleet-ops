@@ -85,11 +85,11 @@
   become: true
   become_user: fleet-runner
   ansible.builtin.command:
-    argv: [/opt/node-v22.23.3/bin/npm, install, --global, --prefix, /var/lib/fleet-runner/.local, "@earendil-works/pi-coding-agent@{{ fleet_runner_pi_version }}"]
+    argv: ["{{ tether_node_dir }}/bin/npm", install, --global, --prefix, /var/lib/fleet-runner/.local, "@earendil-works/pi-coding-agent@{{ fleet_runner_pi_version }}"]
     creates: "/var/lib/fleet-runner/.local/lib/node_modules/@earendil-works/pi-coding-agent/package.json"
   environment:
     HOME: /var/lib/fleet-runner
-    PATH: /usr/local/bin:/usr/bin:/bin
+    PATH: "{{ tether_node_dir }}/bin:/usr/bin:/bin"
 
 - name: Make fleet-runner's config directories
   ansible.builtin.file:
