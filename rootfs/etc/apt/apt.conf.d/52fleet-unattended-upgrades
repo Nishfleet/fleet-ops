@@ -1,0 +1,14 @@
+// unattended-upgrades takes regular Ubuntu updates and the vendor apt repos
+// this box installs from, the work the old daily update play did by hand.
+Unattended-Upgrade::Allowed-Origins {
+        "${distro_id}:${distro_codename}-updates";
+};
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Anthropic";
+        "origin=gh";
+        "origin=Syncthing";
+        "origin=Tailscale";
+        "origin=Google LLC";
+};
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";

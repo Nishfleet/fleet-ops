@@ -87,6 +87,9 @@
       - fleet-litellm-proxy-config.path
       - fleet-grafana-provisioning.path
     retired:
+      # Folded into rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades.
+      - /etc/apt/apt.conf.d/52nish-unattended-anthropic
+      - /etc/apt/apt.conf.d/52-auto-reboot
       # Codex is retired here; its rules file left the repo (fleet-ops#10935 C5).
       - "{{ nish_home }}/.codex/rules/fleet-floor.rules"
       # Replaced by "Install the router config" and the Grafana reload in
