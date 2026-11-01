@@ -149,31 +149,18 @@ delete both unit files.
 
 ## Deploy and wiring
 
-`deploy-box.yml` (push to main) → `fleet-sync.service` runs
-a `git fetch` of `main` into `refs/remotes/origin/main` + a
-`git merge --ff-only` of that named ref + `daemon-reload`, and fails
-(`DEPLOY-BLOCKED`) on a dirty
-or diverged clone, so the canonical checkout
-`/home/nish/workspaces/tooling/fleet-ops-deploy-clone` stays clean on `main`.
-It never uses `git pull`: a polluted `FETCH_HEAD` there merges into
-`fatal: Cannot fast-forward to multiple branches` and silently stops every
-deploy (fleet-ops#8893). A trailing `merge-base --is-ancestor` pair
-asserts `HEAD == origin/main`, so a stopped deploy is a failed unit rather
-than a lagging clone. Two things keep that true: the workflow's two deploy steps
-come first and its security probe runs last in the same job, so a red probe still
-fails the run and can never skip a deploy step.
-Its LINK-GUARD passes fail the unit while any live symlink under
-`~/.config/systemd/user/`, `~/.local/bin/`, `~/.pi/agent/` or the vault is
-broken or resolves into a throwaway root (`*worktrees/*`, `agent-state`,
-`tmp`).
+`deploy-box.yml` (push to main) → `fleet-host-config.service` runs
+`ansible-pull` into `/var/lib/fleet-ops/repo` (root-owned, the only checkout the
+box deploys from) and applies `ansible/host.yml`. Units that read repo files read
+them from that checkout.
 
 `~/.pi/agent/agents/` holds only symlinks to Pi's shipped
 `examples/extensions/subagent/agents/`, as Pi's subagent README installs them;
 per-issue copies (`reviewer-issue-<N>.md`, removed under fleet-ops#8659) are
 loaded by nothing.
 
-Wiring a new unit or prompt is one `ln -sfn` into the deploy clone, once
-(full commands in [Install](install.md)). Every root-owned file under `/etc` that the repo
+Wiring a new unit or prompt is a line in `ansible/tasks/user-files.yml`
+(full steps in [Install](install.md)). Every root-owned file under `/etc` that the repo
 ships lives in `rootfs/` and is `fleet-host-config.service`'s job (Ansible's
 `ansible-pull` of `ansible/host.yml`, started by deploy-box.yml on every merge
 and once after every boot by `fleet-host-config-boot.timer`; the daily timer is
@@ -588,7 +575,7 @@ its config only at start, so the restart is the apply step, and `try-restart`
 means an edit never starts a proxy that was stopped on purpose. Every save
 restarts the proxy (~38 s), so batch edits into one write. Install it with
 `systemctl --user link` on the .service, then `systemctl --user enable --now`
-on the .path, both from the deploy clone (README "Install").
+on the .path (README "Install").
 
 `/jev` is a pass-through with `auth: true`, so any valid virtual key reaches it
 and each call books `cost_per_request` against the calling key. Its cap is a
@@ -808,7 +795,7 @@ cost: the netcup provider VNC console.
 ## Rebuild the box from nothing
 
 The step order for a fresh netcup box (user, SSH over Tailscale, `vps-fleet`
-key, deploy clone, `ansible-playbook ansible/host.yml`, fleet-sync, runners,
+key, `ansible-pull` of `ansible/host.yml` into `/var/lib/fleet-ops/repo`, runners,
 credential files, restic restore, verification) lives in the private vault,
 not in this public repo — this repo holds no credentials and no restore
 steps. On this host the vault checkout is

@@ -1,20 +1,8 @@
 # nish's user units, quadlets and config files, copied from this checkout on every
-# deploy. This replaces fleet-sync.service, which symlinked them into the deploy clone
-# (fleet-ops#10935 E1). ansible.builtin.copy replaces a symlink at dest with the file
-# (follow defaults to false). The router config and Grafana provisioning are
-# tasks/services.yml's.
-- name: Keep the deploy clone on main for the units that still read it
-  become: true
-  become_user: nish
-  environment: "{{ nish_env }}"
-  ansible.builtin.git:
-    repo: https://github.com/Nishfleet/fleet-ops.git
-    dest: "{{ nish_home }}/workspaces/tooling/fleet-ops-deploy-clone"
-    version: main
-    # Adds --force to the fetch, so a moved upstream tag (v1, 2026-11-01) cannot
-    # stop the deploy with "would clobber existing tag".
-    force: true
-
+# deploy. This replaced fleet-sync.service and its deploy clone (fleet-ops#10935 E1);
+# units that read repo files read them from this checkout, /var/lib/fleet-ops/repo.
+# ansible.builtin.copy replaces a symlink at dest with the file (follow defaults to
+# false). The router config and Grafana provisioning are tasks/services.yml's.
 - name: Install nish's user units
   become: true
   become_user: nish
@@ -51,7 +39,9 @@
     - fleet-litellm-postgres.container
     - fleet-litellm-proxy.container
     - fleet-litellm-redis.container
-  notify: Reload nish's user manager
+  notify:
+    - Reload nish's user manager
+    - Restart fleet-grafana
 
 - name: Install nish's agent and tool config files
   become: true

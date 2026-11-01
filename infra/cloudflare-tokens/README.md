@@ -186,7 +186,7 @@ then on. With the passphrase lost, treat it like a lost state (see above).
 
 A hand run of `tofu` needs the same variable. Do not `source` the file (a shell
 strips the quotes in the JSON); use the unit, or
-`systemd-run --user --wait --pipe -p EnvironmentFile=$HOME/.config/cloudflare/tofu-state-encryption.env -p WorkingDirectory=<deploy clone> ~/.local/bin/tofu -chdir=infra/cloudflare-tokens plan`.
+`systemd-run --user --wait --pipe -p EnvironmentFile=$HOME/.config/cloudflare/tofu-state-encryption.env -p WorkingDirectory=/var/lib/fleet-ops/repo ~/.local/bin/tofu -chdir=infra/cloudflare-tokens plan`.
 
 ## Apply
 
@@ -294,7 +294,7 @@ right trigger (not an event).
 
 | Unit | File | What |
 |---|---|---|
-| `cloudflare-tokens-apply.service` | `systemd/cloudflare-tokens-apply.service` | oneshot: `tofu -chdir=infra/cloudflare-tokens apply -auto-approve -input=false`, run from `~/workspaces/tooling/fleet-ops-deploy-clone` |
+| `cloudflare-tokens-apply.service` | `systemd/cloudflare-tokens-apply.service` | oneshot: `tofu -chdir=infra/cloudflare-tokens apply -auto-approve -input=false`, run from `/var/lib/fleet-ops/repo` |
 | `cloudflare-tokens-apply.timer` | `systemd/cloudflare-tokens-apply.timer` | `OnCalendar=weekly`, `Persistent=true`, `RandomizedDelaySec=1h` |
 
 Weekly, because tokens rotate at 30 days and expire at 45: the apply does nothing
@@ -308,8 +308,8 @@ for three weeks, then replaces them, and two missed weeks still leave slack.
 - State: the unit sets no state path. It uses the `backend "local"` path in
   `versions.tf` (`~/.local/state/fleet-ops/cloudflare-tokens/terraform.tfstate`),
   the same file as a hand apply. The provider cache goes to
-  `~/.cache/fleet-ops/cloudflare-tokens-tofu` (`TF_DATA_DIR`) so the deploy clone
-  stays clean for `fleet-sync.service`; `ExecStartPre` runs `tofu init`.
+  `~/.cache/fleet-ops/cloudflare-tokens-tofu` (`TF_DATA_DIR`) because the root-owned checkout is read-only to nish.
+  `ExecStartPre` runs `tofu init`.
 - Failure is loud: `OnFailure=fleet-unit-failed@%N.service` sends the
   healthchecks.io fail ping (fleet-ops#9033), and the unit shows in
   `systemctl --user list-units --state=failed`. Logs:
@@ -318,11 +318,8 @@ for three weeks, then replaces them, and two missed weeks still leave slack.
   `fleet-host-config` run after merge). Until then the unit fails on a missing
   binary.
 
-Wire it once, by hand, after the PR is merged and `fleet-sync` has pulled it
-(README "Wiring a NEW unit"):
+The deploy copies both units (`ansible/tasks/user-files.yml`). Enable once:
 
-    systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/cloudflare-tokens-apply.service
-    systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/cloudflare-tokens-apply.timer
     systemctl --user enable --now cloudflare-tokens-apply.timer
     systemctl --user start cloudflare-tokens-apply.service   # first run now, then read the journal
 
