@@ -21,7 +21,17 @@ One line, stock systemd, no wrapper script:
 - `ExecStartPre=` makes an empty token exit non-zero before any work.
 - `TemporaryFileSystem=` blanks the human gh login the way `agent.yml`'s jail does,
   so a worker cannot fall back to it.
-- `RuntimeMaxSec=` is the deadline (systemd kills into `Result=timeout`).
+- `RuntimeMaxSec=` is the deadline and the Pi run's only bound: pi exposes no
+  per-request timeout, so one model call that never returns holds the whole
+  process until the deadline — that burned `fix-pr-10422.service`'s full hour at
+  14 s of CPU with no deliverable and fired `SystemUnitFailed` (fleet-ops#10448).
+  At the deadline systemd terminates the unit into `Result=timeout`: SIGTERM
+  first, SIGKILL after `TimeoutStopSec` (systemd.service(5)), and the journal
+  names the death: `Service reached runtime time limit. Stopping.` then
+  `Failed with result 'timeout'`. A second timer on the exec line is dead
+  weight: it never fires when the deadline fires first, and its journal line
+  never appears. To end a hung run sooner, set `RuntimeMaxSec=` to the wall the
+  run deserves.
 - The `ExecStopPost=` line is the deliverable check: a stop at exit 0 with no
   artifact becomes `Result=exit-code`, i.e. `failed`.
 

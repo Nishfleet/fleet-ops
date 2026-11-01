@@ -1,0 +1,97 @@
+[Unit]
+Description=Mint the short-lived GitHub App login Hermes' gh CLI reads (fleet-ops#10267)
+# Hermes reads issues, pull requests and workflow runs through gh, and until
+# this unit it did that with nish's admin login in ~/.config/gh. The sandbox
+# drop-in (hermes-.service.d/sandbox.conf) hides that path and points
+# GH_CONFIG_DIR at this unit's runtime directory instead. gh has no plugin or
+# credential helper that mints a token (gh help environment, "GH_TOKEN"), so
+# the login is a hosts.yml this oneshot refreshes before the one-hour App
+# installation token expires (REST docs, "Create an installation access token
+# for an app").
+#
+# The request body is what config/hermes/digest-*.md run, and nothing wider: no
+# repositories key, because the digest counts with `gh repo list Nishfleet` and
+# then `gh pr list`/`gh run list`/`gh issue view` per repo, so it reads every
+# Nishfleet repo the App is installed on; issues write, because it comments on
+# the issues it is asked about; pull requests and actions read, because the
+# digest reads merged PRs and workflow runs. No contents, no administration, no
+# workflow write.
+#
+# The token lives in /run (tmpfs, mode 0700, owned by nish), never on disk and
+# never in argv: the App JWT goes to curl as a config fd. A failed mint leaves
+# the previous hosts.yml in place and pages through OnFailure=; the timer tries
+# again in 20 minutes. The StartLimit below caps how fast a pull-in chain (a
+# Hermes unit retrying through Restart=always) can mint, so a crash loop cannot
+# spend the installation-token quota that the worker runs share. The token is
+# the same nishfleet-worker App every worker run uses, so the login is
+# attributed to nishfleet-worker[bot], not to a person.
+#
+# A run whose token file is younger than 15 min mints nothing: a Hermes restart
+# pulls this unit in (Wants= in its sandbox drop-in), and without the skip
+# every Hermes restart would spend two API calls on a token that still works.
+# gh 2.103.3 writes nothing to its config dir (fleet-ops#10184), so the file
+# age is the mint time.
+#
+# The token directory is not private to Hermes: /run is readable by every
+# process that runs as nish, so the agent lock's shared drop-in hides this
+# directory from every locked listener (fleet-agent-lock.service.d/50-shared.conf
+# and config/agent-locks.json must_hide).
+#
+# Leave or switch back: `systemctl disable --now
+# fleet-hermes-github-token.timer` and `systemctl mask
+# fleet-hermes-github-token.service`, then remove the Wants= and After= lines,
+# GH_CONFIG_DIR and the InaccessiblePaths= line from the sandbox drop-in: the
+# pull-in is a Wants=, so a masked mint leaves Hermes running with gh
+# unauthenticated unless the drop-in also goes.
+OnFailure=fleet-unit-failed@%N.service
+# Six tries in ten minutes, then the pull-ins and the timer both report start
+# failures until the window passes: without a cap a Hermes crash loop would
+# mint about every five seconds, and each mint spends the same installation
+# token quota the worker runs spend.
+StartLimitIntervalSec=10min
+StartLimitBurst=6
+# The first mint after a boot must reach GitHub while /run is fresh, so order
+# the start after the boot-wait target instead of racing DHCP and DNS
+# (systemd.special(7), "network-online.target"), and the curl retries below
+# cover a network that came up after the target fired anyway.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=nish
+RuntimeDirectory=fleet-hermes-github-token
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# GITHUB_API_URL exists so CI can run this very ExecStart against a local stub
+# (tests/test_worker_github_token.py, which ci.yml runs); the host never
+# overrides it.
+Environment=GITHUB_API_URL=https://api.github.com
+Environment=APP_ID=4728578
+# The App key lives at a fixed path on this host, so the path is spelled out:
+# %h and %u both name the service manager's identity (/root) in a system unit,
+# whatever User= says (systemd.unit 255, "Specifiers", for %u: "not influenced
+# by the User= setting").
+Environment=APP_KEY=/home/nish/.config/fleet-worker/nishfleet-worker.private-key.pem
+# RS256 App JWT (docs: "Generating a JSON Web Token (JWT) for a GitHub App";
+# iat 60 s back for clock drift, exp inside the 10 min cap), then the
+# installation id that covers this repo, then the login file. `$$` is systemd's
+# escape for a literal `$`, `%%` for `%`. The new file is written beside the old
+# one and renamed over it, so a reader never sees a partial hosts.yml.
+ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
+  b64() { openssl base64 -A | tr "+/" "-_" | tr -d "="; }; \
+  now=$$(date +%%s); \
+  if [ -e "$RUNTIME_DIRECTORY/hosts.yml" ] && [ "$((now - $$(stat -c %%Y "$RUNTIME_DIRECTORY/hosts.yml")))" -lt 900 ]; then \
+    echo "the minted login is younger than 15 min, nothing to mint"; \
+    exit 0; \
+  fi; \
+  h=$$(printf "{\\"alg\\":\\"RS256\\",\\"typ\\":\\"JWT\\"}" | b64); \
+  p=$$(printf "{\\"iat\\":%%d,\\"exp\\":%%d,\\"iss\\":\\"%%s\\"}" $$((now-60)) $$((now+540)) "$$APP_ID" | b64); \
+  s=$$(printf "%%s.%%s" "$$h" "$$p" | openssl dgst -sha256 -sign "$$APP_KEY" | b64); \
+  auth() { printf "header = \\"Authorization: Bearer %%s.%%s.%%s\\"\\nheader = \\"Accept: application/vnd.github+json\\"\\n" "$$h" "$$p" "$$s"; }; \
+  id=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --retry-all-errors --config <(auth) "$$GITHUB_API_URL/repos/Nishfleet/fleet-ops/installation" | jq -er .id); \
+  tok=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --retry-all-errors -X POST --config <(auth) -d "{\\"permissions\\":{\\"actions\\":\\"read\\",\\"issues\\":\\"write\\",\\"pull_requests\\":\\"read\\"}}" "$$GITHUB_API_URL/app/installations/$$id/access_tokens" | jq -er .token); \
+  { echo "github.com:"; echo "    user: nishfleet-worker"; echo "    oauth_token: $$tok"; echo "    git_protocol: https"; } > "$$RUNTIME_DIRECTORY/hosts.yml.new"; \
+  mv -f "$$RUNTIME_DIRECTORY/hosts.yml.new" "$$RUNTIME_DIRECTORY/hosts.yml"; \
+  echo "minted the nishfleet-worker App token as the Hermes gh login, valid one hour"'
+TimeoutStartSec=300

@@ -280,6 +280,33 @@ def test_every_home_path_the_agent_jails_mask_can_be_mounted() -> None:
     assert unmountable_jail_paths((AGENT_DIR / "20-lockdown.conf").read_text(), jails) == []
 
 
+def test_every_jail_masks_hermes_token_dir_onto_a_mount_the_runner_makes() -> None:
+    """Hermes' /run token dir (fleet-ops#10267) is a real nish-owned dir outside home, so the home
+    tmpfs rule covers nothing: it holds a live gh login any jailed engine can read. Each pool
+    paints it empty for the job steps, and every bwrap jail masks it again for the engines; --tmpfs
+    needs the mount the runner unit makes as its destination, which an InaccessiblePaths= node is
+    not (same reasoning as the gh home dir, #11232). Steps on hosts the feature has not reached yet
+    (a fresh runner before its first apply, the ci job on this PR head) have no dir to mask, so
+    each jail only adds the mask when the dir exists, the way $CREDENTIALS_DIRECTORY is skipped:"""
+    token = "/run/fleet-hermes-github-token"
+    mask = f"$hermes_mask"
+    for wf in (AGENT_WORKFLOW, DISPATCH_WORKFLOW):
+        text = wf.read_text()
+        jails = [line for line in text.splitlines() if re.search(r'^\s*(?:jail_base|claude_jail_[ab]|jail)=\(?"?bwrap ', line)]
+        assert len(jails) >= (4 if wf == AGENT_WORKFLOW else 1), jails
+        assert all(mask in line or "${HERMES_RUN:+--tmpfs " in line for line in jails), f"{wf.name}: one jail misses the hermes mask"
+    agent = AGENT_WORKFLOW.read_text()
+    define = 'hermes_mask=$([ -d /run/fleet-hermes-github-token ] && printf -- \'--tmpfs /run/fleet-hermes-github-token\' || true)'
+    assert agent.count(define) == 2, "one definition per worker/rerate step"
+    dispatch = DISPATCH_WORKFLOW.read_text()
+    assert '${HERMES_RUN:+--tmpfs "$HERMES_RUN"}' in dispatch, "the dispatch jail adds the hermes mask only when the dir exists"
+    assert "if [ -d /run/fleet-hermes-github-token ]; then HERMES_RUN=/run/fleet-hermes-github-token; fi" in dispatch, "the guard drives it, one if, no else"
+    for name, (_, lock) in POOLS.items():
+        assert f"TemporaryFileSystem={token}" in lock.read_text(), f"the {name} runner paints the token dir empty for its job steps"
+    tmpfiles = (ROOT / "rootfs/etc/tmpfiles.d/fleet-hermes-github-token.conf").read_text().strip().splitlines()[-1]
+    assert tmpfiles == f"d {token} 0700 nish nish - -", "the dir exists at boot and at every apply, before the first mint or any runner unit start"
+
+
 def test_gate_fails_when_the_jail_masks_a_path_the_runner_does_not_create() -> None:
     jail = 'jail_base="bwrap --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --"\n'
     masked = jailed_home_paths(jail)
@@ -400,7 +427,7 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
     agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
     # The empty mount points the worker jail masks (#10934, #11097), named by their tail under the home tmpfs.
     mounts = [v.removeprefix(HOME) for v in merged_values(agent, "TemporaryFileSystem")]
-    assert mounts == [":mode=0700,uid=1000,gid=1000,size=512M", "/.config/cloudflare:ro", "/.config/gh:ro", "/.config/fleet-worker:ro"]
+    assert mounts == [":mode=0700,uid=1000,gid=1000,size=512M", "/.config/cloudflare:ro", "/.config/gh:ro", "/.config/fleet-worker:ro", "/run/fleet-hermes-github-token"]
     bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
     # pi's library tree and the seat token files the unjailed steps read. The App key
     # arrives as a credential, so the key dir is not bound (fleet-ops#10957).

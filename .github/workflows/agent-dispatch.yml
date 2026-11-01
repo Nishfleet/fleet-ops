@@ -1390,7 +1390,7 @@ jobs:
           HOOKS: ${{ vars.ORCHESTRATE_HOOKS }}
         run: |
           set -euo pipefail
-          cd "$WORKTREE"
+          cd "$WORKTREE"; if [ -d /run/fleet-hermes-github-token ]; then HERMES_RUN=/run/fleet-hermes-github-token; fi
           # The prompt from THIS checkout; a repo without one falls back to the fleet copy.
           prompt="prompts/orchestrator-handoff.md"
           if [ ! -f "$prompt" ]; then
@@ -1406,7 +1406,7 @@ jobs:
           # session reads outsider issue text, so the jail hides the unit's credential directory
           # and the store that holds it, which leaves a sibling runner's copy of the same key out
           # of reach too (fleet-ops#10957).
-          jail=(bwrap --dev-bind / / --tmpfs "$HOME/.config/fleet-worker" --tmpfs "$RUNNER_TEMP/_runner_file_commands" ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"} --die-with-parent --)
+          jail=(bwrap --dev-bind / / --tmpfs "$HOME/.config/fleet-worker" --tmpfs "$RUNNER_TEMP/_runner_file_commands" ${HERMES_RUN:+--tmpfs "$HERMES_RUN"} ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"} --die-with-parent --)
           if [ "$ORCH_RUNNER" = pi ]; then
             # No Claude spend and no turn cap: the step's timeout-minutes is the wall
             # (fleet-ops#10349).
@@ -1480,22 +1480,22 @@ jobs:
           [ "$GO" = true ] || { echo "orchestrate: nothing was built on this run; no park mark"; exit 0; }
           # No PR for this head: mark it so the label loop stops. The sweep re-queues
           # it after 6 h, up to 3 tries.
-          if gh pr list -R "$REPO" --head "orch/issue-$ISSUE" --state all --json number --jq 'length' | grep -qxE '[1-9][0-9]*'; then
-            echo "orchestrate: #$ISSUE has a PR on orch/issue-$ISSUE; nothing to mark"
-            exit 0
-          fi
+          if gh pr list -R "$REPO" --head "orch/issue-$ISSUE" --state all --json number --jq 'length' | grep -qxE '[1-9][0-9]*'; then exit 0; fi
           # A PR on another branch (gate/*, claim/*) that closes the issue is GitHub's
           # own link, so the issue is not a dead end (fleet-ops#9278 item 4). Open and
           # merged PRs count; a closed unmerged one does not. So is a cross-repo
-          # deliverable (fleet-ops#10275): the session records the product issue as this
-          # issue's blocked_by dependency, the wait prompts/worker.md step 4 records, so
-          # GitHub owns the state — the dispatch gate skips the issue while the blocker
-          # is open, and the summary clears when the product issue closes, which puts
-          # the issue back in the sweep's re-fire queue for its receipt close. Strangers
-          # cannot write a dependency, so no comment trust filter exists to fool. Fail
-          # closed: a read that fails or prints no count marks nothing.
-          # shellcheck disable=SC2016 # $o, $r, $n are GraphQL variables
-          [ "$(gh api graphql -F o="${REPO%/*}" -F r="${REPO#*/}" -F n="$ISSUE" -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){closedByPullRequestsReferences(first:1){totalCount}}}}' --jq '.data.repository.issue.closedByPullRequestsReferences.totalCount')" = 0 ] && [ "$(gh api "repos/$REPO/issues/$ISSUE" --jq '.issue_dependencies_summary.blocked_by // 0')" = 0 ] || { echo "orchestrate: #$ISSUE has a linked closing PR or an open blocker, or a read failed; nothing to mark"; exit 0; }
+          # deliverable (fleet-ops#10275): the session records the product issue as
+          # this issue's blocked_by dependency, the wait prompts/worker.md step 4
+          # records, so GitHub owns the state — the dispatch gate skips the issue
+          # while the summary is non-zero, the summary reads open blockers only
+          # (fleet-ops#10289), and its release loop re-fires the issue at 0. Strangers
+          # cannot write a dependency, so no comment trust filter exists to fool. The
+          # read below is the blocker LIST the takeover branch reads: entries carry
+          # their own state and repo, so a closed blocker cannot stand for an open one
+          # and a count cannot answer the list question (fleet-ops#11530). Fail
+          # closed: any read failure marks nothing.
+          # shellcheck disable=SC2015,SC2016 # the second read runs only past the linked-closing-PR one; $o, $r, $n are GraphQL variables
+          [ "$(gh api graphql -F o="${REPO%/*}" -F r="${REPO#*/}" -F n="$ISSUE" -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){closedByPullRequestsReferences(first:1){totalCount}}}}' --jq '.data.repository.issue.closedByPullRequestsReferences.totalCount')" = 0 ] && { cross=$(gh api "repos/$REPO/issues/$ISSUE/dependencies/blocked_by" --jq '[.[] | select(.state == "open") | .html_url] | map(select((capture("^https://github\\.com/(?<f>[^/]+/[^/]+)/issues/[0-9]+$") | .f) != $ENV.REPO)) | unique | .[]') || { echo "orchestrate: #$ISSUE: the blocker list read failed; nothing to mark"; exit 0; }; } || { echo "orchestrate: #$ISSUE has a linked closing PR, or a read failed; nothing to mark"; exit 0; }
           # A `due:` line still in the future is work nothing can build yet (fleet-ops#11014).
           # handoff-ended is what the sweep re-fires and what later-sweep skips, so such an
           # issue could never reach its date and a person had to clear the label. on-hold is not
@@ -1512,6 +1512,14 @@ jobs:
           # failure does not. Only a crash ("failure") or the job wall ("cancelled") is
           # read: a session that ended on its own is the work's ending, whatever it said.
           if { [ "$SESSION_OUTCOME" = failure ] || [ "$SESSION_OUTCOME" = cancelled ]; } && tail -c 2000 "${RUNNER_TEMP:-}/orchestrator.log" 2>/dev/null | grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|insufficient balance|model is unavailable|\b429\b'; then note="orchestrator hand-off ended on infrastructure: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"; fi
+          # A cross-repo blocker is the deliverable being in another repo: not this
+          # run's dead end, so no mark (fleet-ops#10275) — but the ending is not
+          # invisible either (fleet-ops#11530): the note above, prefix rules
+          # untouched, still posts, naming the run and the blocker, so recording a
+          # dependency dodges nothing and a crash after it still leaves its ending.
+          # The skip is cross-repo only: a same-repo blocker this run recorded is its
+          # own dead end, and the mark below fires on it.
+          [ -z "$cross" ] || { gh issue comment "$ISSUE" -R "$REPO" --body "$note — the deliverable waits on: $cross"; exit 0; }
           if [ "$due" = true ]; then label=on-hold color=EDDEDD desc="Parked until the issue's due: date; later-sweep promotes it" note="orchestrator: on hold until the due date in this issue; nothing can be built before it, so this hand-off stops here and later-sweep promotes it then"; fi
           # These writes need issues: write, which the App token holds.
           # --force makes the label idempotent on a newly stubbed repo (drive#199).

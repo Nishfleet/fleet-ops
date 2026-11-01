@@ -21,7 +21,7 @@ FAKE_GH = r"""#!/usr/bin/env bash
 case "$1 $2" in
   "pr list") echo 0 ;;
   "api graphql") echo 0 ;;
-  "api "*) jq -r "${@: -1}" "$FAKE_DIR/issue.json" ;;
+  "api "*) jq -r "${@: -1}" "$FAKE_DIR/blockers.json" ;;
   "issue view") cat "$FAKE_DIR/body" ;;
   "label create"|"issue edit"|"issue comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
@@ -45,7 +45,7 @@ def run(tmp_path, outcome="success", log=None):
     home = tmp_path / "home"
     home.mkdir()
     (tmp_path / "body").write_text(BODY)
-    (tmp_path / "issue.json").write_text('{"issue_dependencies_summary": {"blocked_by": 0}}')
+    (tmp_path / "blockers.json").write_text("[]")
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
     if log is not None:

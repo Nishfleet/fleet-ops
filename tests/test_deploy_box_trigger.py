@@ -5,7 +5,7 @@ clone for 40 min, and their deploy runs 39796797875 and 39796924650 show why:
 `runner-probe` ran as the deploy job's first step, so its failure marked both
 `systemctl` steps `skipped`. These assertions read the workflow as YAML, so no path
 filter, `needs`, `if`, `environment` or `continue-on-error` can sit between a push
-to main and the deploy, and nothing runs before the two deploy steps.
+to main and the deploy, and nothing runs before the deploy request step.
 """
 
 import json
@@ -68,14 +68,14 @@ def test_nothing_gates_the_deploy():
     assert workflow["concurrency"] == {"group": "deploy-box", "cancel-in-progress": False}
 
 
-def test_the_two_deploy_steps_are_first_and_run_unconditionally():
+def test_the_deploy_request_is_first_and_runs_unconditionally():
     steps = _workflow()["jobs"]["apply"]["steps"]
-    deploy = [s for s in steps if "systemctl" in (s.get("run") or "")]
-    assert len(deploy) == 2
-    assert "systemctl --user start fleet-sync.service" in deploy[0]["run"]
-    assert "systemctl start fleet-host-config.service" in deploy[1]["run"]
-    assert steps[:2] == deploy, (
-        "the deploy steps come first, so no earlier step's failure can skip them: "
+    deploy = [s for s in steps if "fleet-deploy" in (s.get("run") or "")]
+    assert len(deploy) == 1
+    assert "fleet-deploy.path" in deploy[0]["run"]
+    assert "/var/lib/fleet-deploy/request" in deploy[0]["run"]
+    assert steps[0] == deploy[0], (
+        "the deploy request comes first, so no earlier step's failure can skip it: "
         "that is how run 39796797875 lost its deploy"
     )
     for step in deploy:
@@ -87,7 +87,7 @@ def test_the_probe_runs_last_in_the_deploying_job():
     steps = _workflow()["jobs"]["apply"]["steps"]
     probe = [s for s in steps if s.get("uses") == PROBE]
     assert len(probe) == 1, steps
-    assert steps[-1] == probe[0], "the probe is last, after both deploy steps"
+    assert steps[-1] == probe[0], "the probe is last, after the deploy request step"
     assert "if" not in probe[0] and "continue-on-error" not in probe[0], (
         "a red probe must fail the run, and it must not be able to skip the steps above it"
     )
