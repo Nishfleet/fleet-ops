@@ -92,15 +92,22 @@ jobs:
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
           skip() { echo "gate: skip ($1)"; echo go=false >> "$GITHUB_OUTPUT"; exit 0; }
-          err=$(gh api "repos/$REPO/issues/$i" --jq .number 2>&1 >/dev/null) || { case $err in *"HTTP 404"*) skip missing-issue ;; *) echo "$err" >&2; exit 1 ;; esac; }
+          err=$(gh api "repos/$REPO/issues/$i" --jq .number 2>&1 >/dev/null) ||
+            { case $err in *"HTTP 404"*) skip missing-issue ;; *) echo "$err" >&2; exit 1 ;; esac; }
           issue=$(gh api "repos/$REPO/issues/$i")
           labels=,$(jq -r '[.labels[].name]|join(",")' <<<"$issue"),
           [ "$(jq -r .state <<<"$issue")" = open ] || skip closed
           [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || skip blocked
           if jq -e '.title|startswith("__scout_probe_")' <<<"$issue" >/dev/null; then skip probe; fi
           # One list: every contact point files one of these title prefixes; tests/alert_routes_check.py holds it against the provisioning templates (fleet-ops#11086).
-          if jq -e --argjson titles '["cost alarm: ","router dead row: ","router dead key: ","grafana alert: ","alert: "]' '[.title|startswith($titles[])]|any' <<<"$issue" >/dev/null; then t=$(jq -r .title <<<"$issue"); open=$(gh issue list -R "$REPO" --state open --search "in:title sort:created-asc ${t//\"/}" --limit 100 --json number,title); twin=$(jq -r --argjson i "$i" --arg t "$t" '[.[] | select(.title == $t and .number < $i)] | min_by(.number) | .number // empty' <<<"$open"); if [ -n "$twin" ]; then gh issue close "$i" -R "$REPO" --duplicate-of "$twin" --comment "duplicate: the alert is still firing; #$twin is open for it"; skip duplicate-alert; fi; fi
-          for l in agent-blocked needs-split needs-orchestrator needs-nish-decision epic; do case $labels in *",$l,"*) skip "$l" ;; esac; done
+          if jq -e --argjson titles '["cost alarm: ","router dead row: ","router dead key: ","grafana alert: ","alert: "]' '[.title|startswith($titles[])]|any' <<<"$issue" >/dev/null; then
+            t=$(jq -r .title <<<"$issue"); open=$(gh issue list -R "$REPO" --state open --search "in:title sort:created-asc ${t//\"/}" --limit 100 --json number,title)
+            twin=$(jq -r --argjson i "$i" --arg t "$t" '[.[] | select(.title == $t and .number < $i)] | min_by(.number) | .number // empty' <<<"$open")
+            if [ -n "$twin" ]; then gh issue close "$i" -R "$REPO" --duplicate-of "$twin" --comment "duplicate: the alert is still firing; #$twin is open for it"; skip duplicate-alert; fi
+          fi
+          for l in agent-blocked needs-split needs-orchestrator needs-nish-decision epic; do
+            case $labels in *",$l,"*) skip "$l" ;; esac
+          done
 
           # A worker token cannot push .github/workflows/**, so route that work to the orchestrator (fleet-ops#8900). Substring, not a parse: an over-match costs one orchestrator run, a "parse it properly" fix brings the wall burn back (#8877). fleet-ops issues name its own workflows by bare file name (#9275), other repos' by a path fragment ("workflows/deploy-production.yml"; 0509#7004); a bare name with no directory stays undetectable, and the worker prompt routes the push refusal itself when detection misses (prompts/worker.md 5a).
           fleet_ops=false
@@ -317,8 +324,10 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GATE_ENGINE: ${{ steps.gate.outputs.engine }}
         run: |
-          pr=$(gh pr list -R "$REPO" --head "$REF" --state all --json number --jq '.[0].number // empty') || pr=; [ -n "$pr" ] || { echo "no PR on $REF yet; nothing to record"; exit 0; }
-          ran=$(sort -u "$RUNNER_TEMP/engines-ran" 2>/dev/null | paste -sd, -) || ran=; [ -n "$ran" ] || ran=$GATE_ENGINE
+          pr=$(gh pr list -R "$REPO" --head "$REF" --state all --json number --jq '.[0].number // empty') || pr=
+          [ -n "$pr" ] || { echo "no PR on $REF yet; nothing to record"; exit 0; }
+          ran=$(sort -u "$RUNNER_TEMP/engines-ran" 2>/dev/null | paste -sd, -) || ran=
+          [ -n "$ran" ] || ran=$GATE_ENGINE
           gh pr comment "$pr" -R "$REPO" --body "builder-engine: $ran"
       # Sample the host seconds after the death: the strike reads it to tell an infra kill from a code failure (fleet-ops#9291).
       - name: Host sample
@@ -326,7 +335,9 @@ jobs:
         if: failure() && steps.gate.outputs.go == 'true'
         run: |
           {
-            echo "ended=$(date +%s)"; echo "load1=$(cut -d' ' -f1 /proc/loadavg)"; echo "cores=$(nproc)"
+            echo "ended=$(date +%s)"
+            echo "load1=$(cut -d' ' -f1 /proc/loadavg)"
+            echo "cores=$(nproc)"
             echo "swap_used_kb=$(awk '/^SwapTotal:/{t=$2} /^SwapFree:/{f=$2} END{print t-f}' /proc/meminfo)"
             if grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b|http[ /0-9.]*500\b|status(code)?[\": ]*500\b|internal ?server ?error' "$RUNNER_TEMP/worker.err" 2>/dev/null; then echo router_err=true; else echo router_err=false; fi
           } >> "$GITHUB_OUTPUT"
@@ -571,8 +582,11 @@ jobs:
         env:
           WORKER_OUTCOME: ${{ steps.worker.outcome }}
         run: |
-          i=${REF#claim/issue-}; id=${REPO#*/}-${i%%-*}
-          [ "$WORKER_OUTCOME" = success ] || exit 0; rm -rf "$HOME/workspaces/agent-worktrees/issue-$id"  # a failed run keeps its dir: the retry resumes in it
+          i=${REF#claim/issue-}
+          id=${REPO#*/}-${i%%-*}
+          if [ "$WORKER_OUTCOME" = success ]; then # a failed run keeps its dir: the retry resumes in it
+            rm -rf "$HOME/workspaces/agent-worktrees/issue-$id"
+          fi
   review:
     if: inputs.review_pr != '' && inputs.review_sha != '' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, review]  # netcup-agent-9 and -10 only, no agent label: a review never waits behind a build (#10587)
@@ -604,25 +618,15 @@ jobs:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       # The approval is only worth the identity behind it, so the key that posts it is loaded by these two units and by
       # nothing else (tests/test_review_runner_key.py). The key stays on the runner, is masked, and goes only to
-      # create-github-app-token; the token it returns reaches the one command that posts an approval.
+      # create-github-app-token, which runs after the review (an installation token expires after one hour); the token
+      # reaches the one step that posts an approval.
       - name: Read the reviewer App private key
         id: reviewer-key
         run: |
-          keyfile="${CREDENTIALS_DIRECTORY:-}/nishfleet-reviewer.private-key.pem"; [ -n "${CREDENTIALS_DIRECTORY:-}" ] && [ -s "$keyfile" ] || { echo "::error::the reviewer App key is a credential of the two review runners and is not loaded here"; exit 1; }
+          keyfile="${CREDENTIALS_DIRECTORY:-}/nishfleet-reviewer.private-key.pem"
+          [ -n "${CREDENTIALS_DIRECTORY:-}" ] && [ -s "$keyfile" ] || { echo "::error::the reviewer App key is a credential of the two review runners and is not loaded here"; exit 1; }
           grep . "$keyfile" | sed 's/^/::add-mask::/'
           { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
-      - name: Reviewer App token for the approval
-        id: reviewer-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with: {app-id: "5526765", private-key: "${{ steps.reviewer-key.outputs.pem }}", permission-issues: write}
-      - name: Park the reviewer App token in a private file
-        # The token reaches only the one command that posts an approval: a 0600 file under RUNNER_TEMP that approve_say
-        # reads, never a step env every reviewer process would inherit (a model-run reviewer could read its own env).
-        run: |
-          umask 077; tee "$RUNNER_TEMP/reviewer-app-token" >/dev/null <<<"$REVIEWER_TOKEN"  # a here-string rides a temp fd, so no child's argv ever carries the token
-        env:
-          # Scoped to this step: nothing model-run executes here, so no reviewer process inherits the token.
-          REVIEWER_TOKEN: ${{ steps.reviewer-token.outputs.token }}
       - name: Review the held head
         id: review
         env:
@@ -638,6 +642,13 @@ jobs:
         run: |
           set -euo pipefail
           # No review text goes public unscanned (fleet-ops#9528): every post runs gitleaks with the PR scan's own rules and binary, a matched line is withheld behind a note, and a scan that cannot run posts nothing at all.
+          : > "$RUNNER_TEMP/approval.txt"
+          # The step above writes the App key to $GITHUB_OUTPUT, which the runner keeps under $RUNNER_TEMP/_runner_file_commands
+          # for the whole job, and the unit's LoadCredential= keeps the same key in systemd's credential store, so the reviewer
+          # processes run under a jail that hides both (the store and its parent, which also hides a sibling runner's copy of the
+          # same key), as the work job's jails do (fleet-ops#9521). Nothing else here is model-run.
+          cred_hide=${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"}
+          review_jail="bwrap --dev-bind / / --tmpfs $RUNNER_TEMP/_runner_file_commands $cred_hide --proc /proc --unshare-pid --die-with-parent"
           scan() { local r=$RUNNER_TEMP/rules.toml j=$RUNNER_TEMP/scan.json rc=0 PATH=$RUNNER_TEMP/gl:$PATH
             command -v gitleaks >/dev/null || { mkdir -p "$RUNNER_TEMP/gl" && curl -fsSL --retry 5 --retry-all-errors --max-time 180 -o "$RUNNER_TEMP/g.tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz && echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/g.tgz" | sha256sum --check --strict --status - && tar -xzf "$RUNNER_TEMP/g.tgz" -C "$RUNNER_TEMP/gl" gitleaks; } >&2
             curl -fsSL --retry 3 --max-time 60 -o "$r" https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/gitleaks-private-detail.toml || return 1
@@ -645,7 +656,7 @@ jobs:
             case $rc in 0) printf '%s\n' "$1" ;; 2) jq -er '[.[] | range(.StartLine; .EndLine + 1)] | unique | .[]' "$j" | awk 'NR == FNR { b[$1] = 1; next } FNR in b { if (!p) print "[a line was withheld: it matched a private-detail rule]"; p = 1; next } { p = 0; print }' - <(printf '%s\n' "$1") ;; *) return 1 ;; esac; }
           scan_failed() { echo "::error::the private-detail scan could not run, so nothing was posted"; gh pr comment "$PR" -R "$REPO" --body "review of $SHA did not finish: the private-detail scan could not read its rules or run, so no review text was posted. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again." || true; exit 1; }
           say() { local out; out=$(scan "$1") || scan_failed; gh pr comment "$PR" -R "$REPO" --body "$out"; }
-          approve_say() { local out; out=$(scan "$1") || scan_failed; approve; GH_TOKEN="$(cat "$RUNNER_TEMP/reviewer-app-token")" gh pr comment "$PR" -R "$REPO" --body "$out"; }  # the approval comment goes out as the reviewer App, read from its parked file, the only bot APPROVERS counts (fleet-ops#9521)
+          approve_say() { local out; out=$(scan "$1") || scan_failed; approve; printf '%s\n' "$out" > "$RUNNER_TEMP/approval.txt"; }  # the Approve review goes out on the job token; the approval comment is stashed for the step after this one, which mints the reviewer App token fresh and posts it, the only bot APPROVERS counts (fleet-ops#9521)
           approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the job token posts this review, because the reviewer App carries no write on pull requests; a push dismisses it, so it goes before the verdict comment and a failed call is re-run
           # An infrastructure failure is retry-able: the comment avoids the "reviewer: <sha>" phrase the already-reviewed check looks for, and the job goes red for a re-run.
           retry() { say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."; exit 1; }
@@ -658,12 +669,17 @@ jobs:
           cut_text() { t=$(printf '%s' "$1" | head -c 3500); b=$(printf '%s' "$1" | wc -c); [ "$b" -le 3500 ] || t=$(printf 'The review is %s bytes and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "$b" "$(blockers_of "$1")" "$t"); printf '%s' "$t"; }
           pr=$(gh api "repos/$REPO/pulls/$PR"); [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
           # Only a real verdict counts as reviewed (the older hold comment and "could not be judged" carry none), so one review
-          # per head. Each phrase must START a line of a comment this job or the reviewer App posted: the hold comment quotes the approval line.
+          # per head. Each phrase must START a line of a comment this job or the reviewer App posted: the hold comment quotes the
+          # approval line. An approval counts only from the reviewer App: every workflow on any branch posts as
+          # github-actions[bot], so an approval line from that login (an old one from before the App, or a forged one from a PR's
+          # own workflow) must not hold the head; a fresh review follows instead. Blocked and not-approved only ever mark a head
+          # reviewed (fail closed), so they count from either login the job posts as.
           seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" --arg who "$REVIEWER_LOGIN" '
             def blockers: [.[] | select(test($blk; "i"))];
             [.[][] | select(.user.login == "github-actions[bot]" or .user.login == $who) | (.body | split("\n")) as $l
               | (($l | blockers) | length > 0 and all(.[]; test($none; "i"))) as $wrong
-              | if any($l[]; startswith("coordinator-approval: " + $sha) or startswith("reviewer: " + $sha + " approved.") or startswith("reviewer: " + $sha + " not approved.")) then "verdict"
+              | if .user.login == $who and any($l[]; startswith("coordinator-approval: " + $sha) or startswith("reviewer: " + $sha + " approved.")) then "verdict"
+                elif any($l[]; startswith("reviewer: " + $sha + " not approved.")) then "verdict"
                 elif any($l[]; startswith("reviewer: " + $sha + " blocked.")) then (if $wrong then "none-only" else "verdict" end)
                 else "other" end] as $k
             | ($k | map(select(. == "verdict")) | length) + (if ($k | map(select(. == "none-only")) | length) >= 5 then 1 else 0 end)')
@@ -723,7 +739,8 @@ jobs:
           built=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs '[.[][] | select(.user.login == "nishfleet-worker[bot]") | .body | select(startswith("builder-engine: ")) | ltrimstr("builder-engine: ") | split("\n")[0]] | join(",")' 2>/dev/null) || built=
           first_model=$FIRST_MODEL_CLAUDE_BUILT; [ -z "$built" ] || grep -qw claude <<<"${built//,/ }" || first_model=$FIRST_MODEL_OTHER; echo "first review: built by '${built:-unknown}', model $first_model"
           # No tools (claude honors empty --tools): the review posts publicly; a failed or empty call did not finish: retry.
-          ask_claude() { local d s out; for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do sleep "$d"; for s in b a; do out=$([ "$s" = b ] || { t=$(sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' "${CREDENTIALS_DIRECTORY:-/nonexistent}/claude-seat-a.env" 2>/dev/null) && [ -n "$t" ] && export CLAUDE_CODE_OAUTH_TOKEN="$t"; } || exit 1; timeout 600 claude -p --model "$1" --tools "" --no-session-persistence --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2") || out=; if [ -n "${out//[[:space:]]/}" ]; then printf '%s' "$out"; return 0; fi; done; done; return 1; }
+          # shellcheck disable=SC2086 # $review_jail is a command line to split, as the work job splits $jail_base
+          ask_claude() { local d s out; for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do sleep "$d"; for s in b a; do out=$([ "$s" = b ] || { t=$(sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' "${CREDENTIALS_DIRECTORY:-/nonexistent}/claude-seat-a.env" 2>/dev/null) && [ -n "$t" ] && export CLAUDE_CODE_OAUTH_TOKEN="$t"; } || exit 1; timeout 600 $review_jail claude -p --model "$1" --tools "" --no-session-persistence --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2") || out=; if [ -n "${out//[[:space:]]/}" ]; then printf '%s' "$out"; return 0; fi; done; done; return 1; }  # $review_jail is a command line to split, as the work job splits $jail_base
           review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt") || review=
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest", state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
@@ -771,6 +788,21 @@ jobs:
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
             say "$(printf 'reviewer: %s blocked. This change touches money, secrets, data, .github/ or the review rules, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s%s' "$SHA" Jev "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
           fi
+      # The token is minted after the review finishes and only when there is an approval to post: an installation token
+      # expires after one hour, and a review that retried can run longer than that (fleet-ops#9521 review). It is scoped to
+      # the one step below: nothing model-run executes here, so no reviewer process inherits the token.
+      - name: Reviewer App token for the approval
+        id: reviewer-token
+        if: steps.review.outputs.approved_sha != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with: {app-id: "5526765", private-key: "${{ steps.reviewer-key.outputs.pem }}", permission-issues: write}
+      # issues:write is the only permission the App carries, so the comment goes through the issues endpoint (gh pr
+      # comment resolves the PR over GraphQL, which needs pull-requests read); the body is the review step's stash.
+      - name: Post the approval as the reviewer App
+        if: steps.review.outputs.approved_sha != ''
+        env:
+          GH_TOKEN: ${{ steps.reviewer-token.outputs.token }}
+        run: gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$(cat "$RUNNER_TEMP/approval.txt")" --silent
       # A blocked orch PR goes back to the orchestrator (fleet-ops#10435); the label posts as the worker App because GITHUB_TOKEN fires no workflow event (docs/workflow-notes.md).
       - name: Read App private key for the rework label
         id: rework-key
@@ -784,9 +816,18 @@ jobs:
         run: |
           set -euo pipefail
           ref=$(gh pr view "$PR" -R "$REPO" --json headRefName,isCrossRepository --jq 'if .isCrossRepository then "fork" else .headRefName end'); n=${ref#orch/issue-}; [ "$n" != "$ref" ] || exit 0
-          rev=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body | capture("^reviewer: (?<s>[0-9a-f]{40}) blocked\\.") | .s'); grep -qx "$SHA" <<<"$rev" || exit 0
-          labels=$(gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty'); grep -q . <<<"$labels" && exit 0; rounds=$(grep -c . <<<"$rev")
-          if [ "$rounds" -gt 3 ]; then GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision; GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."; else GH_TOKEN=$ISSUE_TOKEN gh label create handoff-ended -R "$REPO" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h" >/dev/null; GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label handoff-ended; GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"; fi
+          rev=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body | capture("^reviewer: (?<s>[0-9a-f]{40}) blocked\\.") | .s')
+          grep -qx "$SHA" <<<"$rev" || exit 0
+          labels=$(gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty'); grep -q . <<<"$labels" && exit 0
+          rounds=$(grep -c . <<<"$rev")
+          if [ "$rounds" -gt 3 ]; then
+            GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
+            GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
+          else
+            GH_TOKEN=$ISSUE_TOKEN gh label create handoff-ended -R "$REPO" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h" >/dev/null
+            GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label handoff-ended
+            GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
+          fi
   # Arms an approved head as the worker App, re-reading the PR, so a moved head or a closed PR is left alone (fleet-ops#10435).
   arm:
     needs: review

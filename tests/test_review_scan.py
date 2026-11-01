@@ -188,12 +188,14 @@ def test_approval_waits_for_the_scan(tmp_path):
     assert bodies and "No blockers." not in bodies[0]
 
 
-def test_approval_posts_the_scanned_text(tmp_path):
+def test_approval_stashes_the_scanned_text(tmp_path):
+    """The review step stashes the scanned approval for the step after it, which posts it as the reviewer App (fleet-ops#9521)."""
     text = "coordinator-approval: %s\n\nreviewer: %s approved.\n\nNo blockers.\nAPPROVE" % (SHA, SHA)
     r, bodies, calls = _post(tmp_path, text, function="approve_say")
     assert r.returncode == 0, r.stderr
     assert "repos/Nishfleet/fleet-ops/pulls/7/reviews" in calls
-    assert bodies == [text]
+    assert bodies == [], "the review step must not post the approval comment itself"
+    assert (tmp_path / "temp" / "approval.txt").read_text() == text + "\n"
 
 
 def test_the_retry_path_scans_too(tmp_path):

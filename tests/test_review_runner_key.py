@@ -201,13 +201,19 @@ def test_the_review_job_posts_the_approval_as_the_reviewer_app() -> None:
     job = yaml.safe_load((ROOT / ".github/workflows/agent.yml").read_text())["jobs"]["review"]
     text = job_text(job)
     assert REVIEW_KEY in text, f"{name}: the review job does not read the reviewer App key"
-    assert 'GH_TOKEN="$(cat "$RUNNER_TEMP/reviewer-app-token")" gh pr comment' in steps, f"{name}: the approval comment is not read from the parked token file"
-    park = next(s for s in job["steps"] if s.get("name") == "Park the reviewer App token in a private file")
-    assert "umask 077" in park["run"], f"{name}: the parked token file is not 0600"
-    # The token sits in no env the model-run review step inherits; the parking step is its only env use.
+    ids = [s.get("id") for s in job["steps"]]
+    assert ids.index("review") < ids.index("reviewer-token"), f"{name}: the reviewer App token is minted before the review, so it can expire mid-review"
+    mint = next(s for s in job["steps"] if s.get("id") == "reviewer-token")
+    assert mint["if"] == "steps.review.outputs.approved_sha != ''", f"{name}: the reviewer App token is minted with no approval to post"
+    assert mint["with"]["app-id"] == "5526765", f"{name}: the token is not the review-only App's"
+    post = next(s for s in job["steps"] if s.get("name") == "Post the approval as the reviewer App")
+    assert post["if"] == "steps.review.outputs.approved_sha != ''", f"{name}: the approval comment posts with no approval to post"
+    assert post["env"]["GH_TOKEN"] == "${{ steps.reviewer-token.outputs.token }}", f"{name}: the approval comment does not post with the reviewer App token"
+    assert 'gh api -X POST "repos/$REPO/issues/$PR/comments"' in post["run"], f"{name}: the approval comment does not go through the issues endpoint (the App carries issues:write only)"
+    assert all(s.get("name") != "Park the reviewer App token in a private file" for s in job["steps"]), f"{name}: a reviewer App token is still parked where a step env or a file could leak it"
     reviewstep = next(s for s in job["steps"] if s.get("id") == "review")
     assert "REVIEWER_TOKEN" not in (reviewstep.get("env") or {}), f"{name}: the review step inherits the reviewer App token"
-    assert park["env"]["REVIEWER_TOKEN"] == "${{ steps.reviewer-token.outputs.token }}", "the parked token is not the reviewer App token"
+    assert 'review_jail="bwrap --dev-bind / / --tmpfs $RUNNER_TEMP/_runner_file_commands' in steps, f"{name}: the minted key lands in the runner file commands, so the reviewers must run jailed from it"
     # The login the approval goes out as is the login APPROVERS counts, or nothing counts it.
     approvers = yaml.safe_load((ROOT / ".github/workflows/agent-dispatch.yml").read_text())["env"]["APPROVERS"].split()
     login = next((v for k, v in (line.split("=", 1) for line in text.splitlines() if line.startswith("REVIEWER_LOGIN="))), "")
