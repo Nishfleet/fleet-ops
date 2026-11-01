@@ -83,8 +83,16 @@
     # Retired units and paths, removed by tasks/retired-and-drift.yml. Every
     # path the old list named was absent from the box on 2026-11-01.
     retired_units: []
-    retired_user_units: []
+    retired_user_units:
+      - fleet-litellm-proxy-config.path
+      - fleet-grafana-provisioning.path
     retired:
+      # Replaced by "Install the router config" and the Grafana reload in
+      # tasks/services.yml (fleet-ops#10935 E2).
+      - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.path"
+      - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.service"
+      - "{{ nish_home }}/.config/systemd/user/fleet-grafana-provisioning.path"
+      - "{{ nish_home }}/.config/systemd/user/fleet-grafana-provisioning.service"
       # Read only by the hand-install drift check, deleted 2026-11-01.
       - /etc/fleet-ops/box-only
     nish_home: "{{ '~nish' | expanduser }}"
@@ -244,6 +252,9 @@
     # then the proxy, restarted once. Fires only when a rendered Redis file changed (first
     # creation, or the password file was deleted and re-minted), never in steady state.
     # The proxy needs up to ~10 minutes to be healthy again after this.
+    - name: Restart litellm proxy
+      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host try-restart fleet-litellm-proxy.service
+
     - name: Restart litellm redis then proxy
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-litellm-redis.service fleet-litellm-proxy.service
 

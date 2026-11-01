@@ -241,3 +241,30 @@
     - hermes_installed_sandbox_dropin.stat.exists
     - "hermes_installed_sandbox_dropin.stat.mtime | int > ([hermes_gateway_start.stdout | int, hermes_serve_start.stdout | int] | min)"
     - not (hermes_login_file.stat.exists and (hermes_login_proof is skipped or hermes_login_proof is succeeded))
+
+# The router container mounts this copy. A changed file restarts the router.
+- name: Install the router config
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../config/litellm-proxy.yaml"
+    dest: "{{ nish_config }}/fleet-ops/litellm-proxy.yaml"
+    owner: nish
+    group: nish
+    mode: "0644"
+  notify: Restart litellm proxy
+
+# Grafana reads alerting and datasource provisioning only at start or on this
+# admin API call (grafana.com/docs/grafana/latest/developers/http_api/admin/).
+- name: Reload Grafana alerting and datasource provisioning
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:3001/api/admin/provisioning/{{ item }}/reload"
+    method: POST
+    url_username: admin
+    url_password: "{{ lookup('ansible.builtin.file', nish_config ~ '/fleet-ops/grafana-admin-password') }}"
+    force_basic_auth: true
+  loop: [alerting, datasources]
+  register: grafana_reload
+  until: grafana_reload is succeeded
+  retries: 6
+  delay: 10
+  changed_when: false
+  check_mode: false
