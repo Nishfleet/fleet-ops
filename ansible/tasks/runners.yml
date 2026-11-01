@@ -5,10 +5,11 @@
 # helper: no Claude, gh or Cloudflare login, and no App key (that comes in as a
 # systemd credential).
 #
-# The App cannot register runners yet (it lacks the org "Self-hosted runners"
-# permission), so each runner reuses an existing registration, copied once from
-# nish's runner directory: only while the copy has no runsvc.sh, so a re-run never
-# overwrites a live runner's state.
+# Runners 1 and 15 reuse registrations copied once from nish's runner directory:
+# only while the copy has no runsvc.sh, so a re-run never overwrites a live
+# runner's state. Runners 2 to 14 were copied from runner 1's install and
+# registered with `config.sh` and an org registration token minted by the
+# nishfleet-worker App (GitHub docs: "Adding self-hosted runners").
 - name: Create the runner user
   ansible.builtin.user:
     name: fleet-runner

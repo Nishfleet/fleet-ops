@@ -30,9 +30,9 @@
     # credential on this box may do that; GitHub drops a self-hosted runner that has
     # not connected for 14 days (docs: "Removing self-hosted runners").
     agent_runner_retired_ids: "{{ range(1, 37) | reject('equalto', 23) | list }}"
-    # The agent pool: one runner per concurrent worker, up to the router's seat cap
-    # (6, fleet-ops#10935), run as fleet-runner by tasks/runners.yml.
-    fleet_runner_ids: [1, 15, 16, 17, 18, 19]
+    # The agent pool: netcup-agent-1 to 15 (Nish, fleet-ops#10935, 2026-11-01: 15,
+    # raised only after measuring), run as fleet-runner by tasks/runners.yml.
+    fleet_runner_ids: "{{ range(1, 16) | list }}"
     fleet_runner_pi_version: 1.4.0
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
