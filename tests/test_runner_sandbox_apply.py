@@ -256,10 +256,13 @@ def test_services_yml_enables_and_starts_the_timer():
 def test_host_handlers_start_the_apply_after_the_reload():
     reload_at = HOST.index("name: Reload systemd")
     apply_at = HOST.index("name: Start the runner sandbox apply")
-    hermes_at = HOST.index("name: Restart hermes units for their sandbox")
-    assert reload_at < apply_at < hermes_at
-    handler = HOST[apply_at:hermes_at]
+    # The hermes restart moved to tasks/services.yml (fleet-ops#10267), so the
+    # next host.yml handler after the apply is the ssh one.
+    ssh_at = HOST.index("name: Restart ssh.socket")
+    assert reload_at < apply_at < ssh_at
+    handler = HOST[apply_at:ssh_at]
     assert "fleet-runner-sandbox-apply.service" in handler and "started" in handler
+    assert "Restart hermes units" not in handler, "a handler can flush before services.yml mints and proves the login (review of PR #11116)"
 
 
 def test_every_drop_in_copy_task_notifies_the_apply():
