@@ -354,9 +354,12 @@
           register: disk_before
           changed_when: false
 
-        - name: Prune apt's cache of packages it no longer offers
+        # clean, not autoclean: autoclean keeps every .deb apt still offers
+        # (445 MB on 2026-11-01). The packages are installed, and apt downloads
+        # one again if it needs it.
+        - name: Delete apt's cache of downloaded packages
           ansible.builtin.apt:
-            autoclean: true
+            clean: true
 
         # until=24h filters on a container's creation time, not on when it
         # stopped, so a long-lived container stopped minutes ago still goes.
