@@ -150,7 +150,10 @@ def _gate_full(tmp_path, labels=",strong-only,", failed=0, live=None, env=None, 
     seg = script[start:end]
     b, home = _bin(tmp_path)
     prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=5 REPO=o/r labels="{labels}"\nissue=\'{{"title":"t","body":"b"}}\'\n{seg}\necho "engine=$engine model=$claude_model"\n'
-    env = {**os.environ, "HOME": str(home), "PATH": f"{b}:{SYS_PATH}", "COMMENTS_JSON": comments or _comments(failed), **{f"LIVE_{k}": str(v) for k, v in (live or {}).items()}, **(env or {})}
+    # The Gate's comment reads start their jq with the workflow's TRUSTED_JQ; the
+    # harness gets the same value yq reads back out of the file, or the reads fail
+    # and every packet escalates (the real job inherits it from the workflow env).
+    env = {**os.environ, "HOME": str(home), "PATH": f"{b}:{SYS_PATH}", "COMMENTS_JSON": comments or _comments(failed), "TRUSTED_JQ": _yq(".env.TRUSTED_JQ").strip(), **{f"LIVE_{k}": str(v) for k, v in (live or {}).items()}, **(env or {})}
     r = subprocess.run(["bash", "-c", prog], env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     return r.stdout.strip().splitlines()

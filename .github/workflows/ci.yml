@@ -560,6 +560,12 @@ jobs:
           defs=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .env.CHECK_DEFS' "$f")
           prog=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .env.RED_REWORK' "$f")
           [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
+          # The sweep's comment and run reads start their jq with the workflow's own env
+          # (TRUSTED_JQ, RUN_LIVE_JQ, fleet-ops#9273); the mock run gets the same values yq
+          # reads back out of the file, or jq dies on the undefined trusted def and the
+          # sweep exits 1 exactly the way this guard exists to forbid.
+          trusted=$(yq '.env.TRUSTED_JQ' "$f")
+          livejq=$(yq '.env.RUN_LIVE_JQ' "$f")
           cat > "$t/bin/gh" <<'MOCK'
           #!/usr/bin/env bash
           # Mock gh for the sweep: #7001 and #7002 are queued, #7003 has a red
@@ -611,11 +617,11 @@ jobs:
           for body in 1 0; do
             : > "$t/out"
             env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x BODY_ON_STDOUT=$body \
-              CHECK_DEFS="$defs" RED_REWORK="$prog" bash -eo pipefail "$t/redispatch.sh" > "$t/err" 2>&1 || { echo "the claim-PR re-dispatch exited $? on a deleted issue (BODY_ON_STDOUT=$body)"; exit 1; }
+              TRUSTED_JQ="$trusted" RUN_LIVE_JQ="$livejq" CHECK_DEFS="$defs" RED_REWORK="$prog" bash -eo pipefail "$t/redispatch.sh" > "$t/err" 2>&1 || { echo "the claim-PR re-dispatch exited $? on a deleted issue (BODY_ON_STDOUT=$body)"; exit 1; }
             prs=$(sed -n 's/^prs=//p' "$t/out"); : > "$t/out"
             rc=0
             env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x BODY_ON_STDOUT=$body \
-              ISSUE='' CLOSED='' PRS="$prs" bash -eo pipefail "$t/list.sh" >> "$t/err" 2>&1 || rc=$?
+              TRUSTED_JQ="$trusted" RUN_LIVE_JQ="$livejq" ISSUE='' CLOSED='' PRS="$prs" bash -eo pipefail "$t/list.sh" >> "$t/err" 2>&1 || rc=$?
             cat "$t/err"
             [ "$rc" -eq 0 ] || { echo "the sweep exited $rc on a deleted issue (BODY_ON_STDOUT=$body)"; exit 1; }
             want='["claim/issue-7001","claim/issue-7002","claim/issue-7003"]'
@@ -1182,12 +1188,12 @@ jobs:
           done
           # The guard constants ship with the block; the Worker outcome, clock
           # and Host sample values are per case.
-          WORKER_TIMEOUT_SECS=$(block env.WORKER_TIMEOUT_SECS)
+          WORKER_TIMEOUT_SECS=$(block env.WORKER_TIMEOUT_SECS) TRUSTED_JQ=$(yq '.env.TRUSTED_JQ' "$f")
           CPU_LOAD_FACTOR=$(block env.CPU_LOAD_FACTOR)
           SWAP_GUARD_KB=$(block env.SWAP_GUARD_KB)
           INFRA_REQUEUE_CAP=$(block env.INFRA_REQUEUE_CAP)
           SHORT_RUN_SECS=$(block env.SHORT_RUN_SECS)
-          export WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP SHORT_RUN_SECS
+          export TRUSTED_JQ WORKER_TIMEOUT_SECS CPU_LOAD_FACTOR SWAP_GUARD_KB INFRA_REQUEUE_CAP SHORT_RUN_SECS
           # The classifier reads the Worker step's own outcome and two clocks,
           # not the jobs API (the job conclusion is still null while the job runs).
           block env.WORKER_OUTCOME | grep -qF 'steps.worker.outcome' || { echo "WORKER_OUTCOME not wired to steps.worker.outcome"; exit 1; }
@@ -1245,9 +1251,9 @@ jobs:
             mkdir -p "$STATE"
             : > "$STATE/commented"; : > "$STATE/edited"
             jq -n --arg u "https://github.com/Nishfleet/fleet-ops/actions/runs/$GITHUB_RUN_ID" --argjson s "$started_comment" --argjson p "$prior" --argjson n "$infra" \
-              '{comments: ([if $s == 1 then {body: ("agent run started: " + $u), authorAssociation: "NONE"} else empty end]
-                + [if $p == 1 then {body: "agent run failed: https://github.com/Nishfleet/fleet-ops/actions/runs/111", authorAssociation: "NONE"} else empty end]
-                + [range($n) | {body: "agent run infra-failed: https://github.com/Nishfleet/fleet-ops/actions/runs/222", authorAssociation: "NONE"}])}' > "$COMMENTS"
+              '{comments: ([if $s == 1 then {body: ("agent run started: " + $u), author: {login: "nishfleet-worker"}, authorAssociation: "CONTRIBUTOR"} else empty end]
+                + [if $p == 1 then {body: "agent run failed: https://github.com/Nishfleet/fleet-ops/actions/runs/111", author: {login: "nishfleet-worker"}, authorAssociation: "CONTRIBUTOR"} else empty end]
+                + [range($n) | {body: "agent run infra-failed: https://github.com/Nishfleet/fleet-ops/actions/runs/222", author: {login: "nishfleet-worker"}, authorAssociation: "CONTRIBUTOR"}])}' > "$COMMENTS"
             export REF=$ref WORKER_OUTCOME=$outcome STARTED=$started ENDED=$ended LOAD1=$l1 CORES=$co SWAP_USED_KB=$sw ROUTER_ERR=$rerr ENGINE=$engine
             rc=0
             PATH="$t/bin:$PATH" bash "$t/report.sh" > "$STATE/out" 2>&1 || rc=$?
