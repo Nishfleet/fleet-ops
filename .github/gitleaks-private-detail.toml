@@ -290,3 +290,17 @@ paths = ['''^config/pi-models\.json$''']
 regexTarget = "line"
 regexes = ['''"apiKey": "!cut -d= -f2- \$HOME/\.config/fleet-ops/seats/litellm-agent\.env",$''']
 condition = "AND"
+
+[[allowlists]]
+description = "The login-shell claude wrapper must name the seat directory its --tmpfs hides, and that line sits inside a shell line continuation, so no line of the file can carry gitleaks:allow. Only the one relative seats directory is allowed, so a new path in this file still fails the scan; fleet-ops#11320"
+targetRules = ["private-fleet-seats-config"]
+paths = ['''(^|/)rootfs/etc/zsh/zprofile$''']
+regexes = ['''^\.config/fleet-ops/seats$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The seats-sandbox doc and its test spell the seat directory the sandbox hides, and the test runs its probe against a synthetic home, so neither file has a free comment line for every match. Only the one relative seats directory is allowed, so a new path in either file still fails the scan; fleet-ops#11320"
+targetRules = ["private-fleet-seats-config"]
+paths = ['''(^|/)(docs/managed-settings-defaults\.md|tests/test_interactive_seats_sandbox\.py)$''']
+regexes = ['''^\.config/fleet-ops/seats$''']
+condition = "AND"
