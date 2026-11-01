@@ -1,0 +1,8 @@
+$ id
+uid=974(fleet-runner) gid=965(fleet-runner) groups=965(fleet-runner)
+
+$ ls /home/nish/.claude 2>&1
+ls: cannot access '/home/nish/.claude': Permission denied
+
+$ ls /home/nish/.config/fleet-ops/seats 2>&1
+ls: cannot access '/home/nish/.config/fleet-ops/seats': Permission denied
