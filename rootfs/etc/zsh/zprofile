@@ -11,3 +11,39 @@
 # command run from such a shell also writes 0600 files: anything a service must
 # read needs its mode set, which the playbook does for every file it installs.
 umask 077
+
+# fleet-ops#11320: an interactive Claude session runs as nish, so the seats'
+# file mode binds only readers of other uids and the deny rules bind only the
+# command text (fleet-ops#11114). A login shell starts claude inside the seats
+# sandbox of docs/managed-settings-defaults.md: an empty tmpfs over the seats
+# directory around the whole session process, so no path spelling reaches the
+# live seat files. The vendor Bash sandbox cannot hold this line, because its
+# built-in file tools run outside it (code.claude.com/docs/en/sandboxing,
+# "What runs outside the sandbox": a denyRead entry does not stop the Read
+# tool); wrapping the session process is the whole-process boundary those docs
+# name for covering the file tools too. A shell already inside the sandbox
+# sees the seats directory as a tmpfs in its own mount table and starts claude
+# directly, so no environment knob can skip the wrap. With the seats directory
+# present and bwrap missing the wrapper refuses to start claude: it fails
+# closed, because an unsandboxed start is the exposure this file exists to stop.
+# The owner's zsh startup files are read-only inside, so a session cannot
+# redefine this function for the next login.
+claude() {
+    if [ ! -d "$HOME/.config/fleet-ops/seats" ] ||
+        grep -qF " $HOME/.config/fleet-ops/seats tmpfs " /proc/self/mounts; then
+        command claude "$@"
+        return
+    fi
+    if ! command -v bwrap >/dev/null 2>&1; then
+        echo "seats sandbox: bwrap is missing, so claude does not start; reinstall bubblewrap" >&2
+        return 1
+    fi
+    command bwrap --dev-bind / / \
+        --tmpfs "$HOME/.config/fleet-ops/seats" \
+        --ro-bind-try "$HOME/.zshenv" "$HOME/.zshenv" \
+        --ro-bind-try "$HOME/.zprofile" "$HOME/.zprofile" \
+        --ro-bind-try "$HOME/.zshrc" "$HOME/.zshrc" \
+        --ro-bind-try "$HOME/.zlogin" "$HOME/.zlogin" \
+        --proc /proc --unshare-pid --die-with-parent \
+        claude "$@"
+}

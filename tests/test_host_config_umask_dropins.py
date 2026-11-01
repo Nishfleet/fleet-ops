@@ -39,8 +39,11 @@ def test_rootfs_unit_does_not_set_umask_itself(unit: str) -> None:
 def test_login_profile_sets_owner_only_umask() -> None:
     profile = ROOT / LOGIN_PROFILE
     assert profile.is_file(), f"{profile} is missing"
-    lines = [line.strip() for line in profile.read_text().splitlines() if line.strip() and not line.startswith("#")]
-    assert lines == ["umask 077"]
+    top_level = [line for line in profile.read_text().splitlines()
+                 if line and not line[0].isspace() and not line.startswith("#")]
+    assert top_level == ["umask 077", "claude() {", "}"], (
+        "the login profile holds only the umask line and the claude seats-sandbox wrapper"
+    )
 
 
 def test_host_yml_installs_the_login_profile() -> None:
