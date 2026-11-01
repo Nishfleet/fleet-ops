@@ -90,10 +90,13 @@ ExecStart=-/bin/rmdir --ignore-fail-on-non-empty %h/.config/systemd/user/tincan-
 # 2a. The per-repo PR sweep timer is retired (fleet-ops#10935 step 3): GitHub's own
 #     schedule on agent-dispatch.yml is the sweep's trigger. Step 2.1's shape: stop
 #     the instances while the manager still holds them, then rm the template links
-#     and the enable links, named outright because ExecStart expands no glob.
-#     Delete this step once a deploy has run it.
+#     and the enable links, named outright because ExecStart expands no glob. The
+#     instance timer links themselves dangle the same way when a host wired them
+#     at top level: this box held fleet-pr-sweep@fleet-ops.timer -> the deleted
+#     clone file, and LINK-GUARD failed every deploy until this rm named them
+#     (fleet-ops#11544). Delete this step once a deploy has run it.
 ExecStart=-/usr/bin/systemctl --user stop fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer fleet-pr-sweep@seo-fix-kit.timer
-ExecStart=-/bin/rm -f %h/.config/systemd/user/fleet-pr-sweep@.service %h/.config/systemd/user/fleet-pr-sweep@.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@fleet-ops.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@0509.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@drive.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@aiconverter-app.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@TinyStudio.io-public.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@siterep-public.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@rera-report-card.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@seo-fix-kit.timer
+ExecStart=-/bin/rm -f %h/.config/systemd/user/fleet-pr-sweep@.service %h/.config/systemd/user/fleet-pr-sweep@.timer %h/.config/systemd/user/fleet-pr-sweep@fleet-ops.timer %h/.config/systemd/user/fleet-pr-sweep@0509.timer %h/.config/systemd/user/fleet-pr-sweep@drive.timer %h/.config/systemd/user/fleet-pr-sweep@aiconverter-app.timer %h/.config/systemd/user/fleet-pr-sweep@TinyStudio.io-public.timer %h/.config/systemd/user/fleet-pr-sweep@siterep-public.timer %h/.config/systemd/user/fleet-pr-sweep@rera-report-card.timer %h/.config/systemd/user/fleet-pr-sweep@seo-fix-kit.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@fleet-ops.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@0509.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@drive.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@aiconverter-app.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@TinyStudio.io-public.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@siterep-public.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@rera-report-card.timer %h/.config/systemd/user/timers.target.wants/fleet-pr-sweep@seo-fix-kit.timer
 # 2a''. The detached worker's token mint (fleet-ops#9738): link the template so every
 #     deploy carries edits to it. Nothing to enable: a worker launch line pulls an
 #     instance in with Requires= (AGENTS.md "Session-outliving work"). Off switch:
