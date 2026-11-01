@@ -9,7 +9,7 @@ and tincan secrets (fleet-ops#10567, fleet-ops#11114), an Edit deny on the deplo
 clone (fleet-ops#9437), the Wrangler deny (customer-data deletion and
 out-of-pipeline deploys stay process-gated), and asks on force pushes and other
 commands that destroy data or reboot the box. The model, plugin and style rules
-left on 2026-11-01 (fleet-ops#10935): stock features only.
+were removed on 2026-11-01 (fleet-ops#10935): stock features only.
 `/etc/claude-code` is not in `owned_dirs`: every file in it is covered by an
 explicit copy task, a single-file one or a directory one, never a sweep.
 
