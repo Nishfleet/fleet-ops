@@ -98,13 +98,10 @@ router_settings:
   deployment_affinity_ttl_seconds: 600
   model_group_alias:
     worker-capable-desk: worker-capable
-    worker-public-desk: worker-public
+    worker-public: worker-capable
+    worker-public-desk: worker-capable
   fallbacks:
   - worker-cheap:
-    - worker-capable
-  - worker-public:
-    - worker-capable
-  - worker-public-desk:
     - worker-capable
   - assistant:
     - worker-capable

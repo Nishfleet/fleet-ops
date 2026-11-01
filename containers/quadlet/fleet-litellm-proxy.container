@@ -98,7 +98,6 @@ PodmanArgs=--env=OPENCODE_API_KEY
 # Redis cache password (router_settings.redis_password): filled from litellm-keys/redis.env below.
 PodmanArgs=--env=REDIS_PASSWORD
 PodmanArgs=--env=STEPFUN_API_KEY
-PodmanArgs=--env=STRAITLY_API_KEY
 PodmanArgs=--env=SYNTHETIC_API_KEY
 PodmanArgs=--env=VERCEL_AI_GATEWAY_JEV_KEY
 PodmanArgs=--env=ZAI_API_KEY
@@ -144,7 +143,6 @@ EnvironmentFile=-%h/.config/fleet-ops/seats/stepfun.env
 EnvironmentFile=-%h/.config/fleet-ops/seats/synthetic.env
 EnvironmentFile=-%h/.config/fleet-ops/seats/typesafe-jev.env
 EnvironmentFile=-%h/.config/fleet-ops/seats/zai.env
-EnvironmentFile=-%h/.config/straitly/straitly.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-db.env
 # No `-` prefix on purpose: without this file the proxy fails to start (loud, via OnFailure=)

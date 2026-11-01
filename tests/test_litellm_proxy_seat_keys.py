@@ -55,7 +55,7 @@ SEAT_FILE = {
     "VERCEL_AI_GATEWAY_JEV_KEY": "typesafe-jev",
     "ZAI_API_KEY": "zai",
 }
-OTHER_ENV_FILES = {"DATABASE_URL", "LITELLM_MASTER_KEY", "REDIS_PASSWORD", "STRAITLY_API_KEY"}
+OTHER_ENV_FILES = {"DATABASE_URL", "LITELLM_MASTER_KEY", "REDIS_PASSWORD"}
 
 
 def test_every_seat_var_in_the_config_has_its_file_listed():

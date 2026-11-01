@@ -1,14 +1,3 @@
-# Approved models: one line per router provider (API key variable lowercased, no _API_KEY), holding the row's model without its openai/ or anthropic/ prefix. A row outside this list needs Nish's yes, and tests/test_provider_watch.py fails CI on one; tests/evals/results/ holds the eval a no-row decision rests on (Nish 2026-09-28).
-# A provider in config/provider-watch.json with no row needs a line here: "# No row for <provider>, YYYY-MM-DD: <reason>".
-# Approved opencode: deepseek-v4.1-flash
-# Approved commandcode: z-ai/glm-5.3-flash, deepseek/deepseek-v4.1-flash
-# Approved minimax: MiniMax-M3.1-Flash-Preview
-# Approved stepfun: step-5-preview
-# Approved synthetic: hf:zai-org/GLM-5.3-Flash
-# Approved zai: glm-5.3-flash
-# Approved straitly: deepseek/deepseek-v4-1-flash
-# Approved alibaba-coding: qwen3.8-max
-# Approved anthropic: claude-sonnet-5-5
 # anthropic answers in the tether group only (fleet-ops#9980; Nishfleet/tether#7).
 # Long notes for this file: docs/litellm-router-notes.md
 # Devin and Cursor CLI lanes retired (item 9, 2026-10-28): Devin had no router route (404 on every base).
@@ -184,55 +173,6 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
-# Straitly: public-repo Pi jobs only, 9.5 USD/30d per row (fleet-ops#9788). A 402 is neither retried nor cooled.
-- model_name: worker-public
-  litellm_params:
-    model: openai/deepseek/deepseek-v4-1-flash
-    api_base: https://api.straitly.ai/v1
-    api_key: os.environ/STRAITLY_API_KEY
-    tags:
-    - straitly
-    - free-credit
-    order: 1
-    weight: 1
-    input_cost_per_token: 3.82e-08
-    cache_read_input_token_cost: 3.8e-09
-    output_cost_per_token: 1.529e-07
-    max_budget: 9.5
-    budget_duration: 30d
-    max_parallel_requests: 16
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: direct probe 2026-10-15 on api.straitly.ai deepseek/deepseek-v4-1-flash, 6 calls on a 9040-token prefix, cached_tokens 0/0/0/0/0/8832 (fleet-ops#9788)."
-    id: straitly-ds41flasha-worker-public
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-public
-  litellm_params:
-    model: openai/deepseek/deepseek-v4-1-flash
-    api_base: https://api.straitly.ai/v1
-    api_key: os.environ/STRAITLY_API_KEY
-    tags:
-    - straitly
-    - free-credit
-    order: 1
-    weight: 1
-    input_cost_per_token: 3.82e-08
-    cache_read_input_token_cost: 3.8e-09
-    output_cost_per_token: 1.529e-07
-    max_budget: 9.5
-    budget_duration: 30d
-    max_parallel_requests: 16
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: direct probe 2026-10-15 on api.straitly.ai deepseek/deepseek-v4-1-flash, 6 calls on a 9040-token prefix, cached_tokens 0/0/0/0/0/8832 (fleet-ops#9788)."
-    id: straitly-ds41flashb-worker-public
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   # Former senior slot: GLM-5.3-Flash is a worker model only (fleet-ops#10608).
   litellm_params:
@@ -1036,54 +976,6 @@ model_list:
     id: anthropic-sonnet55-tether
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-# gh-aw pilot (fleet-ops#11311): a slash-free name for the only two models the owner allows it, and no fallback,
-# because gh-aw rejects a / inside the model name. The DeepSeek row is priced as the GLM row, the dearer of the two.
-- model_name: pilot
-  litellm_params:
-    model: openai/z-ai/glm-5.3-flash
-    api_base: https://api.commandcode.ai/provider/v1
-    api_key: os.environ/COMMANDCODE_API_KEY
-    tags:
-    - prepaid
-    - commandcode
-    order: 1
-    input_cost_per_token: 3e-07
-    cache_read_input_token_cost: 6e-09
-    output_cost_per_token: 1.2e-06
-    max_budget: 10.0
-    budget_duration: 1d
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: direct probe 2026-10-15 on api.commandcode.ai z-ai/glm-5.3-flash, 3 calls on a 19287-token prefix, cached_tokens 0/19264/19264 (fleet-ops#9744)."
-    id: commandcode-glm53flash-pilot
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: pilot
-  litellm_params:
-    model: openai/deepseek/deepseek-v4.1-flash
-    api_base: https://api.commandcode.ai/provider/v1
-    api_key: os.environ/COMMANDCODE_API_KEY
-    tags:
-    - prepaid
-    - commandcode
-    order: 1
-    input_cost_per_token: 3e-07
-    cache_read_input_token_cost: 6e-09
-    output_cost_per_token: 1.2e-06
-    max_budget: 10.0
-    budget_duration: 1d
-    max_parallel_requests: 4
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: direct probe 2026-10-31 on api.commandcode.ai deepseek/deepseek-v4.1-flash, 3 calls on a 26034-token prefix, cached_tokens 0/25984/25984 (fleet-ops#11311)."
-    id: commandcode-ds41flash-pilot
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
 router_settings:
   routing_strategy: simple-shuffle
   # One task = one model: Pi sends x-litellm-session-id and session_affinity pins it to a row (fleet-ops#9015).
@@ -1098,13 +990,12 @@ router_settings:
   # A desk alias renames the group a job already picked, so the 3-day token trial changes compaction alone (fleet-ops#9330). Long note 14: docs/litellm-router-notes.md
   model_group_alias:
     worker-capable-desk: worker-capable
-    worker-public-desk: worker-public
-  # worker-cheap, worker-public and assistant rise to worker-capable; worker-capable never falls down (fleet-ops#10040). An alias has no chain of its own, so it needs its own fallback row.
+    worker-public: worker-capable
+    worker-public-desk: worker-capable
+  # worker-cheap and assistant rise to worker-capable; worker-capable never falls down (fleet-ops#10040).
   # A row answering 402/403 is never cooled, so that call reaches the caller and Pi retries it.
   fallbacks:
     - worker-cheap: [worker-capable]
-    - worker-public: [worker-capable]
-    - worker-public-desk: [worker-capable]
     - assistant: [worker-capable]
     - tether: [assistant]
   cooldown_time: 60
