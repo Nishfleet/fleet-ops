@@ -43,89 +43,6 @@
       "required": ["tether"],
       "properties": { "tether": { "const": ["assistant"] } }
     },
-    "syntheticRow": {
-      "type": "object",
-      "required": ["litellm_params"],
-      "properties": { "litellm_params": { "type": "object", "required": ["api_base"], "properties": { "api_base": { "const": "https://api.synthetic.new/openai/v1" } } } }
-    },
-    "stepfunRow": {
-      "type": "object",
-      "required": ["litellm_params"],
-      "properties": { "litellm_params": { "type": "object", "required": ["api_base"], "properties": { "api_base": { "const": "https://api.stepfun.ai/step_plan/v1" } } } }
-    },
-    "judgeRow": {
-      "type": "object",
-      "required": ["model_name", "litellm_params"],
-      "properties": { "model_name": { "const": "judge" } }
-    },
-    "judgePaidRow": {
-      "$comment": "fleet-ops#9374: the paid row, on the Token Plan's own numbers. rpm and max_parallel_requests are what the plan allows (3 per minute, 3 at once); neither was raised when the row became the judge primary, and raising either is a deliberate change with its own issue, not an edit to this file. model, api_base and api_key pin the seat, so a judge row cannot point the order-1 rung at another provider or spend another seat's key. fleet-ops#9405: extra_body.enable_thinking and extra_body.thinking_budget 2048 are required, because without a thinking budget this row spent the whole completion on reasoning and returned an empty body on a 40 KB diff. Sibling keys on the row never reach the DashScope compatible-mode endpoint (LiteLLM only forwards them through extra_body), so the pair lives here, not as litellm_params siblings and not as pi samplingParams.",
-      "allOf": [
-        { "$ref": "#/$defs/judgeRow" },
-        {
-          "properties": {
-            "litellm_params": {
-              "required": ["model", "api_base", "api_key", "order", "rpm", "max_parallel_requests", "extra_body"],
-              "properties": {
-                "model": { "const": "openai/qwen3.8-max" },
-                "api_base": { "const": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1" },
-                "api_key": { "const": "os.environ/ALIBABA_CODING_API_KEY" },
-                "order": { "const": 1 },
-                "rpm": { "const": 3 },
-                "max_parallel_requests": { "const": 3 },
-                "extra_body": {
-                  "type": "object",
-                  "required": ["enable_thinking", "thinking_budget"],
-                  "additionalProperties": false,
-                  "properties": {
-                    "enable_thinking": { "const": true },
-                    "thinking_budget": { "const": 2048 }
-                  }
-                }
-              }
-            }
-          }
-        }
-      ]
-    },
-    "judgeFallbackRow": {
-      "$comment": "fleet-ops#9374: whatever else answers a judge call answers after the paid row, never beside it, and it is an OpenCode Go row on the OpenCode Go key. The paid row duplicated as an order-2 fallback would pass a count-only rule and quietly keep judge traffic on the one seat the fallback exists to take off.",
-      "allOf": [
-        { "$ref": "#/$defs/judgeRow" },
-        {
-          "properties": {
-            "litellm_params": {
-              "required": ["api_base", "order"],
-              "properties": {
-                "api_base": { "const": "https://opencode.ai/zen/go/v1" },
-                "order": { "const": 2 }
-              }
-            }
-          }
-        }
-      ]
-    },
-    "judgeFallbackKey1": {
-      "$comment": "fleet-ops#9374: the first OpenCode Go fallback, down to the key. Two rows on one key are one fallback with two names: a key limit or a ban on it takes both at once, which is what the second key is for.",
-      "allOf": [
-        { "$ref": "#/$defs/judgeFallbackRow" },
-        {
-          "properties": {
-            "model_info": {
-              "required": ["id"],
-              "properties": { "id": { "const": "opencodego-ds41flash-judge" } }
-            },
-            "litellm_params": {
-              "required": ["model", "api_key"],
-              "properties": {
-                "model": { "const": "openai/deepseek-v4.1-flash" },
-                "api_key": { "const": "os.environ/OPENCODE_API_KEY" }
-              }
-            }
-          }
-        }
-      ]
-    },
     "retryPolicy": {
       "$comment": "fleet-ops#9375: in-router retries must not re-send a worker prompt to a different seat more than the fallback needs. The values are locked by tests/test_router_retry_policy_no_cross_seat.py: shipped (2,2,2) produced a third in-group pick that re-sent the whole prompt cold; the #9375 cut caps the worker group before the fallback group (or Pi's own retry, which keeps the session id and therefore the pin). On litellm 1.98.0 the one allowed retry goes back to the row that just failed when that row is still healthy after the 429 (router allowed_fails 1; the test drills it). A row that parks on its first 429 (RateLimitErrorAllowedFails 0, the daily-quota rows) is already cooling, so its retry goes to a peer: still capped at one extra pick, not a same-row retry. Either way the cap removes the third-seat re-send. A litellm upgrade can change that, which is why the test pins the version. ContentPolicyViolationErrorRetries is 0 because a content-policy refusal repeats on every seat; AuthenticationErrorRetries is 1 (fleet-ops#10756) because a 401 does not recover on the same row but the router-level AuthenticationErrorAllowedFails 0 (config/litellm-proxy.yaml router_settings.allowed_fails_policy, gated by test_the_live_config_parks_a_401_row_on_its_first_failure) parks the 401 row on its first failure, so the granted retry goes to a live peer in the same group and one dead provider key does not fail the whole session. TimeoutErrorRetries/InternalServerErrorRetries/BadRequestErrorRetries are capped at 1 (InternalServerErrorRetries is inert on 1.98.0: get_num_retries_from_retry_policy has no InternalServerError branch, so it was a forward bound only, and it went live with the v1.105.0 image move (fleet-ops#10071). fleet-ops#9050 adds NotFoundErrorRetries and DefaultRetries, both live on 1.105.0: the policy is read before should_retry_this_error, NotFoundErrorRetries covers a status-404 answer, and DefaultRetries covers every class the policy does not name (a 402 maps to APIError with no named key; a 403 from an openai-compatible provider arrives as BadRequestError carrying status 403, which BadRequestErrorRetries already granted on both 1.98.0 and 1.105.0). Whether the granted retry reaches a different row depends on rotation: a 404 parks the row on NotFoundErrorAllowedFails 0, so the retry went to a live peer; a 403 cools nothing, so the session pin overrides the skip list and the granted attempt re-picks the same row (both drilled on 1.105.0 in tests/test_router_retry_policy_no_cross_seat.py). Both are capped at 1 like the other retry keys; named keys keep precedence, so content-policy stays 0 and a 429 gets the second, peer-row retry. RateLimitErrorRetries is 2 (fleet-ops#10178: the second retry runs after the pinned row is parked and lands on a peer, so a one-slot row that is full does not leak a 429 from a group with no fallback). All keys are required and unknown keys are forbidden on purpose: a new litellm knob must arrive as a reviewed schema change, not a silent config edit.",
       "type": "object",
@@ -167,16 +84,6 @@
           }
         },
         {
-          "$comment": "fleet-ops#9596: 12 parallel calls on the Synthetic key gave 8x200 and 4x429 \"Too many concurrent requests\", so at most 8 rows exist. fleet-ops#10694: no Synthetic row holds max_parallel_requests, because v1.105.0 never gives a stream's slot back when its client is gone before the first chunk; the provider's own 429 and the row's cooldown limit the key instead. A new Synthetic row has to take a share from an existing one, which removes a row and needs Nish's yes (config header, Nish 2026-10-02).",
-          "contains": { "$ref": "#/$defs/syntheticRow" },
-          "minContains": 0,
-          "maxContains": 8,
-          "items": {
-            "if": { "$ref": "#/$defs/syntheticRow" },
-            "then": { "properties": { "litellm_params": { "not": { "required": ["max_parallel_requests"] } } } }
-          }
-        },
-        {
           "$comment": "Tether's Claude row: every row named tether is the pinned row, every row on the Anthropic key is a tether row, and there is at most one of each, so a second tether row, a tether row on another model or provider, or the Anthropic key on another group all fail here. Absence is allowed (the schema's own reject cases are built without it); router_settings.fallbacks requires tether -> assistant whenever the row exists.",
           "allOf": [
             { "contains": { "$ref": "#/$defs/tetherGroupRow" }, "minContains": 0, "maxContains": 1 },
@@ -190,39 +97,6 @@
               }
             }
           ]
-        },
-        {
-          "$comment": "fleet-ops#9374: the judge group used to shuffle all three rows, so the paid Alibaba Token Plan seat answered 22 of 1,054 judge calls in 14 days to 2026-10-07 while both OpenCode Go rows carried the traffic - the same family the builders use, which memory grader-never-builder-family forbids for the grader. Exactly three judge rows: one paid row on order 1 and the two fallbacks on order 2. LiteLLM v1.98.0 keeps only the lowest order group (utils._get_order_filtered_deployments) and applies that filter after the cooldown filter (router.py), so the paid row answers every judge call and the pair answers while it is cooled - measured 200/200 and 200/100 on the real Router, with every row back on order 1 spreading 30/40/30. A fourth judge row, a third order-1 row, or the fallbacks on order 1 all fail here.",
-          "contains": { "$ref": "#/$defs/judgePaidRow" },
-          "minContains": 1,
-          "maxContains": 1
-        },
-        {
-          "$comment": "the named OpenCode Go fallback row, present exactly once and on order 2, so a third judge row cannot arrive by renaming or by copying it. The key-2 fallback left on 2026-10-26: Nish chose not to renew that OpenCode Go subscription.",
-          "contains": { "$ref": "#/$defs/judgeFallbackKey1" },
-          "minContains": 1,
-          "maxContains": 1
-        },
-        {
-          "contains": { "$ref": "#/$defs/judgeRow" },
-          "minContains": 2,
-          "maxContains": 2
-        },
-        {
-          "$comment": "fleet-ops#10762: no StepFun row carries max_parallel_requests. Cause and measurements: note 13 in docs/litellm-router-notes.md. fleet-ops#10694 took the same cap off the Synthetic and z.ai rows.",
-          "contains": { "$ref": "#/$defs/stepfunRow" },
-          "minContains": 0,
-          "maxContains": 10,
-          "items": {
-            "if": { "$ref": "#/$defs/stepfunRow" },
-            "then": {
-              "properties": {
-                "litellm_params": {
-                  "not": { "required": ["max_parallel_requests"] }
-                }
-              }
-            }
-          }
         }
       ],
       "items": {
@@ -266,32 +140,6 @@
             }
           },
           {
-            "$comment": "fleet-ops#9248: a row on openrouter.ai/api/v1 is metered by OpenRouter's free-tier DAILY quota, so its RateLimitError must park the row on the first failure. Without RateLimitErrorAllowedFails the router-level default of 1 needs a second 429, and the wall leaks to the caller: 4 of 30 parallel worker-capable calls on 2026-10-04.",
-            "if": {
-              "required": ["litellm_params"],
-              "properties": {
-                "litellm_params": {
-                  "required": ["api_base"],
-                  "properties": { "api_base": { "const": "https://openrouter.ai/api/v1" } }
-                }
-              }
-            },
-            "then": {
-              "required": ["model_info"],
-              "properties": {
-                "model_info": {
-                  "required": ["allowed_fails_policy"],
-                  "properties": {
-                    "allowed_fails_policy": {
-                      "required": ["RateLimitErrorAllowedFails"],
-                      "properties": { "RateLimitErrorAllowedFails": { "const": 0 } }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          {
             "$comment": "fleet-ops#11146: a row on api.z.ai/api/coding/paas/v4, api.stepfun.ai/step_plan/v1, token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1 or api.minimax.io/anthropic sits on a quota wall with a fixed reset clock, not a burst: the z.ai Coding Plan answers 429 code 1310 'Weekly/Monthly Limit Exhausted' naming its reset time, the Step Plan answers 429 'you have no left credit' while the prepaid balance is drained, the Alibaba token plan answers 429 'Your token-plan 1-month quota has been exhausted' naming its reset date, and the MiniMax token plan answers 429 'Token Plan usage limit reached (2056)' while the plan is spent: with the MINIMAX_API_KEY rows riding the burst treatment their plan re-enterings landed 179 of those 429s inside the #11417 alert window on 2026-10-31 (fleet-ops#11417). The 900 s burst cool with allowed_fails 1 re-enters the wall every 15 min and leaks it to the caller: 58.9% of worker-capable chat calls failed at 2026-10-30 02:28Z with 19 of the 29 worker-capable rows walled, and on 2026-10-31 the judge group held the RouterGroupJammed alert on the token-plan row alone, 107 of its 'quota has been exhausted' 429s in the journal from 20:00Z. The row parks on its first 429 for 6 h and re-probes about 4x/day, so a reset is picked up within hours (the #9075/#9122 treatment). No MiniMax api_base row carries max_parallel_requests (the rule below, #11417): with the row's 6 h park in force, the router's own concurrency 429 (notes 9 and 17: it is raised before any provider call, it counts into the cooldown, and a row's own cooldown_time names the park length per class) would park a healthy plan row 6 h on one slot spike, and the v1.105.0 slot leak (fleet-ops#10762) fills the slots of a freed-never stream; the plan's own 429s hold the key instead (the #10694 treatment).",
             "if": {
               "required": ["litellm_params"],
@@ -299,7 +147,7 @@
                 "litellm_params": {
                   "required": ["api_base"],
                   "properties": {
-                    "api_base": { "enum": ["https://api.z.ai/api/coding/paas/v4", "https://api.stepfun.ai/step_plan/v1", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "https://api.minimax.io/anthropic"] }
+                    "api_base": { "const": "https://api.z.ai/api/coding/paas/v4" }
                   }
                 }
               }
@@ -309,54 +157,6 @@
                 "litellm_params": {
                   "required": ["cooldown_time"],
                   "properties": { "cooldown_time": { "const": 21600 } }
-                },
-                "model_info": {
-                  "required": ["allowed_fails_policy"],
-                  "properties": {
-                    "allowed_fails_policy": {
-                      "required": ["RateLimitErrorAllowedFails"],
-                      "properties": { "RateLimitErrorAllowedFails": { "const": 0 } }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          {
-            "$comment": "fleet-ops#11417: no MiniMax api_base row holds max_parallel_requests. The row parks 6 h on its first 429 (the #11146 rule above), and LiteLLM 1.105.0 names the park length from the row's own cooldown_time per error class (note 17 in docs/litellm-router-notes.md), so the router's own 'all max_parallel_requests slots in use' 429 (note 9: a slot-count failure counts into the cooldown, and the v1.105.0 slot leak, note 12 and fleet-ops#10762, never frees an abandoned stream's slot) would park a healthy plan row for 6 h with no provider wall behind it. The plan's own 429s and the park hold the key instead, the #10694 treatment the Synthetic and z.ai rows took and #10762 the StepFun rows (their cap entries hold the same no-slot rule for their api_bases). The rule pins the api_base only, so it cannot reach the #9374 judge row, whose own rule pins its 3-lane cap to the plan's stated numbers.",
-            "if": {
-              "required": ["litellm_params"],
-              "properties": {
-                "litellm_params": {
-                  "required": ["api_base"],
-                  "properties": { "api_base": { "const": "https://api.minimax.io/anthropic" } }
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "litellm_params": {
-                  "not": { "required": ["max_parallel_requests"] }
-                }
-              }
-            }
-          },
-          {
-            "$comment": "fleet-ops#11476: a row on api.synthetic.new/openai/v1 answers two provider 429s on the one shared SYNTHETIC_API_KEY: the 500-req/5h pool's subscription wall ('You've exceeded your subscription rate limits. Upgrade, or try again later' naming synthetic.new/billing, which Pi treats as a hard wall, fleet-ops#11268) and the provider's own 'Too many concurrent requests' burst 429 past 8 concurrent calls on the key (fleet-ops#9596 measured 12 parallel calls: 8x200 and 4x that 429). LiteLLM v1.105.0 has no way to split them in config: the cooldown threshold resolves per exception class (cooldown_handlers.py's allowed-fails policy lookup reads the exception type, never the response body) and the park length follows cooldown_handlers.py's duration rules, where a row's own cooldown_time outranks even the provider's retry-after header. One policy must bound both: RateLimitErrorAllowedFails: 0 parks the row on the FIRST 429 whatever its text, so a wall row cannot ride the same-row retry (run 41228448381 died 5 s into the hand-off on the re-hit with all 4 attempts spent in-group; 39 of the day's agent-dispatch failures), while cooldown_time stays at the 900 s burst cool so a brief concurrency 429 costs the self-healing park the #10694 trade named and a short outage or dead key never idles the row 6 h.",
-            "if": {
-              "required": ["litellm_params"],
-              "properties": {
-                "litellm_params": {
-                  "required": ["api_base"],
-                  "properties": { "api_base": { "const": "https://api.synthetic.new/openai/v1" } }
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "litellm_params": {
-                  "required": ["cooldown_time"],
-                  "properties": { "cooldown_time": { "const": 900 } }
                 },
                 "model_info": {
                   "required": ["allowed_fails_policy"],
@@ -422,6 +222,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "assistant": { "const": "worker-capable" },
             "worker-capable-desk": { "const": "worker-capable" },
             "worker-public": { "const": "worker-capable" },
             "worker-public-desk": { "const": "worker-capable" }

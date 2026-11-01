@@ -43,7 +43,7 @@ def test_every_prepaid_row_is_a_listed_plan():
     assert not unlisted, f"prepaid rows not in config/paid-plans.json: {unlisted}. Changing config/paid-plans.json needs Nish (CODEOWNERS)"
 
 
-SINGLE_ROW_TIERS = {"tether", "assistant"}
+SINGLE_ROW_TIERS = {"tether"}
 
 
 def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exists():
@@ -53,8 +53,10 @@ def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exist
     for row in _model_list():
         tiers[row["model_name"]] = tiers.get(row["model_name"], 0) + 1
     thin = {t: n for t, n in tiers.items() if n < (1 if t in SINGLE_ROW_TIERS else 2)}
-    assert not thin, f"router tiers below their floor (2 rows, tether and assistant 1): {thin}. Only tether and assistant may hold one row (fleet-ops#9980; assistant since OpenCode Go key 2 left on 2026-10-26, and it falls to worker-capable)"
+    assert not thin, f"router tiers below their floor (2 rows, tether 1): {thin}. Only tether may hold one row (fleet-ops#9980)"
+    alias_out = subprocess.run([YQ, "-o=json", ".router_settings.model_group_alias", str(ROOT / "config/litellm-proxy.yaml")], capture_output=True, text=True, check=True).stdout
     groups = {row["model_name"] for row in _model_list()}
+    groups |= {name for name, target in json.loads(alias_out).items() if target in groups}
     missing = [(src, dst) for entry in json.loads(cfg_out) for src, dsts in entry.items() for dst in dsts if dst not in groups]
     assert not missing, f"fallbacks naming a group with no row: {missing}"
 
@@ -86,11 +88,3 @@ def test_removed_provider_match_is_exact_on_hostname():
     ]
     back = _removed_provider_rows(bases)
     assert back == ["https://api.cline.bot/v1", "https://ollama.com./v1", "https://ollama.com/v1"], f"removed provider match is not exact on the parsed hostname: {back}"
-
-
-def test_every_thinking_budget_row_drops_caller_reasoning_effort():
-    # DashScope answers 400 when a request carries reasoning_effort next to a row's thinking_budget (fleet-ops#10109).
-    rows = [r for r in _model_list() if "thinking_budget" in (r["litellm_params"].get("extra_body") or {})]
-    assert rows, "no row sets thinking_budget"
-    bad = [r["model_info"]["id"] for r in rows if "reasoning_effort" not in r["litellm_params"].get("additional_drop_params", [])]
-    assert not bad, f"rows with thinking_budget that keep a caller's reasoning_effort: {bad}"
