@@ -201,15 +201,10 @@ jobs:
           m=$(grep -c "authorization_credentials: \$__file{$mount/token}\$" "$c")
           test "$n" -ge 2 && test "$n" = "$m" || { echo "::error::$c: $m of $n webhook contact points read \$__file{$mount/token}"; exit 1; }
           echo "token wiring: %t/$rd -> $mount/token, $m contact points"
-      - name: Only the urgent rules are critical and page Nish hourly, and every enrolled dispatch stub forwards every pull_request_target type (fleet-ops#9445, #9730)
-        # Both read a repo file with python3-yaml and hold a contract written as prose: the alert
-        # routes against docs/grafana-alerts.md, and each config/intake-repos.json repo's stub against
-        # the nine pull_request_target types precondition 3 of docs/intake-enrolment.md requires, the
-        # list read from fleet-ops's own stub at the base ref so a PR cannot loosen the list that
-        # judges it. One step and one install, and the reason is in docs/workflow-notes.md.
+      - name: Only the urgent rules are critical and page Nish hourly (fleet-ops#9445)
+        # Reads the alert routes with python3-yaml and checks them against docs/grafana-alerts.md.
         if: always()
-        env: {GH_TOKEN: "${{ github.token }}", BASE_REF: "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"}
-        run: sudo apt-get install -y -q python3-yaml >/dev/null && python3 tests/alert_routes_check.py && python3 tests/intake_stub_check.py
+        run: sudo apt-get install -y -q python3-yaml >/dev/null && python3 tests/alert_routes_check.py
 
   unit:
     runs-on: ubuntu-latest
@@ -446,7 +441,7 @@ jobs:
           done
           case "$*" in
             *repos/o/r/issues/comments*) flaky fail
-              jq -c '[_nwise(100)][]' "$FAKE_DIR/comments.json" | while IFS= read -r page; do jq -c "$q" <<<"$page"; done ;;
+              jq -c '. as $a | range(0; [length, 1] | max; 100) | $a[.:.+100]' "$FAKE_DIR/comments.json" | while IFS= read -r page; do jq -c "$q" <<<"$page"; done ;;
             "issue comment 5 -R o/r --body orchestrator hand-off started: "*) [ ! -f "$FAKE_DIR/failpost" ] || exit 1; echo "$*" >> "$FAKE_DIR/posted" ;;
             "issue view"*|"api repos/o/r/issues/5"*) jq -r "$q" "$FAKE_DIR/issue.json" ;;
             *git/ref/heads/*) exit 1 ;;

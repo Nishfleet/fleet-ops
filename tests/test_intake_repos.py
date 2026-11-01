@@ -23,9 +23,8 @@ def test_deleted_repos_appear_in_no_section():
     """tether and mailbox were deleted, and a dead name in .repos makes later-sweep fail every pass.
 
     later-sweep mints one App token per .repos name and lists that repo's open
-    issues; a deleted repo fails both, so the whole run prints failed=1.
-    tests/intake_stub_check.py reads the same 404 as "private or gone" and skips
-    it, so no CI gate catches this: fleet-ops#11087.
+    issues; a deleted repo fails both, so the whole run prints failed=1
+    (fleet-ops#11087).
     """
     for name in GONE:
         assert name not in ENROLLED, name
