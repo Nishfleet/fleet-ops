@@ -27,7 +27,7 @@ jobs:
         run: |
           shopt -s nullglob
           # Host-only binaries the units name; a stub is enough for verify.
-          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/claude /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /home/runner/.local/bin/tofu /opt/node-v22.23.3/bin/node /usr/bin/restic /usr/bin/rootlesskit /usr/bin/syncthing /usr/bin/tigervncserver; do sudo install -D -m755 /bin/true "$b"; done
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/claude /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /home/runner/.local/bin/tofu /opt/node-v22.23.3/bin/node /usr/bin/restic /usr/bin/rootlesskit /usr/bin/syncthing /usr/bin/tigervncserver; do sudo install -D -m755 /bin/true "$b"; done; sudo chown -R "$USER" "$HOME/.local"
           systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path rootfs/etc/systemd/system/*.service rootfs/etc/systemd/system/*.timer rootfs/etc/systemd/user/*.service rootfs/etc/systemd/user/*.timer
       - name: Tests under tests/, found by pytest (fleet-ops#10721)
         run: pipx run --spec pytest==8.3.5 --pip-args='pyyaml==6.0.2 jsonschema httpx jinja2' pytest -q -p no:cacheprovider tests
