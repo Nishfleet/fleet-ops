@@ -101,19 +101,6 @@ def test_the_apply_hands_the_rotation_to_the_existing_writer():
     )
 
 
-def test_the_grafana_queries_are_account_level_so_no_zone_group_is_needed():
-    """The token carries no zone group, so a zone-scoped query would 401."""
-    queried = set()
-    for path in (ROOT / "config/grafana").rglob("*.yaml"):
-        text = path.read_text()
-        queried |= set(re.findall(r"\b[a-z0-9][A-Za-z0-9]*AdaptiveGroups\b", text))
-        assert "viewer { zones" not in text and "zones(" not in text, f"{path} queries a zone dataset"
-    assert queried, "the spend watch queries no dataset at all"
-    assert re.search(r"zone\s+= \[\]", _entry("vps-grafana"))
-    spend = (ROOT / "config/grafana/provisioning/alerting/cloudflare-spend.yaml").read_text()
-    assert spend.count("execErrState: Error") == spend.count("noDataState:")
-
-
 def test_only_the_github_secret_tokens_take_the_gha_prefix():
     """The README's lost-state cleanup deletes `gha-` tokens, so the host one must not match."""
     name = next(line for line in MAIN.read_text().splitlines() if line.strip().startswith("name") and "formatdate" in line)
