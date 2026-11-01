@@ -3,7 +3,6 @@
     "git:github.com/stnly/pi-grok@a5817666500fbbc9c41534346f82b5183a7b89b0",
     "npm:pi-mcp-adapter@5.3.0",
     "npm:@commandcode/pi-commandcode-provider@0.3.0",
-    "git:github.com/aliceisjustplaying/pi-you-should-know@9dc6c81f38a5cd7e54dfbeefd2da23d853681152",
-    "git:github.com/Nishfleet/pi-runner-guard@e6ada9434210398e62cc8477803380a2beb0fac8"
+    "git:github.com/aliceisjustplaying/pi-you-should-know@9dc6c81f38a5cd7e54dfbeefd2da23d853681152"
   ]
 }
