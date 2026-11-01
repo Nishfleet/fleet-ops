@@ -93,6 +93,8 @@
       - fleet-sync.service
       - fleet-litellm-proxy-config.path
       - fleet-grafana-provisioning.path
+      # The VNC desktop; the box has no graphical desktop (fleet-ops#10935).
+      - tigervnc.service
     retired:
       # The nish runner jails, their re-apply timer and restart grant, and the review
       # runners' user state; fleet-runner@.service replaces them (fleet-ops#10935).
@@ -128,6 +130,9 @@
       - /etc/apt/apt.conf.d/52-auto-reboot
       # Codex is retired here; its rules file left the repo (fleet-ops#10935 C5).
       - "{{ nish_home }}/.codex/rules/fleet-floor.rules"
+      # The VNC desktop unit and its enable link (fleet-ops#10935).
+      - "{{ nish_home }}/.config/systemd/user/tigervnc.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/tigervnc.service"
       # Replaced by "Install the router config" and the Grafana reload in
       # tasks/services.yml (fleet-ops#10935 E2).
       - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.path"
