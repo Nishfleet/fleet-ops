@@ -134,6 +134,7 @@ def test_every_task_that_touches_nishs_home_runs_as_nish_not_root():
                 "Install Hermes' pinned cua-driver",
                 "Let Hermes start its own headless Bot Desktop when computer_use needs a display",
                 "Look for the agent state directories",
+                "Prove the Hermes login reads the issue it was built for",
                 "Look for a plaintext git credential file in nish's home",
                 "Fail the run when a plaintext git credential file is in the way",
                 "Copy runner 1 to the pilot user once",
@@ -141,6 +142,7 @@ def test_every_task_that_touches_nishs_home_runs_as_nish_not_root():
                 "Copy the review runners to the review user once",
                 "Point the review runner links at the copy",
                 "Point the review runner PATH at the bound tool directories",
+                "Read the config dirs' owner as the apply found it",
             ), task["name"]
     for name in ("Look for the agent state directories", "Keep the agent state directories private"):
         task = TASKS[name]

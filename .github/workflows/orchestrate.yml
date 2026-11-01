@@ -45,7 +45,10 @@ jobs:
     concurrency:
       group: orchestrate-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
-    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
+    # Bounded concurrency (fleet-ops#11167): the `handoff` label is held by 5 runners, so a sixth hand-off
+    # waits for a free runner at GitHub, with no API calls. 5 is the plans' measured carry of 4 to 6 on
+    # 2026-10-30 (#11146, #11160). Raise it only when router capacity grows. Runner labels live at GitHub.
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops","handoff"]') || fromJSON('["self-hosted","agent","handoff"]') }}  # fleet-ops#10717
     # Above the session step's wall and the cleanup after it. Measured on 40942864011: 9 seconds from
     # job start to the session step, 4 seconds from its kill to the job's last step, so the 10-minute
     # margin here is slack, not the budget the session runs in (fleet-ops#11059).
@@ -222,6 +225,7 @@ jobs:
           fi
           echo "worktree=$wt" >> "$GITHUB_OUTPUT"
       - name: Run the orchestrator session
+        id: session
         if: steps.issue.outputs.go == 'true' && steps.worktree.outputs.worktree != ''
         # 75, not 50 (fleet-ops#11059): 31 of the 67 failed agent-dispatch runs in the week to 2026-10-29
         # were this step's kill, 28 of the 32 failing orchestrate jobs ran at least 45 of the 50 minutes,
@@ -242,7 +246,7 @@ jobs:
           HOOKS: ${{ vars.ORCHESTRATE_HOOKS }}
         run: |
           set -euo pipefail
-          cd "$WORKTREE"
+          cd "$WORKTREE"; if [ -d /run/fleet-hermes-github-token ]; then HERMES_RUN=/run/fleet-hermes-github-token; fi
           # The prompt from THIS checkout; a repo without one falls back to the fleet copy.
           prompt="prompts/orchestrator-handoff.md"
           if [ ! -f "$prompt" ]; then
@@ -258,37 +262,40 @@ jobs:
           # session reads outsider issue text, so the jail hides the unit's credential directory
           # and the store that holds it, which leaves a sibling runner's copy of the same key out
           # of reach too (fleet-ops#10957).
-          jail=(bwrap --dev-bind / / --tmpfs "$HOME/.config/fleet-worker" --tmpfs "$RUNNER_TEMP/_runner_file_commands" ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"} --die-with-parent --)
+          jail=(bwrap --dev-bind / / --tmpfs "$HOME/.config/fleet-worker" --tmpfs "$RUNNER_TEMP/_runner_file_commands" ${HERMES_RUN:+--tmpfs "$HERMES_RUN"} ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"} --die-with-parent --)
           if [ "$ORCH_RUNNER" = pi ]; then
             # No Claude spend and no turn cap: the step's timeout-minutes is the wall
             # (fleet-ops#10349).
-            FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" \
-              "${jail[@]}" "$HOME/.local/bin/pi" --print \
-              --provider litellm --model "${SEAT:-worker-capable}" \
-              < "$RUNNER_TEMP/orchestrator-prompt.md"
-            exit 0
+            engine=(env FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" "${jail[@]}" "$HOME/.local/bin/pi" --print --provider litellm --model "${SEAT:-worker-capable}")
+          else
+            # The repo's hooks only spend turns here; ORCHESTRATE_HOOKS=on keeps them.
+            hook_args=(--settings '{"disableAllHooks":true}')
+            [ "$HOOKS" != on ] || hook_args=()
+            # Start-up trim: 51,407 input tokens and $0.334 untrimmed, 36,440 and
+            # $0.146 trimmed (VPS, bare prompt, cold cache).
+            # shellcheck disable=SC2054 # the flag's value is the one token "project,local"
+            engine=("${jail[@]}" "$HOME/.local/bin/claude" -p --model "$MODEL" "${hook_args[@]}" --strict-mcp-config --disable-slash-commands --setting-sources project,local --output-format json --permission-mode bypassPermissions --max-turns "$TURNS")
           fi
-          # The repo's hooks only spend turns here; ORCHESTRATE_HOOKS=on keeps them.
-          hook_args=(--settings '{"disableAllHooks":true}')
-          [ "$HOOKS" != on ] || hook_args=()
-          # Start-up trim: 51,407 input tokens and $0.334 untrimmed, 36,440 and
-          # $0.146 trimmed (VPS, bare prompt, cold cache).
-          "${jail[@]}" "$HOME/.local/bin/claude" -p \
-            --model "$MODEL" \
-            "${hook_args[@]}" \
-            --strict-mcp-config \
-            --disable-slash-commands \
-            --setting-sources project,local \
-            --output-format json \
-            --permission-mode bypassPermissions \
-            --max-turns "$TURNS" \
-            < "$RUNNER_TEMP/orchestrator-prompt.md"
+          # The engine runs as its own process group, and the step kills that group
+          # once the engine returns: a dev server the session backgrounded must not
+          # outlive it (four orphaned wrangler stacks plus the job's own dev
+          # server from one orchestrator job, fleet-ops#11140). The TERM-to-KILL
+          # pair covers a child that ignores TERM.
+          setsid "${engine[@]}" < "$RUNNER_TEMP/orchestrator-prompt.md" > >(tee "$RUNNER_TEMP/orchestrator.log") 2>&1 &
+          engine_pid=$!
+          trap 'kill -TERM "-$engine_pid" 2>/dev/null || true' EXIT
+          status=0
+          wait "$engine_pid" || status=$?
+          kill -TERM "-$engine_pid" 2>/dev/null || true
+          sleep 3; kill -KILL "-$engine_pid" 2>/dev/null || true
+          exit "$status"
       - name: Clean up and mark a PR-less hand-off
         if: always()
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}  # the App token, never the runner login (fleet-ops#10949)
           # Through env: zizmor template-injection, as with WORKTREE above.
           GO: ${{ steps.issue.outputs.go }}
+          SESSION_OUTCOME: ${{ steps.session.outcome }}
         run: |
           set -euo pipefail
           # shellcheck disable=SC2153 # REPO is the job-level env, not a misspelling
@@ -346,6 +353,15 @@ jobs:
           # The pattern is later-sweep's own, so one line decides what "due" means in both places.
           due=$(gh issue view "$ISSUE" -R "$REPO" --json body --jq .body | jq -Rse --argjson now "$(date +%s)" '((try (capture("(?m)^due:[ \t]*(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})[ \t]+(?<t>[0-9]{2}:[0-9]{2})[ \t]+[Ii][Ss][Tt]") | .d + "T" + .t + ":00Z" | fromdateiso8601) catch null) // 0) - 19800 > $now') || due=false
           label=handoff-ended color=BFD4F2 desc="Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h" note="orchestrator hand-off ended without a PR: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+          # An ending the provider owns is no strike (fleet-ops#11166): the sweep counts
+          # only "orchestrator hand-off ended without a PR: ", so an ending with this
+          # other prefix re-queues the issue; ten of them still escalate, so a real fault
+          # or a looping issue reaches the owner. Only the last 2000 bytes of the session
+          # output are read, because a session that died on a router error ends on it,
+          # while one that merely quoted a 429 from the issue text on its way to another
+          # failure does not. Only a crash ("failure") or the job wall ("cancelled") is
+          # read: a session that ended on its own is the work's ending, whatever it said.
+          if { [ "$SESSION_OUTCOME" = failure ] || [ "$SESSION_OUTCOME" = cancelled ]; } && tail -c 2000 "${RUNNER_TEMP:-}/orchestrator.log" 2>/dev/null | grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|insufficient balance|model is unavailable|\b429\b'; then note="orchestrator hand-off ended on infrastructure: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"; fi
           if [ "$due" = true ]; then label=on-hold color=EDDEDD desc="Parked until the issue's due: date; later-sweep promotes it" note="orchestrator: on hold until the due date in this issue; nothing can be built before it, so this hand-off stops here and later-sweep promotes it then"; fi
           # These writes need issues: write, which the App token holds.
           # --force makes the label idempotent on a newly stubbed repo (drive#199).

@@ -104,10 +104,11 @@
 # already running. On 2026-10-29 the read-only deploy-clone bind had been installed for
 # hours while every runner still started before it, so a job could write the clone
 # (fleet-ops#10866). Restarting the pool to install it cut three hand-offs mid-session on
-# the same day (fleet-ops#10898), so this play reloads the daemon and restarts no runner:
-# every running job keeps running, and the drop-in arrives at the next start, which the
-# nightly update performs after it drains the runners. The deploy job is not one of those
-# jobs: deploy-box.yml runs it on [self-hosted, fleet-ci].
+# the same day (fleet-ops#10898), so the restarts go through the apply unit, which
+# restarts only the idle runners whose drop-in is newer than their start: every running
+# job keeps running, the change reaches an idle runner the moment the deploy flushes the
+# handlers, and a busy one when its job ends, within 5 min (fleet-ops#11248). The deploy
+# job is not one of those restarts: deploy-box.yml runs it on [self-hosted, fleet-ci].
 - name: Install the agent runner sandbox
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/"
@@ -115,8 +116,14 @@
     owner: root
     group: root
     mode: preserve
-  notify: Reload systemd
+  notify:
+    - Reload systemd
+    - Start the runner sandbox apply
 
+# A per-unit drop-in dirs (the review runners' 30-review-user.conf, the pilot's
+# own dir) are not covered by the agent-runner copy above, so this generic copy
+# spreads the apply unit over them too: the apply pass itself decides which runner
+# is stale, so a deploy that only changed an unrelated unit file restarts no runner.
 - name: Install systemd units, slices and drop-ins
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/systemd/system/"
@@ -124,7 +131,9 @@
     owner: root
     group: root
     mode: preserve
-  notify: Reload systemd
+  notify:
+    - Reload systemd
+    - Start the runner sandbox apply
 
 # A review runner drop-in loads the reviewer App key, so a unit that can still take a
 # worker job is a second identity that can post an approval on its own PR
@@ -174,7 +183,9 @@
     path: /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-{{ item }}.service.d/30-review-user.conf
     state: absent
   loop: [11, 12]
-  notify: Reload systemd
+  notify:
+    - Reload systemd
+    - Start the runner sandbox apply
   when: >-
     new_review_runner_labels.rc | default(1) != 0
     or (new_review_runner_labels.stdout_lines | default([]) | sort) != ['netcup-agent-11', 'netcup-agent-12']

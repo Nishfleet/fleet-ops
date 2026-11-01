@@ -26,8 +26,8 @@ instructions.
 
 Every issue gets one comment with p, the model and the run link. An issue whose
 title, body or labels touch secrets, money or payments, or customer-data
-deletion, or that carries `blocked-on: nish-decision`, `nish-reserved` or
-`needs-nish-decision`, never reaches Jev and never gets `agent-ready`: it goes to
+deletion, or that carries `nish-reserved` or `needs-nish-decision`, never reaches
+Jev and never gets `agent-ready`: it goes to
 `needs-orchestrator`. `Nishfleet/fleet-ops` is never acted on (fo#8304). If Jev
 gives no answer the label stays and the next sweep retries. The labels are
 written with the worker App token, so the `agent-ready` and `needs-orchestrator`

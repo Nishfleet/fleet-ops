@@ -55,7 +55,7 @@ detector, not the leftover. It launches a system unit as nish. node_exporter
 reads only the system bus, so a failed system unit fires `SystemUnitFailed`
 and becomes a fix job. A failed user unit is not scraped: of the 212 unit
 names node_exporter exposes, not one is a user-manager unit, and
-`fleet-sync.service`, `fleet-litellm-proxy.service` and `tincan-listen-pi.service`
+`fleet-sync.service` and `fleet-litellm-proxy.service`
 are all absent from them. A user unit's one other route is
 `OnFailure=fleet-unit-failed@%N.service`, which every user unit in `systemd/`
 carries and which instantiates a system unit node_exporter does scrape. That
@@ -250,6 +250,20 @@ use instead.
   `no answer from GitHub`, `gh` lost its login or GitHub was unreachable, and
   the pin is not the problem: re-run the playbook.
 
+## The runner tree is bound per unit (fleet-ops#11484)
+
+A job on `actions.runner.Nishfleet.netcup-agent-<N>` sees only
+`~/.local/share/agent-runner/<N>` writable: the pooled
+`20-lockdown.conf` binds `agent-runner/%j` with `%j` = "the final component of
+the prefix" (systemd.unit(5)), so `20` for `-20.service`. The bind used to name
+`agent-runner` whole, and on 2026-10-31 a job overwrote all 30 runners'
+`runsvc.sh` through it, which took the pool offline until each was restored from
+its own `bin/runsvc.sh`. A runner's self-update and restarts are unaffected:
+`bin.<ver>`/`externals.<ver>` and their links live in the runner's own dir.
+`test_the_agent_pool_binds_only_each_runners_own_dir` in
+`tests/test_runner_jail_start_state.py` fails the PR if the line is widened;
+detection that catches it live is `fleet-sync`'s STUB-GUARD (fleet-ops#11483).
+
 ## Dashboards and the CI runner flip
 
 `systemctl --user is-active fleet-grafana.service` prints `active`. The service is
@@ -328,8 +342,25 @@ a file went stale and every delivery answered `401 Bad credentials` for days.
 key, asks the REST API for an installation token limited to `Nishfleet/fleet-ops` and
 `issues:write`, writes it to `$XDG_RUNTIME_DIR/fleet-grafana-github-token/token` (tmpfs,
 0700 dir, 0600 file) and starts `fleet-grafana-provisioning.service`, the stock admin-API
-reload above. The contact points read the file with Grafana's `$__file{}`, which is
-re-read on every provisioning load. Wire once after merge (README "Wiring a NEW unit"):
+reload above — guarded, so the reload lands only when the token Grafana has loaded
+(`$__file{}` froze it) has run down to one mint interval left: Grafana drops an
+in-flight dispatch when a reload applies, and the guard reloads at every second mint
+instead of every one, with a lost or unreadable ledger reloading once more
+(fleet-ops#11441, same cause as #11426). The contact points read the file with Grafana's
+`$__file{}`, which Grafana re-reads at every provisioning reload: the token a webhook sends
+is what the file held at the last load. So a token file swap needs no Grafana restart —
+replace the file by rename — the quadlet mounts the token's directory, not the file
+(containers/quadlet/fleet-grafana.container comment line 48), so the rename lands — and POST
+the stock admin reload (`api/admin/provisioning/<target>/reload`, admin basic auth; in
+practice `fleet-grafana-provisioning.service` sends it): the next delivery carries the new
+token. The reload changes only what `$__file{}` expands to; nothing here makes any
+claim about how often a cost alarm pages or re-files its issue (the dispatch gate closes
+same-title re-files). CI holds the behaviour for real: .github/workflows/ci.yml step "A
+provisioning reload re-reads the token file the contact points name (fleet-ops#9445)"
+boots the pinned Grafana image with the real contact-point file against a local webhook
+sink, waits for a delivery carrying the first token, replaces the token file by rename,
+POSTs the admin reload, and fails the run unless the next delivery carries the second
+token. Wire once after merge (README "Wiring a NEW unit"):
 `systemctl --user link` both files, `systemctl --user daemon-reload`, `systemctl --user
 enable --now fleet-grafana-github-token.timer`, then restart `fleet-grafana.service` once so
 the quadlet's new mount takes effect. Do it right after the merge deploys: until Grafana restarts, the
@@ -344,6 +375,38 @@ fleet-grafana-github-token.timer` and `systemctl --user mask fleet-grafana-githu
 rule pages hermes-urgent, and spend alerts still reach Telegram. CI proof:
 `tests/github_app_stub.py` plus the "GitHub App token unit mints and refreshes" step run the
 unit's real ExecStart under systemd against a stub that checks the JWT the way GitHub does.
+
+Hermes' GitHub login (fleet-ops#10267). The chat agent runs `gh` for this repo's issues and
+pull requests, and until this unit it did that with nish's admin login in `~/.config/gh`. The
+Hermes units now hide that path (`InaccessiblePaths=` in `hermes-.service.d/sandbox.conf`) and
+read `GH_CONFIG_DIR=/run/fleet-hermes-github-token` instead, which
+`fleet-hermes-github-token.timer` (every 20 min, 2 min after boot) fills through
+`fleet-hermes-github-token.service`: an RS256 App JWT with the same nishfleet-worker key, then
+an installation token with `issues:write`, `pull_requests:read` and `actions:read` and no
+`repositories` key (the digest counts with `gh repo list Nishfleet`), then a `hosts.yml` in the
+0700 `/run` directory (0600 file, so the token lives in tmpfs, never on disk). The directory is
+not private to Hermes, so the agent lock's shared drop-in hides it too
+(`fleet-agent-lock.service.d/50-shared.conf`, `config/agent-locks.json` `must_hide`). The deploy
+enables the timer and mints once; a failed mint is reported and does not stop the rest of the
+host config, and the Hermes units restart onto the new login only once the `hosts.yml` exists
+and a `gh issue view` through it has succeeded, and also only when the sandbox drop-in on
+disk is newer than the unit's start (`ActiveEnterTimestamp`), the staleness comparison
+`fleet-runner-sandbox-apply.service` makes for the runners, so a natural restart after the
+install never re-queues a restart and no state file holds a parked restart. A Hermes start
+needs the mint to have succeeded (`Wants=` and `After=` in the drop-in; the mint skips a
+token younger than 15 min, so a restart spends no
+extra API calls), and a failed mint keeps the previous `hosts.yml`, pages through `OnFailure=`
+and is capped by the unit's `StartLimitBurst=6` per ten minutes (the timer retries in 20
+minutes). Read
+it: `systemctl show fleet-hermes-github-token.service -p Result -p ExecMainStartTimestamp` and
+the journal line `minted the nishfleet-worker App token as the Hermes gh login`.
+`sudo -u nish env GH_CONFIG_DIR=/run/fleet-hermes-github-token gh issue view 10267 --repo
+Nishfleet/fleet-ops` runs the deploy's proof by hand. Switch off: `systemctl disable --now
+fleet-hermes-github-token.timer` and `systemctl mask fleet-hermes-github-token.service` (they only `Wants=` it, so the mask stops the refreshes and the last token dies within an
+hour; `systemctl stop hermes-gateway.service hermes-serve.service` stops them), then remove
+the `Wants=`
+and `After=` lines, `GH_CONFIG_DIR` and the `InaccessiblePaths=` line from the drop-in. CI proof: `tests/test_worker_github_token.py`, which `ci.yml` already runs, starts
+this unit under systemd against `tests/github_app_stub.py` and checks the `hosts.yml` it writes.
 
 `CI_RUNNER` is absent by default and only exists while CI runs on Blacksmith. Set it by hand
 (fleet-ops#9670 retired the hourly auto-flip, and deleted the variable it left behind):
@@ -721,6 +784,43 @@ them under `permission_denials`). The tincan transcript is
 line of the unit and restart it. That restores today's behaviour: the role
 file is then inert and nothing else in the unit changed. Only Nish restarts
 `claude-remote-control.service`, because that cuts the phone link.
+
+## gh-aw pilot gateway (fleet-ops#11311)
+
+`containers/quadlet/fleet-llm-gateway.container` runs a Cloudflare Tunnel that
+carries two router paths for the gh-aw pilot (`config/cloudflared/llm-gateway.yml`).
+Its credentials file is `~/.config/cloudflare/llm-gateway-tunnel.json` (0600).
+`tests/test_llm_gateway_tunnel.py` pins the ingress and the pilot rows' caps.
+
+The edge guard is in Cloudflare (account and nish.sh zone), not in this repo:
+
+- **Access app "gh-aw pilot gateway"** on the pilot hostname. Its one policy is
+  Service Auth for the service token "gh-aw-pilot". It reads the token from the
+  `Authorization` header as one JSON value (`read_service_tokens_from_header`).
+  gh-aw sends it raw with `sandbox.agent.targets.openai.auth-header: Authorization`.
+  The token is the repo secret `PILOT_GATEWAY_TOKEN`, valid for one year.
+- **Late-transform rule** on the same hostname. It sets `x-litellm-api-key` to the
+  router key `gh-aw-pilot-edge` (`models: [pilot]`, `allowed_routes: [llm_api_routes]`,
+  `rpm_limit: 30`, no money budget). That key exists only in this rule. Whatever
+  key a caller sends, the router sees the pilot key.
+- **Connector check.** cloudflared also verifies the Access JWT itself
+  (`originRequest.access`, team `nish345`, the app's AUD tag), so a deleted or
+  loosened Access app still cannot open the path. An ingress edit takes effect on the
+  next `fleet-llm-gateway` restart.
+- **Checked 2026-10-31.** Each of these got 403 at the edge: no header, the master
+  key as a Bearer token, and the master key in `x-litellm-api-key`. With the service
+  token, `/v1/models` lists only `pilot` and a pilot chat call returns 200. With the service token, the master key sent in `x-api-key`, `api-key`, `x-goog-api-key` or `x-litellm-api-key` still lands on the pilot key (403 "model not available for this API key" on `worker-capable`).
+
+- **On:** link the quadlet into `~/.config/containers/systemd/` like the
+  others, then run `systemctl --user daemon-reload && systemctl --user start fleet-llm-gateway`.
+- **Off:** run `systemctl --user stop fleet-llm-gateway`.
+- **Token leak:** revoke the service token "gh-aw-pilot" in Zero Trust. Make a new one
+  and set `PILOT_GATEWAY_TOKEN` to `{"cf-access-client-id":…,"cf-access-client-secret":…}`.
+  Even before the revoke, a leaked token reaches only the two pilot rows, each
+  capped at 10 USD a day, at 30 requests a minute.
+- **Delete:** stop the unit and remove the link and the credentials file. In
+  Cloudflare, delete the tunnel, the `llm` DNS record, the Access app, the service
+  token and the transform rule. Then delete the router key `gh-aw-pilot-edge`.
 
 ## Break-glass access (SSH is Tailscale-only)
 

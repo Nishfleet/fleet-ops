@@ -77,6 +77,9 @@
 # list-unit-files names only what is installed, and answers rc 1 when nothing
 # matches, which is not a failure.
 - name: List the unlocked listener units the box still has
+  # With no entries left, list-unit-files would run patternless and name every
+  # user unit on the box, and the retire task below would disable them all.
+  when: agent_locks.stale_user_units | length > 0
   ansible.builtin.command:
     argv: "{{ ['/usr/bin/systemctl', '--user', '--machine=nish@.host', 'list-unit-files', '--plain', '--no-legend'] + (agent_locks.stale_user_units | map('basename') | list) }}"
   register: stale_listener_units
@@ -84,7 +87,10 @@
   failed_when: stale_listener_units.rc > 1
 
 - name: Retire the unlocked user-scope listeners
+  # default([]): the list task above skips when the contract has no entries, and
+  # a skipped register carries no stdout_lines, while loop templates before when
+  # evaluates. An empty loop skips this task on its own.
   ansible.builtin.command:
     argv: [/usr/bin/systemctl, --user, --machine=nish@.host, disable, --now, "{{ item }}"]
-  loop: "{{ stale_listener_units.stdout_lines | map('split') | map('first') | select | list }}"
+  loop: "{{ stale_listener_units.stdout_lines | default([]) | map('split') | map('first') | select | list }}"
   changed_when: false
