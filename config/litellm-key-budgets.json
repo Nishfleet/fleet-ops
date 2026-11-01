@@ -1,0 +1,16 @@
+{
+  "jev-eval": {
+    "max_budget": 2.0,
+    "budget_duration": "1d",
+    "serves": "The /jev judge route, the review judge and the review extra seats on metered providers.",
+    "source": "Owner decision 2026-10-31 (fleet-ops#11272): USD 2 per day. A hand-set value on the live key caused the two-day /jev outage; this file is the reviewed value."
+  },
+  "fleet-agent": {
+    "max_budget": 2.0,
+    "budget_duration": "1d",
+    "duration": "30d",
+    "models": ["worker-capable", "worker-cheap", "judge"],
+    "serves": "The interactive pi lane under Nish's login: config/pi-models.json reads seats/litellm-agent.env, never the master key (fleet-ops#11272, absorbed from PR #11356).",
+    "source": "fleet-ops#11272: a scoped key with a daily cap replaces the master key the pi lane used to read."
+  }
+}
