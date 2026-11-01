@@ -23,13 +23,13 @@
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
     repo_root: "{{ (playbook_dir ~ '/..') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
-    # Agent runners 1-10 stay. 11-36 are retired (fleet-ops#10480): 40 services
-    # on a 12-core, 31 GB box ran at load 1. A directory goes only once its
-    # registration is gone (fleet-ops#10632): the registration lives at GitHub
-    # and removing it needs an org admin token that the VPS key does not carry,
-    # so until `config.sh remove` has taken .runner and .credentials away, the
-    # directory is the only thing left that can still deregister the runner.
-    agent_runner_retired_ids: "{{ range(31, 37) | list }}"
+    # Every runner unit that ran as nish or as fleet-reviewer is retired: the agent
+    # lane runs on fleet_runner_ids as fleet-runner, and no workflow asks for the
+    # `review` label any more (fleet-ops#10935). 23 stays: its directory serves the
+    # nish-vault runner. A retired registration is not removed at GitHub, because no
+    # credential on this box may do that; GitHub drops a self-hosted runner that has
+    # not connected for 14 days (docs: "Removing self-hosted runners").
+    agent_runner_retired_ids: "{{ range(1, 37) | reject('equalto', 23) | list }}"
     # The agent pool: one runner per concurrent worker, up to the router's seat cap
     # (6, fleet-ops#10935), run as fleet-runner by tasks/runners.yml.
     fleet_runner_ids: [1, 15, 16, 17, 18, 19]
@@ -86,12 +86,26 @@
     tether_space_nft_src: "{{ playbook_dir }}/templates/tether-space.nft.j2"
     # Retired units and paths, removed by tasks/retired-and-drift.yml. Every
     # path the old list named was absent from the box on 2026-11-01.
-    retired_units: []
+    retired_units:
+      - fleet-runner-sandbox-apply.timer
+      - fleet-runner-sandbox-apply.service
     retired_user_units:
       - fleet-sync.service
       - fleet-litellm-proxy-config.path
       - fleet-grafana-provisioning.path
     retired:
+      # The nish runner jails, their re-apply timer and restart grant, and the review
+      # runners' user state; fleet-runner@.service replaces them (fleet-ops#10935).
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-9.service.d
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-10.service.d
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-11.service.d
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-12.service.d
+      - /etc/systemd/system/fleet-runner-sandbox-apply.service
+      - /etc/systemd/system/fleet-runner-sandbox-apply.timer
+      - /etc/systemd/system/timers.target.wants/fleet-runner-sandbox-apply.timer
+      - /etc/polkit-1/rules.d/50-fleet-runner-restart.rules
+      - /var/lib/fleet-reviewer
       # Runner 1's pilot drop-in; fleet-runner@1.service runs it now (fleet-ops#10935).
       - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-1.service.d
       # The Healthchecks fail ping; Prometheus SystemUnitFailed replaces it (E7).
@@ -200,11 +214,6 @@
          | reject('match', '^(#|$)') | unique | list }}
 
   tasks:
-    # The review runners' user and registration exist before install-config.yml copies their
-    # drop-ins: a drop-in names a credential the deploy may not have, and a unit whose
-    # LoadCredential= is unreadable does not start.
-    - ansible.builtin.import_tasks: tasks/review-runners.yml
-
     - ansible.builtin.import_tasks: tasks/install-config.yml
 
     - ansible.builtin.import_tasks: tasks/tincan-relay-policy.yml
@@ -243,28 +252,9 @@
 
 
   handlers:
-    # The runner sandbox is read at unit start, so an installed drop-in waits for a start.
-    # This play reloads the daemon and then applies the change to the pool: the handler
-    # below starts fleet-runner-sandbox-apply.service, which restarts only the runner
-    # units whose drop-in is newer than their start and that hold no Runner.Worker
-    # process (idle), so no job is ever killed. A runner that was busy at the deploy is
-    # restarted when its job ends, within 5 min (fleet-runner-sandbox-apply.timer).
-    # Before fleet-ops#11248 this play restarted no runner and a jail tightening reached
-    # the pool only at the nightly drain, so from #11245 and #11226's merge at 18:27Z to
-    # the hand restart at 18:47Z every job failed the probe with "/run/user is readable
-    # from this job" on a unit that was running before the drop-in was installed.
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
-
-    # Runs after the reload above (handlers run in file order), so the manager applies
-    # the drop-in into its loaded unit list before the apply pass compares mtimes.
-    - name: Start the runner sandbox apply
-      ansible.builtin.systemd_service:
-        name: fleet-runner-sandbox-apply.service
-        state: started
-      # Under --check the copies above installed nothing, so the unit file may not exist.
-      ignore_errors: "{{ ansible_check_mode }}"
 
     # The Hermes units restart from tasks/services.yml, not from a handler: the
     # restart waits there for the deploy to have a minted gh login and a proof

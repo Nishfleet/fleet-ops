@@ -25,7 +25,3 @@ e001fda6d51822792498c7fb81d3e0320430eb7a:ansible/update.yml:private-home-path:97
 2d79a3766cbc25e71911fe301756f4a7baefb4fc:prompts/risky-review.md:private-home-path:10
 8f31a0157eca584a96ecaa9476f66ef40f56aa49:tests/test_fleet_sync_deploy_blocked.py:private-home-path:147
 # The review runners' seat-a credential is a real host path in a system unit (systemd LoadCredential=, fleet-ops#11472).
-rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-9.service.d/30-review-user.conf:private-home-path:30
-rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-10.service.d/30-review-user.conf:private-home-path:30
-rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-11.service.d/30-review-user.conf:private-home-path:30
-rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-12.service.d/30-review-user.conf:private-home-path:30
