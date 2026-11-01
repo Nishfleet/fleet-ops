@@ -30,6 +30,8 @@
     - cloudflare-tokens-apply.timer
     - fleet-d1-restore-drill.service
     - fleet-d1-restore-drill.timer
+    - fleet-grafana-github-token.service
+    - fleet-grafana-github-token.timer
     - fleet-worker-github-token@.service
     - syncthing.service
     - tigervnc.service
@@ -104,6 +106,7 @@
   loop:
     - cloudflare-tokens-apply.timer
     - fleet-d1-restore-drill.timer
+    - fleet-grafana-github-token.timer
     - syncthing.service
     - tigervnc.service
     - tincan-relay.service
