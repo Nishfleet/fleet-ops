@@ -10,7 +10,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 UNIT = ROOT / "rootfs/etc/systemd/system/tincan-listen-issue-desk.service"
-LATER_SWEEP = ROOT / "systemd/later-sweep.service"
 EXTENSION = ROOT / "pi-extensions/issue-desk"
 PROMPT = ROOT / "prompts/issue-desk.md"
 TOOLS = {"tincan_inbox", "file_issue", "tincan_reply"}
@@ -116,15 +115,6 @@ def test_the_extension_can_reach_no_shell_and_no_path() -> None:
     schema = (EXTENSION / "index.ts").read_text()
     for name in ("command", "path", "argv"):
         assert f"{name}:" not in schema, f"a tool parameter is called {name}"
-
-
-def test_the_later_sweep_never_promotes_a_needs_triage_issue() -> None:
-    text = LATER_SWEEP.read_text()
-    match = re.search(r"any\(\.==(.*?)\)\|not", text, re.S)
-    assert match is not None, "later-sweep has no parked-label exclusion"
-    assert '.=="needs-triage"' in match.group(1), (
-        "later-sweep would promote a relayed needs-triage issue whose body carries a past due: line"
-    )
 
 
 def test_the_desk_never_skips_admission() -> None:

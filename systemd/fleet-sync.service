@@ -149,18 +149,13 @@ ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-
 #      deploy reinstalls the file; then
 #      `rm %h/.config/user-tmpfiles.d/agent-worktrees.conf` by hand.
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/agent-worktrees.conf %h/.config/user-tmpfiles.d/agent-worktrees.conf
-# 2f. The overdue-issue sweep (later-sweep.timer, fleet-ops#9758): install the
-#     repo list the unit reads, then link the unit pair, so every deploy carries
-#     edits to it. The install is a user-scope COPY, same class as 2c/6/7:
-#     the timer runs every 15 minutes and must not read its list out of the
-#     deploy clone. The timer is enabled on every deploy like 2h, unlike 2g,
-#     because a timer that is silently off is the failure this ships to fix
-#     (fleet-ops#9376: a one-shot transient `later-*` timer died with the manager
-#     restart, and the issue sat unpromoted). Off switch: delete this step and
-#     the enable line below, then `systemctl --user disable --now
-#     later-sweep.timer`.
-ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json %h/.config/fleet-ops/intake-repos.json
-ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/later-sweep.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/later-sweep.timer
+# 2f. The overdue-issue sweep is retired (fleet-ops#10935 step 3): nothing on the box
+#     promotes a due: line to agent-ready any more. Step 2.1's shape: stop the pair
+#     while the manager still holds them, then rm the unit links, the enable link and
+#     the installed repo-list copy only this unit read. Delete this step once a deploy
+#     has run it.
+ExecStart=-/usr/bin/systemctl --user stop later-sweep.timer later-sweep.service
+ExecStart=-/bin/rm -f %h/.config/systemd/user/later-sweep.service %h/.config/systemd/user/later-sweep.timer %h/.config/systemd/user/timers.target.wants/later-sweep.timer %h/.config/fleet-ops/intake-repos.json
 # 2g. The daily provider watch: link the unit pair so every deploy carries edits to it,
 #     the same way as step 2f. The timer is NOT enabled here: README "Provider watch"
 #     enables it once, so a hand disable stays disabled. Off switch: delete this step,
@@ -270,7 +265,6 @@ ExecStart=/usr/bin/systemctl --user daemon-reload
 #    every container at once. That blast radius is a wider call than this issue.
 #    Off switch: delete this step and ~/.config/fleet-ops/grafana-quadlet.container.
 ExecStart=/bin/sh -c 'test -f %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container && { cmp -s %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container %h/.config/fleet-ops/grafana-quadlet.container || { /usr/bin/systemctl --user try-restart fleet-grafana.service && /usr/bin/install -C -D -m 0600 %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container %h/.config/fleet-ops/grafana-quadlet.container; }; }'
-ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-d1-restore-drill.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-clone-lag.timer
