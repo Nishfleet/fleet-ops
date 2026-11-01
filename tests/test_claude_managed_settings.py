@@ -140,13 +140,6 @@ def test_every_enabled_plugin_names_a_known_marketplace():
     assert not bad, f"enabled plugins from an unknown marketplace: {bad}"
 
 
-def test_the_nish_mods_drop_in_declares_its_marketplace():
-    declared = {name for path in _dropins() for name in _load(path).get("extraKnownMarketplaces", {})}
-    for plugin_id in _enabled():
-        if plugin_id.endswith("@nish-mods"):
-            assert "nish-mods" in declared, "a nish-mods plugin is enabled but no drop-in declares the marketplace"
-
-
 def test_every_enabled_plugin_is_listed_in_its_marketplace_manifest():
     known = _known_marketplaces()
     for plugin_id in _enabled():

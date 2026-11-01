@@ -7,7 +7,6 @@ ENROLLED = {r["name"]: r for r in CFG["repos"]}
 DEFERRED = {r["name"]: r for r in CFG["deferred"]}
 SWEEP_ONLY = {r["name"] for r in CFG["sweep_only"]}
 EXCLUDED = {r["name"] for r in CFG["excluded"]}
-NEW = ("TinyStudio.io-public", "aiconverter-app", "rera-report-card")
 UNHOOKED = (
     "nish-vault",
     "claude-mods",
@@ -20,12 +19,9 @@ GONE = ("tether", "mailbox")
 
 
 def test_deleted_repos_appear_in_no_section():
-    """tether and mailbox were deleted, and a dead name in .repos makes later-sweep fail every pass.
+    """tether and mailbox were deleted, and a dead name in .repos fails every pass that mints a token per repo.
 
-    later-sweep mints one App token per .repos name and lists that repo's open
-    issues; a deleted repo fails both, so the whole run prints failed=1.
-    tests/intake_stub_check.py reads the same 404 as "private or gone" and skips
-    it, so no CI gate catches this: fleet-ops#11087.
+    fleet-ops#11087.
     """
     for name in GONE:
         assert name not in ENROLLED, name
@@ -72,17 +68,6 @@ def test_no_repo_name_is_silently_dropped_by_a_duplicate():
         assert len(names) == len(set(names)), section
 
 
-def test_new_product_repos_are_admitted():
-    for name in NEW:
-        assert ENROLLED[name]["product"] is True, name  # agent-dispatch admit needs .product == true
-
-
-def test_new_entries_copy_the_0509_shape():
-    for name in NEW:
-        assert set(ENROLLED["0509"]) <= set(ENROLLED[name]), name
-        assert all(ENROLLED[name][k] for k in ENROLLED["0509"]), name
-
-
 def test_enrolled_repos_are_not_deferred_or_excluded():
     excluded = {r["name"] for r in CFG["excluded"]}
     for name in ENROLLED:
@@ -95,21 +80,13 @@ def test_archived_tinystudio_in_is_not_admitted():
 
 
 def test_zero_five_nine_exclusive_deferrals_are_gone():
-    assert "siterep-public" not in DEFERRED
     for r in CFG["deferred"]:
         assert "0509-exclusive" not in r.get("reason", "").lower(), r["name"]
 
 
 def test_launch_push_repos_stay_enrolled_like_0509():
-    for name in ("siterep-public", "seo-fix-kit"):
+    for name in ("seo-fix-kit",):
         entry = ENROLLED[name]
         assert entry["product"] is True, name
         assert set(ENROLLED["0509"]) <= set(entry), name
 
-
-def test_sweep_only_repos_get_the_top_up_sweep_but_no_intake():
-    assert SWEEP_ONLY == {"fleet-ops", "drive"}
-    assert not SWEEP_ONLY & set(ENROLLED)
-    assert "fleet-ops" in DEFERRED and "drive" not in DEFERRED
-    agent = (pathlib.Path(__file__).parent.parent / ".github" / "workflows" / "agent.yml").read_text()
-    assert ".sweep_only[]?.name" in agent

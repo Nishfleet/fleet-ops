@@ -1,14 +1,3 @@
-# Approved models: one line per router provider (API key variable lowercased, no _API_KEY), holding the row's model without its openai/ or anthropic/ prefix. A row outside this list needs Nish's yes, and tests/test_provider_watch.py fails CI on one; tests/evals/results/ holds the eval a no-row decision rests on (Nish 2026-09-28).
-# A provider in config/provider-watch.json with no row needs a line here: "# No row for <provider>, YYYY-MM-DD: <reason>".
-# No row for opencode, 2026-11-01: usage-wall fix #11245, dropped by the owner keep rule (fleet-ops#10935).
-# No row for commandcode, 2026-11-01: order fix #11378, dropped by the owner keep rule (fleet-ops#10935).
-# No row for minimax, 2026-11-01: 429 parking #11494, dropped by the owner keep rule (fleet-ops#10935).
-# No row for stepfun, 2026-11-01: wall parking #11148, and no row has answered a call since 2026-10-30, dropped by the owner keep rule (fleet-ops#10935).
-# No row for synthetic, 2026-11-01: wall parking #11479 and order fix #11285, dropped by the owner keep rule (fleet-ops#10935).
-# Approved zai: glm-5.3-flash
-# No row for straitly, 2026-11-01: free credit, dropped by the owner keep rule (fleet-ops#10935).
-# No row for alibaba-coding, 2026-11-01: 429 parking #11363, dropped by the owner keep rule (fleet-ops#10935).
-# Approved anthropic: claude-sonnet-5-5
 # anthropic answers in the tether group only (fleet-ops#9980; Nishfleet/tether#7).
 # Long notes for this file: docs/litellm-router-notes.md
 model_list:

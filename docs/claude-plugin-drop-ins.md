@@ -1,15 +1,14 @@
 ## Claude plugin drop-ins
 
-`rootfs/etc/claude-code/managed-settings.d/60-nish-mods.json`,
-`65-ask-ledger.json`, `80-inbox.json` and `85-no-playwright.json` are
-managed-settings drop-ins that carry only plugin state: an
+`rootfs/etc/claude-code/managed-settings.d/80-inbox.json` and
+`85-no-playwright.json` are managed-settings drop-ins that carry only plugin state: an
 `extraKnownMarketplaces` entry that registers the marketplace the box reads the
 plugins from, and the `enabledPlugins` ids. A plugin id is `name@marketplace`, and
 a marketplace that no drop-in declares and the box has not registered leaves the
 id dead, so each drop-in that enables a plugin names its own marketplace. A drop-in
 that switches a plugin off names no marketplace: the box installed the plugin at
-user scope and the drop-in only overrides that entry with `false`. Both marketplaces
-are `github` sources, so Claude Code loads the plugins from its plugin cache and no
+user scope and the drop-in only overrides that entry with `false`. The marketplace
+is a `github` source, so Claude Code loads the plugins from its plugin cache and no
 path into a working tree is involved (fleet-ops#10823).
 
 The five plugins an env override used to load from working-tree checkouts are
@@ -28,11 +27,6 @@ refuses the deploy while a user settings file does, and
 does. The box's own `~/.claude/settings.json` is not repo-managed, so the repo
 cannot delete a later line from it.
 
-- `60-nish-mods.json` registers the nish-mods marketplace (`Nishfleet/claude-mods`;
-  the repo has no tags, so no `ref`) and enables
-  `model-lanes` (every subagent goes to the fleet workers) and `wake-check` (a
-  Stop hook blocks a turn that ends on a promise to continue later unless a
-  background wait is armed for the awaited condition).
 - `80-inbox.json` registers the inbox marketplace (`petekp/inbox`, pinned to tag
   `v0.2.14`) and enables `inbox`. Bump the `ref` by PR to take a new release.
 - `85-no-playwright.json` switches `playwright@claude-plugins-official` off, so no
@@ -43,10 +37,8 @@ cannot delete a later line from it.
   `/etc/claude-code/managed-settings.d/85-no-playwright.json` to `retired` in
   `ansible/host.yml`, because `copy` never deletes.
 
-Every `enabledPlugins` key merges with `/etc/claude-code/managed-settings.json`,
-which now ships from `rootfs/etc/claude-code/managed-settings.json` ([Managed-settings
-defaults](managed-settings-defaults.md)) and keeps its own `model-lanes` line: two files
-naming the same id with the same value is a no-op merge.
+The home-built nish-mods plugins (`60-nish-mods.json`, `65-ask-ledger.json`) are
+gone: stock features only (fleet-ops#10935, 2026-11-01).
 
 - Verify: `claude -p hi --output-format stream-json --verbose` prints an init
   line whose plugin list carries every enabled id, and no switched-off one.

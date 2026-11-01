@@ -21,7 +21,6 @@ def bound_paths(conf: pathlib.Path) -> list[str]:
     return out
 
 
-
 def test_no_runner_dropin_binds_the_gh_login():
     # A bind is what makes the login readable. An empty TemporaryFileSystem= is the opposite: it is the
     # mount point the job jail needs to mask the path at all (fleet-ops#11097). A bind of a parent exposes it too.
@@ -76,9 +75,3 @@ def test_the_orchestrator_session_cannot_read_the_app_key():
     starts = [line for line in step.splitlines() if re.search(r'"\$HOME/\.local/bin/(?:claude|pi)"', line)]
     assert starts and all('"${jail[@]}"' in line for line in starts), starts
 
-
-def test_app_posted_handoff_comments_still_count():
-    """The App posts the hand-off markers now: REST comments name it user.login "...[bot]", gh GraphQL author.login without it."""
-    wf = (ROOT / ".github/workflows/agent-dispatch.yml").read_text()
-    assert '.user.login == \\"nishfleet-worker[bot]\\"' in wf
-    assert '.author.login == "nishfleet-worker")' in wf

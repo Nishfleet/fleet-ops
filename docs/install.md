@@ -13,9 +13,7 @@ so nothing can drift, and the
 keeps the clone current. It is the only deploy machinery on the box. Its two
 deploy steps come first and its security probe runs last in that same job: a red
 probe still fails the run, and it can never skip the deploy steps, because a
-separate job could probe one box and deploy on another. `fleet-clone-lag.timer`
-then pages when the oldest commit the clone lacks is 35 min old, so a merge that
-reached no deploy is not silent (fleet-ops#10046):
+separate job could probe one box and deploy on another. To check it by hand:
 
 ```
 systemctl --user status fleet-sync.service

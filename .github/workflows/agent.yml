@@ -12,24 +12,6 @@ on:
       review_sha:
         description: head sha hold-risky held; the review approves or blocks exactly this sha
         type: string
-      arm_pr:
-        description: PR number whose head carries an approval and is not armed (agent-dispatch stuck-arm)
-        type: string
-      arm_sha:
-        description: head sha the sweep saw approved; the arm uses --match-head-commit with exactly this sha
-        type: string
-      stuck_pr:
-        description: PR the sweep found waiting over an hour that no worker owns (agent-dispatch stuck-file)
-        type: string
-      stuck_sha:
-        description: head sha the sweep judged stuck; the filed issue names it so a new head is a new report
-        type: string
-      stuck_reason:
-        description: why the PR cannot move on its own (conflict, red checks, reviewer block)
-        type: string
-      stuck_url:
-        description: link to the comment that blocks it, empty when none
-        type: string
 
   # The Daily (nish.sh/daily), fleet-ops main only; the job tells a cron run from a workflow_call by the empty inputs.ref.
   schedule:
@@ -97,7 +79,11 @@ jobs:
           issue=$(gh api "repos/$REPO/issues/$i")
           labels=,$(jq -r '[.labels[].name]|join(",")' <<<"$issue"),
           [ "$(jq -r .state <<<"$issue")" = open ] || skip closed
-          [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || skip blocked
+          if [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" != 0 ]; then
+            # Nothing re-fires an issue when its blocker closes, so say so on the issue.
+            gh issue comment "$i" -R "$REPO" --body "agent: blocked by another issue; add agent-ready again once it closes"
+            skip blocked
+          fi
           if jq -e '.title|startswith("__scout_probe_")' <<<"$issue" >/dev/null; then skip probe; fi
           # One list: every contact point files one of these title prefixes; tests/alert_routes_check.py holds it against the provisioning templates (fleet-ops#11086).
           if jq -e --argjson titles '["cost alarm: ","router dead row: ","router dead key: ","grafana alert: ","alert: "]' '[.title|startswith($titles[])]|any' <<<"$issue" >/dev/null; then
@@ -179,7 +165,11 @@ jobs:
           elif [ "$claude_ok" = true ]; then
             engine=claude
           elif pi_free; then engine=pi
-          else skip lanes-full
+          else
+            # Nothing re-lists a skipped issue, so a full pi lane parks it where a person sees it.
+            gh issue edit "$i" -R "$REPO" --add-label agent-blocked --remove-label agent-ready
+            gh issue comment "$i" -R "$REPO" --body "agent: every pi lane is busy; add agent-ready again to retry"
+            skip lanes-full
           fi
           gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
           gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -329,18 +319,6 @@ jobs:
           ran=$(sort -u "$RUNNER_TEMP/engines-ran" 2>/dev/null | paste -sd, -) || ran=
           [ -n "$ran" ] || ran=$GATE_ENGINE
           gh pr comment "$pr" -R "$REPO" --body "builder-engine: $ran"
-      # Sample the host seconds after the death: the strike reads it to tell an infra kill from a code failure (fleet-ops#9291).
-      - name: Host sample
-        id: host
-        if: failure() && steps.gate.outputs.go == 'true'
-        run: |
-          {
-            echo "ended=$(date +%s)"
-            echo "load1=$(cut -d' ' -f1 /proc/loadavg)"
-            echo "cores=$(nproc)"
-            echo "swap_used_kb=$(awk '/^SwapTotal:/{t=$2} /^SwapFree:/{f=$2} END{print t-f}' /proc/meminfo)"
-            if grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b|http[ /0-9.]*500\b|status(code)?[\": ]*500\b|internal ?server ?error' "$RUNNER_TEMP/worker.err" 2>/dev/null; then echo router_err=true; else echo router_err=false; fi
-          } >> "$GITHUB_OUTPUT"
       - name: App token for arm
         id: arm-token
         if: ${{ !cancelled() && steps.gate.outputs.go == 'true' }}
@@ -352,24 +330,6 @@ jobs:
           permission-checks: read
           permission-issues: write
           permission-pull-requests: write
-      # A router outage is not the issue's fault: comment infra-failed and requeue (fleet-ops#9372).
-      - name: Router wall
-        id: wall
-        if: failure() && steps.gate.outputs.go == 'true'
-        env:
-          # GITHUB_TOKEN on purpose: its label fires no workflow, so the issue waits for the next sweep (0509#6133).
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          i=${REF#claim/issue-}; i=${i%%-*}
-          # A 402/400 dead seat is the provider, not the packet (fleet-ops#9007, #9011). Bare 400 stays out: pi's own BadRequestError must strike.
-          grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|insufficient balance|model is unavailable|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
-          [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
-          # shellcheck disable=SC2016 # $v is a jq variable
-          n=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[].body] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length')
-          [ "$n" -lt 3 ] || { echo "::warning::#$i already has $n infra requeues since its last park; the strike step takes it (fleet-ops#9291)"; exit 0; }
-          gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
-          echo wall=true >> "$GITHUB_OUTPUT"
       # Close the issue through a keyword, then arm; a red required check disarms and fails this
       # step, which is what feeds the strike below (fleet-ops#9315).
       - name: Arm auto-merge as the App
@@ -449,134 +409,24 @@ jobs:
             echo "::error::claim PR #$n head is still red after this run: $red"
             exit 1
           fi
-      # App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow, so the relabel would start no next run (fleet-ops#8552). Minted fresh: the first token is an hour old after a 55-minute Worker.
-      - name: App token for strike
-        id: strike-token
-        if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true'
+      # No requeue (fleet-ops#10935): nothing re-runs an issue except a person or Jev adding agent-ready, so a failed
+      # or cancelled run parks its issue with the run link. A fresh token, because the first is an hour old after a 55-minute Worker.
+      - name: App token for park
+        id: park-token
+        if: (failure() || cancelled()) && steps.gate.outputs.go == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
           permission-issues: write
-      # First failure requeues as agent-ready with strong-only; the second parks for the orchestrator; infra verdicts requeue as infra, up to INFRA_REQUEUE_CAP.
-      - name: Strike or requeue
-        if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true' && steps.strike-token.outcome == 'success'
+      - name: Park a failed run
+        if: (failure() || cancelled()) && steps.park-token.outcome == 'success'
         env:
-          GH_TOKEN: ${{ steps.strike-token.outputs.token }}
-          # Same reason as Router wall: its label fires no workflow, so the issue waits for the next sweep.
-          GITHUB_TOKEN: ${{ github.token }}
-          WORKER_OUTCOME: ${{ steps.worker.outcome }}
-          STARTED: ${{ steps.clock.outputs.started }}
-          ENDED: ${{ steps.host.outputs.ended }}
-          LOAD1: ${{ steps.host.outputs.load1 }}
-          CORES: ${{ steps.host.outputs.cores }}
-          SWAP_USED_KB: ${{ steps.host.outputs.swap_used_kb }}
-          ROUTER_ERR: ${{ steps.host.outputs.router_err }}
-          ENGINE: ${{ steps.gate.outputs.engine }}
-          SHORT_RUN_SECS: '600'
-          # Guard baselines (fleet-ops#9291): 54 min separates the 55-minute cap death from an early failure; 5x cores sits between the healthy ~6 (fleet-ops#8860) and the 2026-10-05 overload's 50-374 (#9264); 4G swap is above designed paging and below that overload's 7G of 8G; 3 infra requeues is the cap a stuck host cannot exceed.
-          WORKER_TIMEOUT_SECS: '3240'
-          CPU_LOAD_FACTOR: '5'
-          SWAP_GUARD_KB: '4194304'
-          INFRA_REQUEUE_CAP: '3'
+          GH_TOKEN: ${{ steps.park-token.outputs.token }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
-          err=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json number 2>&1 >/dev/null) ||
-            { case $err in *"Could not resolve"*) echo "strike: #$i does not resolve in $GITHUB_REPOSITORY; skip"; exit 0 ;; *) echo "$err" >&2; exit 1 ;; esac; }
-          # shellcheck disable=SC2016 # $u is a jq variable
-          comments=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments)
-          jq -e --arg u "/runs/$GITHUB_RUN_ID" '.comments | any(.body | startswith("agent run started:") and endswith($u))' <<<"$comments" >/dev/null ||
-            { echo "strike: run $GITHUB_RUN_ID never claimed #$i; skip"; exit 0; }
-          verdict=strike
-          if [ "$WORKER_OUTCOME" = cancelled ]; then
-            verdict=infra
-          elif [ "$WORKER_OUTCOME" = failure ] && [ "$ROUTER_ERR" = true ] && [[ $STARTED =~ ^[0-9]+$ ]] && [[ $ENDED =~ ^[0-9]+$ ]] &&
-             [ $((ENDED - STARTED)) -lt "$SHORT_RUN_SECS" ]; then
-            verdict=infra
-          elif [ "$WORKER_OUTCOME" = failure ] && [[ $STARTED =~ ^[0-9]+$ ]] && [[ $ENDED =~ ^[0-9]+$ ]] &&
-             [ $((ENDED - STARTED)) -ge "$WORKER_TIMEOUT_SECS" ]; then
-            overloaded=$(awk -v l="$LOAD1" -v c="$CORES" -v f="$CPU_LOAD_FACTOR" -v s="$SWAP_USED_KB" -v g="$SWAP_GUARD_KB" \
-              'BEGIN { print ((c + 0 > 0 && l + 0 > f * c) || s + 0 > g + 0) ? "yes" : "no" }')
-            { [ "$overloaded" = yes ] || [ "$ENGINE" = pi ]; } && verdict=infra
-          fi
-          if [ "$verdict" = infra ]; then
-            # shellcheck disable=SC2016 # $v is a jq variable
-            infra_prior=$(jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length' <<<"$comments")
-            if [ "$infra_prior" -ge "$INFRA_REQUEUE_CAP" ]; then
-              echo "::warning::#$i already has $infra_prior infra requeues since its last park; striking (fleet-ops#9291)"
-              verdict=strike
-            fi
-          fi
-          if [ "$verdict" = infra ]; then
-            # GITHUB_TOKEN labels fire no workflow, so the issue waits for the sweep or the next free worker instead of re-entering the same overloaded host.
-            GH_TOKEN=$GITHUB_TOKEN gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            GH_TOKEN=$GITHUB_TOKEN gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready --remove-label agent-in-progress
-            exit 0
-          fi
-          # shellcheck disable=SC2016 # $v is a jq variable
-          prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
           gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          if [ "$prior" -ge 1 ]; then
-            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
-          else
-            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready,strong-only --remove-label agent-in-progress
-          fi
-      - name: Sweep token
-        id: sweep-token
-        if: ${{ !cancelled() && steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true' }}
-        # Org-scoped, actions: write alone: the sweep dispatches on the other enrolled repos, which the worker App token cannot reach (fleet-ops#10949); the worker has already exited.
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
-          owner: Nishfleet  # zizmor: ignore[github-app] actions: write alone, to start the sweep in every enrolled repo
-          permission-actions: write
-      - name: Start the next ready issue
-        if: always() && steps.gate.outputs.go == 'true'
-        env:
-          GH_TOKEN: ${{ steps.arm-token.outputs.token || steps.app-token.outputs.token }}
-          SWEEP_TOKEN: ${{ steps.sweep-token.outputs.token }}
-        run: |
-          i=${REF#claim/issue-}; i=${i%%-*}
-          live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
-          # Headroom is the worker-capable row count, not a summed cap: one lane per seat is a lower bound above the 22 measured runners (fleet-ops#10762).
-          slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml")
-          strong_free=false; regular_free=false
-          strong_free=true
-          if [ "$(live pi)" -lt "$slots" ]; then regular_free=true; fi
-          # A run still waiting for a runner must not be poked: the new run displaces and cancels it (fleet-ops#9269); run title = issue title (display_title).
-          waiting=$(for s in queued pending waiting requested in_progress; do
-            GH_TOKEN=$SWEEP_TOKEN gh api "repos/$REPO/actions/workflows/agent-dispatch.yml/runs?event=issues&status=$s&per_page=100" --jq '.workflow_runs[].display_title'
-          done) || { echo "::warning::could not list waiting dispatch runs"; waiting=; }
-          for n in $(gh issue list -R "$REPO" -l agent-ready -L 200 --json number,labels,createdAt \
-              --jq 'sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .createdAt) | .[].number'); do
-            [ "$n" = "$i" ] && continue
-            issue=$(gh api "repos/$REPO/issues/$n")
-            [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || continue
-            jq -e 'any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic"))' <<<"$issue" >/dev/null && continue
-            if jq -e 'any(.labels[]; .name == "strong-only")' <<<"$issue" >/dev/null; then $strong_free || continue
-            else $regular_free || continue
-            fi
-            if grep -qxF -- "$(jq -r .title <<<"$issue")" <<<"$waiting"; then echo "skip #$n: its dispatch run already waits"; continue; fi
-            # Removing and re-adding agent-ready fires two issues events, and the
-            # run the second one starts displaces the run the first one started in
-            # the agent-<repo>-<ref> group: the step cancelled what it meant to
-            # start (fleet-ops#9278 item 3). Dispatch the issue by number instead,
-            # so a pick leaves no label event behind and one run carries one target.
-            GH_TOKEN=$SWEEP_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" -f "issue=$n" || echo "::warning::dispatch of #$n failed"
-            echo "next: #$n"
-            exit 0
-          done
-          echo "next: none ready for a free lane"
-          # An issue left agent-in-progress with a red or conflicting claim PR sends no event, so run the sweep now (drive #106 #117 #298); it starts no worker when nothing is stuck.
-          GH_TOKEN=$SWEEP_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" || echo "::warning::sweep dispatch failed"
-          # Lane counts are host-wide but the listing is this repo's only, so sweep every other enrolled repo too; .sweep_only[] retries agent-ready only (fleet-ops#10638).
-          others=$(jq -r '.repos[].name, .sweep_only[]?.name' "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json") || others=
-          [ -n "$others" ] || echo "::warning::intake-repos.json lists no repos"
-          for other in $others; do
-            [ "${REPO%/*}/$other" = "$REPO" ] && continue
-            GH_TOKEN=$SWEEP_TOKEN gh workflow run agent-dispatch.yml -R "${REPO%/*}/$other" || echo "::warning::sweep dispatch on $other failed"
-          done
+          gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-blocked --remove-label agent-in-progress
       - name: Clean workspace
         if: always()
         env:
@@ -759,26 +609,26 @@ jobs:
             GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
             GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
           else
-            GH_TOKEN=$ISSUE_TOKEN gh label create handoff-ended -R "$REPO" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h" >/dev/null
+            GH_TOKEN=$ISSUE_TOKEN gh label create handoff-ended -R "$REPO" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; add needs-orchestrator again to retry" >/dev/null
             GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label handoff-ended
             GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
           fi
   # Arms an approved head as the worker App, re-reading the PR, so a moved head or a closed PR is left alone (fleet-ops#10435).
   arm:
     needs: review
-    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && needs.review.outputs.approved_sha != '' }}
     # Not the two review runners: an arm waited 10+ minutes there behind reviews (2026-10-29). It needs only the App key.
     runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 10
     permissions:
       pull-requests: write
     concurrency:
-      group: arm-${{ github.repository }}-${{ inputs.arm_pr || inputs.review_pr }}
+      group: arm-${{ github.repository }}-${{ inputs.review_pr }}
       cancel-in-progress: false
     env:
       REPO: ${{ github.repository }}
-      PR: ${{ inputs.arm_pr || inputs.review_pr }}
-      SHA: ${{ inputs.arm_sha || needs.review.outputs.approved_sha }}
+      PR: ${{ inputs.review_pr }}
+      SHA: ${{ needs.review.outputs.approved_sha }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - id: app-key
@@ -806,22 +656,6 @@ jobs:
           # The workflows permission lets a PR that edits .github/workflows/** arm like any other: no gh login of the runner user, no file listing (fleet-ops#10949, #10950).
           GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
           echo "armed #$PR at $SHA"
-  # Files one orchestrator issue for a PR that has waited over an hour and no worker owns; one open issue per PR.
-  stuck:
-    if: inputs.stuck_pr != '' && inputs.stuck_sha != ''
-    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
-    timeout-minutes: 10
-    permissions: {pull-requests: read, issues: read}
-    concurrency: {group: "stuck-${{ github.repository }}-${{ inputs.stuck_pr }}", cancel-in-progress: false}
-    env:
-      REPO: ${{ github.repository }}
-      PR: ${{ inputs.stuck_pr }}
-      SHA: ${{ inputs.stuck_sha }}
-      REASON: ${{ inputs.stuck_reason }}
-      URL: ${{ inputs.stuck_url }}
-    steps:
-      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      - uses: Nishfleet/fleet-ops/.github/actions/stuck@main
   inish-daily:
     # The Daily (nish.sh/daily): standards in inish-site's automation/HERMES_DAILY.md and prompts/inish-daily.md here; jailed, output rebuilt in a fresh clone; a review summons publishes nothing.
     if: ${{ !inputs.ref && !inputs.review_pr && github.ref == 'refs/heads/main' && (github.event.schedule == '0 2 * * *' || github.event.schedule == '0 5 * * *' || inputs.job == 'inish-daily') }}
