@@ -62,9 +62,8 @@ env:
   # infra-failed:) steer the fleet, so every read of them keeps only trusted
   # authors: a repo OWNER, MEMBER or COLLABORATOR, or the worker App and the
   # Actions bot that write them (fleet-ops#9273). A comment read starts its
-  # jq with $TRUSTED_JQ and selects trusted.
-  TRUSTED_JQ: >-
-    def trusted: (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login | IN("nishfleet-worker", "app/nishfleet-worker", "github-actions", "app/github-actions"));
+# jq with $TRUSTED_JQ and selects trusted.
+  TRUSTED_JQ: 'def trusted: (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login | IN("nishfleet-worker", "app/nishfleet-worker", "github-actions", "app/github-actions"));'
   RUN_LIVE_JQ: >-
     def live: IN("queued", "in_progress", "waiting", "pending", "requested");
     [.jobs[]? | select(.name | endswith("/ work"))] as $w

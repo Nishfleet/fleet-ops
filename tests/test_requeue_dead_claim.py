@@ -72,7 +72,7 @@ def labelled(seconds_ago):
 
 def run_comment(status="completed"):
     body = f"agent run started: https://github.com/o/r/actions/runs/99"
-    return json.dumps({"comments": [{"body": body}, {"body": "ready for review"}]}), json.dumps(
+    return json.dumps({"comments": [{"body": body, "author": {"login": "nishfleet-worker"}, "authorAssociation": "CONTRIBUTOR"}, {"body": "ready for review", "author": {"login": "nishfleet-worker"}, "authorAssociation": "CONTRIBUTOR"}]}), json.dumps(
         {"status": status, "jobs": [{"name": "x / work (claim/issue-7)", "status": status}]})
 
 
