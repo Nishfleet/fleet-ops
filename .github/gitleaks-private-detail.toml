@@ -310,3 +310,11 @@ targetRules = ["private-home-path"]
 paths = ['''^tests/test_nish_config_dirs\.py$''']
 regexes = ['''^home/nish/\.config(/cloudflare)?$''']
 condition = "AND"
+
+[[allowlists]]
+description = "pi-models.json is pi's provider config, so the litellm row must name the scoped key file pi reads through a leading ! shell value (pi docs/models.md); fleet-ops#11272 moved that row off the master key. Only that one line is allowed, so a new seat path in this file still fails the scan"
+targetRules = ["private-fleet-seats-config"]
+paths = ['''^config/pi-models\.json$''']
+regexTarget = "line"
+regexes = ['''"apiKey": "!cut -d= -f2- \$HOME/\.config/fleet-ops/seats/litellm-agent\.env",$''']
+condition = "AND"
