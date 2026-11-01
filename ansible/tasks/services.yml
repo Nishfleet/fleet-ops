@@ -268,7 +268,16 @@
 
 # Grafana reads alerting and datasource provisioning only at start or on this
 # admin API call (grafana.com/docs/grafana/latest/developers/http_api/admin/).
+- name: Read whether Grafana runs
+  ansible.builtin.command:
+    argv: [systemctl, --user, --machine=nish@.host, is-active, --quiet, fleet-grafana.service]
+  register: grafana_active
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
 - name: Reload Grafana alerting and datasource provisioning
+  when: grafana_active.rc == 0
   ansible.builtin.uri:
     url: "http://127.0.0.1:3001/api/admin/provisioning/{{ item }}/reload"
     method: POST
