@@ -59,7 +59,11 @@ or the job queues forever next to idle runners. Delete that entry with them.
 The `wall-rate` job counts the 55-minute wall share once a day, on the 02:30 UTC
 schedule fire the job's own `if:` pins (08:00 IST, when the fleet is awake), or
 on demand with `gh workflow run agent-dispatch.yml -f task=wall-rate` in an
-enrolled repo, which a `workflow_call` stub can reach too. The daily fire has a
+enrolled repo, which a `workflow_call` stub can reach too. Every other
+scheduled job skips that fire (the `github.event.schedule != '30 2 * * *'`
+conjunct in its `if:`, and `unblocked` requires `needs.list.result ==
+'success'`), so only `wall-rate` runs at 02:30 and the sweep never runs twice
+there, once per concurrency group. The daily fire has a
 concurrency group of its own (`wall-rate`, from the `concurrency.group`
 expression), because with `cancel-in-progress: false` a shared group lets a
 newer pending sweep fire cancel the daily run before it starts. Grafana cannot

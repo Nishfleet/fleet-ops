@@ -46,9 +46,11 @@ on:
   # never wait an hour for queued work (fleet-ops#10935).
   schedule:
     - cron: '*/10 * * * *'
-    # wall-rate counts once a day (fleet-ops#9288); this second fire also runs
-    # the other scheduled jobs once more per day, the daily cap limits admit.
-    # The concurrency group gives the 02:30 fire a group of its own, so a
+    # wall-rate counts once a day (fleet-ops#9288). Every other scheduled job
+    # skips this fire (the != '30 2 * * *' conjunct in its if), so only
+    # wall-rate runs at 02:30 and the sweep never doubles there; the */10
+    # fire at 02:30 is the day's one sweep, as on any other minute. The
+    # concurrency group gives the 02:30 fire a group of its own, so a
     # */10 fire queued after it cannot cancel it the way a shared group
     # would (blocker on #11180).
     - cron: '30 2 * * *'
@@ -358,7 +360,7 @@ jobs:
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
       ((github.event_name == 'issues' && github.event.action == 'closed') ||
-       github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+       github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule != '30 2 * * *'))
     # Every sweep runs where its re-queue writes find the worker App key.
     runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}
     # contents: read is required because `statusCheckRollup` on a private repository
@@ -618,7 +620,7 @@ jobs:
             done
   unblocked:
     needs: list
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.list.outputs.refs != '[]'
+    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.list.result == 'success' && needs.list.outputs.refs != '[]'
     strategy:
       fail-fast: false
       # 12, not 4: the bound is the 22 online [self-hosted, agent] runners, and a job over
@@ -644,8 +646,8 @@ jobs:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
-      (github.event_name == 'schedule' ||
-       (github.event_name == 'workflow_dispatch' && inputs.issue == '' && inputs.task == ''))
+      ((github.event_name == 'schedule' && github.event.schedule != '30 2 * * *') ||
+      (github.event_name == 'workflow_dispatch' && inputs.issue == '' && inputs.task == ''))
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     timeout-minutes: 20
     # issues: write posts the rework note on a claim issue; pull-requests: write
@@ -864,7 +866,7 @@ jobs:
   red-main:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' && vars.RED_MAIN != 'off' && github.repository != 'Nishfleet/fleet-ops' &&
-      (inputs.agent_mode || vars.AGENT_MODE) == 'live' && (github.event_name == 'schedule' ||
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live' && ((github.event_name == 'schedule' && github.event.schedule != '30 2 * * *') ||
       (github.event_name == 'workflow_dispatch' && inputs.issue == '' && inputs.task == ''))
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     timeout-minutes: 10
@@ -1001,7 +1003,7 @@ jobs:
       vars.FLEET_DISPATCH_PAUSED != 'true' && vars.ADMIT_TRIAGE != 'off' &&
       github.repository != 'Nishfleet/fleet-ops' && (inputs.agent_mode || vars.AGENT_MODE) == 'live' && (
         (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'needs-triage') ||
-        github.event_name == 'schedule' ||
+        (github.event_name == 'schedule' && github.event.schedule != '30 2 * * *') ||
         (github.event_name == 'workflow_dispatch' && (inputs.task == 'admit' || (inputs.task == '' && inputs.issue == ''))))
     concurrency:
       group: admit-${{ github.repository }}

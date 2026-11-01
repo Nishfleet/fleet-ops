@@ -218,6 +218,17 @@ def test_task_wall_rate_runs_outside_the_schedule():
         "an enrolled repo must reach wall-rate with gh workflow run -f task=wall-rate, which workflow_call stubs can reach too"
 
 
+def test_every_scheduled_job_skips_the_daily_fire():
+    gated = ["list", "stuck-prs", "red-main", "admit"]
+    for j in gated:
+        cond = _yq(f".jobs.{j}.if")
+        assert "github.event_name == 'schedule'" in cond, f"{j} is not a scheduled job any more; fix the gated list"
+        assert "github.event.schedule != '30 2 * * *'" in cond, \
+            f"{j} must skip the 02:30 fire, or the sweep runs twice at 02:30, once per concurrency group (blocker on #11180)"
+    assert "needs.list.result == 'success'" in _yq(".jobs.unblocked.if"), \
+        "unblocked rides a successful list; a skipped list leaves empty refs, and its matrix would fail at startup"
+
+
 def test_every_worker_job_counts_not_just_the_first(tmp_path):
     runs = [_wr(1, "failure", _S, _E1_H)] + [_wr(n, "success", _S, _E1_H) for n in range(2, 4)]
     jobs = {1: [{"id": 905, "name": "work", "steps": [{"name": "Worker", "conclusion": "failure"}]},
