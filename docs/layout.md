@@ -174,19 +174,6 @@
   `systemctl --user disable --now cua-desk-daemon.service` (it removes the wants
   link), then remove its file under `rootfs/etc/systemd/user/` and step 2k, then
   `systemctl --user daemon-reload`.
-- `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
-  the agent-dispatch sweep in `Nishfleet/<instance>` every 15 minutes with one
-  `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
-  times a day (measured 2026-10-11). It runs on an Actions-only nishfleet-worker
-  App token minted per start and revoked on stop, never the owner's personal
-  login (fleet-ops#10601). The sweep's `stuck-prs` job is what moves
-  any PR left waiting over 15 minutes: it arms a head a reviewer approved, asks
-  the review job for a head with no verdict, sends a claim PR back to its worker, or files a `needs-orchestrator`
-  issue for a PR no worker owns. One instance per repo with an agent-dispatch
-  stub (fleet-ops, 0509, drive, aiconverter-app,
-  TinyStudio.io-public, siterep-public, rera-report-card), linked and enabled by
-  `fleet-sync.service` on every deploy. Off switch: remove its step 2a and enable
-  line, then `systemctl --user disable --now 'fleet-pr-sweep@*.timer'`.
 - `systemd/later-sweep.service` and `systemd/later-sweep.timer` — promote an
   issue to `agent-ready` once the `due: <date> <time> IST` line in its body has
   passed, every 15 minutes, in the repos `config/intake-repos.json` enrols. A

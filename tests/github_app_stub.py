@@ -17,7 +17,7 @@ fails the run instead of passing silently:
        [fleet-ops] and permissions {issues: write} (the Grafana token), or
        exactly the one repo whose installation was looked up and permissions
        {contents, issues, pull_requests: write} (the worker token) or
-       {actions: write} (the pr-sweep token, instance actions:<repo>), or no
+       {actions: write} (the Actions-only token, instance actions:<repo>), or no
        repositories key and permissions {actions: read, issues: write,
        pull_requests: read} (the hermes login: every repo the App is installed
        on, which is what gh repo list and the digest jobs need).
