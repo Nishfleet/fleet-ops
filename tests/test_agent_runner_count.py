@@ -18,8 +18,8 @@ def test_every_nish_runner_but_the_vault_ones_directory_is_retired():
     assert expr == "{{ range(1, 37) | reject('equalto', 23) | list }}"
 
 
-def test_the_pool_is_six_runners():
-    assert len(PLAY["vars"]["fleet_runner_ids"]) == 6
+def test_the_pool_is_netcup_agent_1_to_15():
+    assert PLAY["vars"]["fleet_runner_ids"] == list(range(1, 16))
 
 
 def test_retired_units_are_stopped_then_removed():
