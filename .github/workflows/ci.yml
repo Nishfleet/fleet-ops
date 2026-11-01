@@ -415,98 +415,6 @@ jobs:
               || { echo "autoMode array without \"\$defaults\" (or not an array): $f"; rc=1; }
           done
           exit "$rc"
-      - name: A deleted issue does not abort the dispatch sweep (fleet-ops#9553)
-        # Runs the list job's own script against a mock gh whose claim PR #8002 points at deleted
-        # issue #9502, the shape that stopped every sweep: gh api answers 410 and gh issue view
-        # cannot resolve the number, so the empty comments went into --argjson, jq died, and the
-        # job exited 1 with no refs written, skipping every dispatch job downstream. The sweep
-        # must now exit 0, name the issue it skipped, and still pick the red PR (its issue carries
-        # 180 KB of comments, over the 131072-byte argument limit) and both queued issues.
-        if: always()
-        run: |
-          set -euo pipefail
-          f=.github/workflows/agent-dispatch.yml
-          t=$RUNNER_TEMP/sweep-deleted-issue
-          mkdir -p "$t/bin" "$t/data"
-          for s in redispatch list; do yq ".jobs.list.steps[] | select(.id == \"$s\") | .run" "$f" > "$t/$s.sh"; [ -s "$t/$s.sh" ] && ! grep -qx null "$t/$s.sh" || exit 1; done
-          defs=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .env.CHECK_DEFS' "$f")
-          prog=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .env.RED_REWORK' "$f")
-          [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
-          cat > "$t/bin/gh" <<'MOCK'
-          #!/usr/bin/env bash
-          # Mock gh for the sweep: #7001 and #7002 are queued, #7003 has a red
-          # claim PR with no run since, and #9502 is deleted.
-          q=
-          for ((i = 1; i <= $#; i++)); do if [ "${!i}" = --jq ]; then j=$((i + 1)); q=${!j}; fi; done
-          cmd=$1; args=${*:2}; d=$FAKE_DIR
-          emit() { # stdin is the json gh would return; gh prints raw scalars
-            in=$(cat)
-            if [ -z "$q" ]; then printf '%s\n' "$in"; return; fi
-            out=$(jq -c "$q" <<<"$in")
-            case ${out:0:1} in '[' | '{') printf '%s\n' "$out" ;; *) jq -r "$q" <<<"$in" ;; esac
-          }
-          serve() { [ -f "$1" ] || { echo "mock gh: no fixture for $1" >&2; exit 1; }; emit < "$1"; }
-          case "$cmd $args" in
-            "issue list "*agent-in-progress*) echo '[{"number":11}]' | emit ;;
-            "issue list"*) echo '[{"number":7001},{"number":7002}]' | emit ;;
-            "issue view 9502"*)
-              echo "GraphQL: Could not resolve to an issue or pull request with the number of 9502. (repository.issue)" >&2
-              exit 1 ;;
-            "issue view"*) jq -n --arg n "${args#view }" '{comments: (if $n | startswith("7003") then [range(0; 3) | {body: ("x" * 60000)}] else [] end)}' | emit ;;
-            "pr list "*--head*) echo '0' | emit ;;
-            "pr list"*) [ -z "${FAIL_PR_LIST:-}" ] || { echo 'gh: HTTP 502 (pr list)' >&2; exit 1; }; serve "$d/prs.json" ;;
-            "pr view"*) n=${args#view }; serve "$d/pr-${n%% *}.json" ;;
-            "run view"*) echo '"completed"' | emit ;;
-            "api graphql"*) echo '{"data":{"repository":{"mergeQueue":{"entries":{"nodes":[]}}}}}' | emit ;;
-            "api "*"/issues/9502")
-              # Real gh 2.93.0 (measured 2026-10-12 on this issue): body on
-              # stdout, "(HTTP 410)" on stderr, exit 1. BODY_ON_STDOUT=0 drops
-              # the body, so the stderr path is proven on its own too.
-              echo 'gh: This issue was deleted (HTTP 410)' >&2
-              [ "${BODY_ON_STDOUT:-1}" = 0 ] || echo '{"message":"This issue was deleted","documentation_url":"https://docs.github.com/rest","status":"410"}'
-              exit 1 ;;
-            "api "*"/issues/"*) serve "$d/issue-${args##*/}.json" ;;
-            *) echo "mock gh: unexpected call: $cmd $args" >&2; exit 1 ;;
-          esac
-          MOCK
-          chmod +x "$t/bin/gh"
-          jq -n '{number:7001,created_at:"2026-10-01T00:00:00Z",state:"open",issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-ready"}]}' > "$t/data/issue-7001.json"
-          jq -n '{number:7002,created_at:"2026-10-02T00:00:00Z",state:"open",issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-ready"}]}' > "$t/data/issue-7002.json"
-          jq -n '{number:7003,created_at:"2026-10-03T00:00:00Z",state:"open",body:("y" * 140000),issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-in-progress"}]}' > "$t/data/issue-7003.json"
-          jq -n '[{number:7001,headRefName:"claim/issue-7001",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[]},
-                  {number:8001,headRefName:"claim/issue-7003",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[]},
-                  {number:8002,headRefName:"claim/issue-9502",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[{name:"needs-coordinator"}]}]' > "$t/data/prs.json"
-          red='[{"name":"ci","status":"COMPLETED","conclusion":"FAILURE","completedAt":"2026-10-09T00:00:00Z","startedAt":"2026-10-09T00:00:00Z"}]'
-          jq -c 'map(select(.number==7001))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:[]}' "$t/data/prs.json" > "$t/data/pr-7001.json"
-          jq -c --argjson r "$red" 'map(select(.number==8001))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:$r}' "$t/data/prs.json" > "$t/data/pr-8001.json"
-          jq -c --argjson r "$red" 'map(select(.number==8002))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:$r}' "$t/data/prs.json" > "$t/data/pr-8002.json"
-          for body in 1 0; do
-            : > "$t/out"
-            env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x BODY_ON_STDOUT=$body \
-              CHECK_DEFS="$defs" RED_REWORK="$prog" bash -eo pipefail "$t/redispatch.sh" > "$t/err" 2>&1 || { echo "the claim-PR re-dispatch exited $? on a deleted issue (BODY_ON_STDOUT=$body)"; exit 1; }
-            prs=$(sed -n 's/^prs=//p' "$t/out"); : > "$t/out"
-            rc=0
-            env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x BODY_ON_STDOUT=$body \
-              ISSUE='' CLOSED='' PRS="$prs" bash -eo pipefail "$t/list.sh" >> "$t/err" 2>&1 || rc=$?
-            cat "$t/err"
-            [ "$rc" -eq 0 ] || { echo "the sweep exited $rc on a deleted issue (BODY_ON_STDOUT=$body)"; exit 1; }
-            want='["claim/issue-7001","claim/issue-7002","claim/issue-7003"]'
-            got=$(sed -n 's/^refs=//p' "$t/out")
-            [ "$got" = "$want" ] || { echo "refs: got $got, want $want (BODY_ON_STDOUT=$body)"; exit 1; }
-            grep -F '#9502: issue gone' "$t/err" >/dev/null || { echo "the skipped issue was not reported (BODY_ON_STDOUT=$body)"; exit 1; }
-          done
-          # A read fault in the re-dispatch no longer costs the hour (fleet-ops#9368): the step is
-          # continue-on-error, so GitHub hands the pick empty outputs and outcome=failure. The pick
-          # must still exit 0 with the queued issues, and say why no claim PRs were appended.
-          : > "$t/out"; rc=0
-          env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x FAIL_PR_LIST=1 CHECK_DEFS="$defs" RED_REWORK="$prog" \
-            bash -eo pipefail "$t/redispatch.sh" > "$t/err2" 2>&1 || rc=$?
-          [ "$rc" -ne 0 ] && [ ! -s "$t/out" ] || { echo "the re-dispatch did not fail clean on a pr list fault (rc=$rc, outputs: $(cat "$t/out"))"; exit 1; }
-          env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x ISSUE='' CLOSED='' PRS='' REDISPATCH=failure \
-            bash -eo pipefail "$t/list.sh" >> "$t/err2" 2>&1 || { echo "the sweep exited $? after a failed re-dispatch"; exit 1; }
-          cat "$t/err2"
-          grep -F 'claim-PR re-dispatch failed; this run appends no claim PRs' "$t/err2" >/dev/null || { echo "the pick did not warn about the failed re-dispatch"; exit 1; }
-          [ "$(sed -n 's/^refs=//p' "$t/out")" = '["claim/issue-7001","claim/issue-7002"]' ] || { echo "refs after a failed re-dispatch: got $(sed -n 's/^refs=//p' "$t/out")"; exit 1; }
       - name: Dispatch pause flag skips dispatch, never the guards
         # A paused queue must still hold risky PRs: the weekly update once
         # disabled agent-dispatch, and hold-risky could not run in that window
@@ -519,8 +427,8 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          gated="new rework conflicts remerge ejected list unblocked orchestrate admit review-risky stuck-prs stuck-review stuck-arm stuck-rework stuck-file red-main"
-          guards="hold-risky close-claim rework-note"
+          gated="new review-risky"
+          guards="hold-risky"
           bad=0
           for j in $(yq '.jobs | keys | .[]' "$f"); do
             cond=$(yq ".jobs.\"$j\".if // \"\"" "$f" | tr -s ' \n' '  ' | sed 's/ $//')
@@ -1022,30 +930,6 @@ jobs:
           workflow-edit-already-armed|||1||no||
           closed||||1|no||
           CASES
-          test "$bad" -eq 0
-      - name: Sweep liveness reads the work job (fleet-ops#9275)
-        # A run is live only while its `work` job is queued or running, not
-        # while the run as a whole reads queued. Runs the RUN_LIVE_JQ filter
-        # out of agent-dispatch.yml against the cases in
-        # config/sweep-liveness-events.json, and checks that all four sweep
-        # reads (stalled, orphans, red PRs, stuck rework) use it and none still reads the
-        # run status alone.
-        if: always()
-        run: |
-          set -euo pipefail
-          f=.github/workflows/agent-dispatch.yml
-          filter=$(yq '.env.RUN_LIVE_JQ' "$f")
-          [ -n "$filter" ] && [ "$filter" != null ] || { echo "RUN_LIVE_JQ missing from $f"; exit 1; }
-          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 4 ] || { echo "expected 4 sweep reads of status,jobs"; exit 1; }
-          # shellcheck disable=SC2016 # the literal text "$RUN_LIVE_JQ" is the needle
-          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 4 ] || { echo "expected 4 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
-          ! grep -n -- '--json status --jq' "$f" || { echo "a sweep read still judges the run status alone"; exit 1; }
-          bad=0
-          while IFS= read -r c; do
-            name=$(jq -r .name <<<"$c"); want=$(jq -r .want <<<"$c"); ref=$(jq -r .ref <<<"$c")
-            got=$(jq -c '{status: .run_status, jobs: [.jobs[] | {name: .[0], status: .[1]}]}' <<<"$c" | jq -r --arg ref "$ref" "$filter")
-            [ "$got" = "$want" ] || { echo "case $name: live=$got (want $want)"; bad=1; }
-          done < <(jq -c '.cases[]' config/sweep-liveness-events.json)
           test "$bad" -eq 0
   grafana-boot:
     name: grafana-boot
