@@ -145,14 +145,11 @@ def _gate_full(tmp_path, labels=",strong-only,", failed=0, live=None, env=None, 
     """Runs the Gate's engine routing; the issue is titled t with body b."""
     script = _step("work", "Gate")
     start = script.index("jev_env=")
-    start = script.rindex("live() {", 0, start)
+    start = script.rindex("stats=$(gh issue view", 0, start)
     end = script.index('gh issue edit "$i" -R "$REPO" --remove-label agent-ready')
     seg = script[start:end]
     b, home = _bin(tmp_path)
     prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=5 REPO=o/r labels="{labels}"\nissue=\'{{"title":"t","body":"b"}}\'\n{seg}\necho "engine=$engine model=$claude_model"\n'
-    # The Gate's comment reads start their jq with the workflow's TRUSTED_JQ; the
-    # harness gets the same value yq reads back out of the file, or the reads fail
-    # and every packet escalates (the real job inherits it from the workflow env).
     env = {**os.environ, "HOME": str(home), "PATH": f"{b}:{SYS_PATH}", "COMMENTS_JSON": comments or _comments(failed), "TRUSTED_JQ": _yq(".env.TRUSTED_JQ").strip(), **{f"LIVE_{k}": str(v) for k, v in (live or {}).items()}, **(env or {})}
     r = subprocess.run(["bash", "-c", prog], env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
