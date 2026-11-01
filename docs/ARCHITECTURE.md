@@ -13,14 +13,12 @@ One VPS (netcup), one `nish` user. Everything the fleet runs is a
 `deploy-box.yml` runs `fleet-sync.service`, a fetch plus `--ff-only` merge,
 never `git pull` (RUNBOOK, fleet-ops#8893), and the workflow's security probe runs
 last in that same job, so a red probe still fails the run and cannot skip the
-deploy steps before it;
-`fleet-clone-lag.timer` fails the unit and pages when the clone is 35 min behind
-`origin/main` (fleet-ops#10046). GitHub is the durable copy of
+deploy steps before it. GitHub is the durable copy of
 code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
 Dispatch pauses through the repo variable `FLEET_DISPATCH_PAUSED`, never by disabling the workflow: with it `true`, every job that starts a worker skips and logs one summary line, while `hold-risky` and `close-claim` keep running (a disabled workflow drops every trigger, guards included; 2026-10-05). Unset or any other value is not paused. The weekly `ansible/update.yml` sets it per repo and clears it in its `always:` block, then sweeps; it lists the repos it paused in `/var/lib/fleet-ops/dispatch-paused-by-update`, so a run killed before `always:` is undone at the start of the next, and a flag set by hand is left alone; ci.yml fails if a guard job gains the condition or a dispatch job loses it.
-No scheduled fleet job opens PRs. One scheduled job opens issues: the daily provider watch, at most one per provider whose model list changed, built from fixed text only, with no model id and no other network text (`systemd/fleet-provider-watch.service`); the ids themselves stay in a host state directory, never in git. The watch makes no model call itself, but its issues carry `needs-orchestrator`, so each starts one orchestrator hand-off run (a paid model session): a vault standing-rule exception to fleet-ops#8304 (Nish 2026-10-15, nish3451/nish-vault#23). The caps are 3 issues per run, one provider per issue, no refile for 7 days, and `ORCHESTRATE_DAILY_MAX` in agent-dispatch.yml. Otherwise issues come from people, red-main issues and dependabot, which runs weekly. The org `CI_RUNNER` variable is set by hand (fleet-ops#9670 retired the hourly auto-flip).
+No scheduled fleet job opens PRs or issues on the box. Issues come from people, red-main issues and dependabot, which runs weekly. The org `CI_RUNNER` variable is set by hand (fleet-ops#9670 retired the hourly auto-flip).
 
 ## Model plane
 

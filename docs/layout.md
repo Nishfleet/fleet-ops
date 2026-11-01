@@ -1,8 +1,8 @@
 ## What lives here
 
 - `systemd/` — the user units the fleet runs under `systemctl --user`:
-  services, timers, slices, four `.path` units (`fleet-litellm-proxy-config.path`, `fleet-gh-login-check.path`,
-  `fleet-hermes-xai-login-check.path`, `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
+  services, timers, slices, two `.path` units (`fleet-litellm-proxy-config.path`,
+  `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
   `fleet-grafana-github-token.timer` re-mints the one-hour GitHub App token Grafana's
   alert webhook sends (fleet-ops#9445); switch off with
   `systemctl --user disable --now fleet-grafana-github-token.timer` plus `systemctl --user mask
@@ -84,39 +84,6 @@
   timer, path, slice or template.
 - `.semgrep/` — `no-glue.yml`, the no-glue rule `ci.yml` runs
   (`docs/ARCHITECTURE.md` already names it).
-- `rootfs/etc/systemd/system/beacon-hermes-poll.service` — Beacon's own Hermes watcher (owner: Nish),
-  exactly `~/.local/bin/beacon endpoint hermes sync --watch --interval 1m`. Every minute it reads
-  new sessions from `~/.hermes/state.db` (gateway and Telegram sessions included) and appends
-  `harness.name=hermes`, `collection_method=poll` events to
-  `~/.beacon/endpoint/logs/runtime.jsonl`. It runs outside the sandbox, so the Hermes units
-  have no `.beacon` write path and Beacon's Hermes hooks stay uninstalled
-  (`beacon endpoint hooks uninstall --harness hermes`; never `hooks install --harness hermes`
-  again, it would capture twice). A system unit and not a user one (fleet-ops#11089): it parses
-  Telegram text, and a unit the user manager starts gets no mount sandbox on this box
-  (`docs/user-unit-sandboxing.md`), so it runs as `User=nish` under `ProtectSystem=strict` and
-  `PrivateTmp=yes`. fleet-host-config installs the file and `ansible/tasks/services.yml` enables
-  and restarts it; `fleet-sync.service` step 2i stops and deletes the user link it replaces. Off
-  switch: delete the file and that task, then `systemctl disable --now beacon-hermes-poll.service`.
-- `systemd/fleet-cua-desk-check.service` and `.timer` — fail, and so page through
-  `fleet-unit-failed@`, when `cua sandbox ls --local` does not list `local:desk`
-  as `ready`, or when a routine's `lastOutcome` in `~/.cua/persistent/routines.json`
-  starts with `failed` (2026-10-18: the desk was pruned and three daily walks failed
-  with no page). Hourly; it only reads. `fleet-sync.service` step 2h links both and
-  enables the timer on every deploy. Off switch: remove that step and its enable
-  line, then `systemctl --user disable --now fleet-cua-desk-check.timer`.
-- `systemd/fleet-clone-lag.service` and `.timer` — fail, and so page through
-  `fleet-unit-failed@`, when the oldest commit on `origin/main` the deploy clone
-  does not have is more than 35 min old, so a merge that reached no deploy is loud
-  instead of silent (2026-10-22: two merges at 14:14Z were still not on the box 40
-  min later, and the review job read a retired file out of the clone). It fetches
-  `main` itself into its own ref and only reads. Every 5 min;
-  `fleet-sync.service` step 2m links both and enables the timer on every deploy.
-  Off switch: remove that step and its enable line, then
-  `systemctl --user disable --now fleet-clone-lag.timer`.
-- `systemd/fleet-provider-watch.service` and `systemd/fleet-provider-watch.timer` — the
-  daily provider watch: each router provider's model list is compared with
-  the host snapshot, and a change files one fleet-ops issue with no model id in it.
-  [provider-watch.md](provider-watch.md) has the run, off and delete steps.
 - `systemd/syncthing.service` and `tigervnc.service` — stock vendor
   binaries (Syncthing, TigerVNC) run under systemd. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap
@@ -174,36 +141,6 @@
   `systemctl --user disable --now cua-desk-daemon.service` (it removes the wants
   link), then remove its file under `rootfs/etc/systemd/user/` and step 2k, then
   `systemctl --user daemon-reload`.
-- `systemd/later-sweep.service` and `systemd/later-sweep.timer` — promote an
-  issue to `agent-ready` once the `due: <date> <time> IST` line in its body has
-  passed, every 15 minutes, in the repos `config/intake-repos.json` enrols. A
-  one-shot transient `later-*` timer is lost when the user manager restarts, so
-  an issue due later the same day sat unread for a day (fleet-ops#9376); a
-  persistent timer cannot be lost that way. One `gh issue list` per repo, then
-  one `gh issue edit --add-label agent-ready` per promoted issue, at most five a
-  run. Each list is the repo's 300 newest open issues, so a repo that carries
-  more open issues than that is swept only inside that window. `jq` makes the
-  whole decision, so no model reads an issue body and there is no session to
-  jail: only an issue authored by `nish3451` or the worker App is promoted, and
-  an issue that already carries `agent-ready` or any park label is skipped.
-  `fleet-sync.service` step 2f links and enables it on every deploy. Off switch:
-  remove that step and its enable line, then `systemctl --user disable --now
-  later-sweep.timer`.
-- `systemd/fleet-gh-login-check.service`, `.path` and `.timer` — fail, and so
-  page through `fleet-unit-failed@`, when the box's github.com gh login is gone,
-  revoked or not `nish3451`. The path unit checks on every change to
-  `~/.config/gh/hosts.yml`, the timer hourly. Wire once with `systemctl --user
-  link` of all three, then `enable --now` the `.path` and `.timer`. Switch off:
-  `systemctl --user disable --now fleet-gh-login-check.timer
-  fleet-gh-login-check.path` and delete the files.
-- `systemd/fleet-hermes-xai-login-check.service`, `.path` and `.timer` — fail, and
-  so page through `fleet-unit-failed@`, when `hermes auth status xai-oauth` does
-  not say `xai-oauth: logged in` (the SuperGrok login behind Hermes's `x_search`,
-  which hides itself silently when it dies). The path unit checks on every change
-  to `~/.hermes/auth.json`, the timer hourly. Wire once like the gh check above.
-  Fix a BROKEN line with `hermes auth add xai-oauth --no-browser`. Switch off:
-  `systemctl --user disable --now fleet-hermes-xai-login-check.timer
-  fleet-hermes-xai-login-check.path` and delete the files.
 - Session output files stay owner-only. The retired Devin listener's own drop-in
   went with its unit, but the audit it came from (W1a, `nish-vault#30`) still
   applies: the vendor CLIs run under the `netcup-agent` runners at the units'

@@ -1,20 +1,10 @@
-"""The overdue-issue sweep acts as the nishfleet-worker App, never the owner login (fleet-ops#10453, #10601)."""
+"""Only the Actions-only token instance asks for Actions write, and no worker launch line names it (fleet-ops#10453, #10601)."""
 
 import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD = ROOT / "systemd"
-
-
-def test_later_sweep_mints_a_token_per_repo_and_never_falls_back() -> None:
-    text = (SYSTEMD / "later-sweep.service").read_text()
-    assert 'systemctl --user start "fleet-worker-github-token@$$repo.service"' in text
-    assert "%t/fleet-worker-github-token/$$repo.env" in text
-    assert text.index("fleet-worker-github-token@") < text.index("gh issue list")
-    assert text.index("fleet-worker-github-token@") < text.index("gh issue edit")
-    assert "env -u GH_TOKEN" not in text
-    assert "sweep-" not in text
 
 
 def test_only_the_actions_instance_asks_for_actions_write() -> None:
