@@ -53,33 +53,6 @@
     daemon_reload: true
   ignore_errors: "{{ ansible_check_mode }}"
 
-# The Beacon Hermes poll watcher (fleet-ops#11089) is a system unit now. It parses
-# Telegram text, so it needs a mount sandbox that holds, and a unit the user
-# manager starts gets none on this box (docs/user-unit-sandboxing.md). Its file is
-# under rootfs/etc/systemd/system/, which the copy above installed, and it runs as
-# User=nish. The user-scope unit it replaces is stopped first, so the two never
-# poll the same cursor and log; fleet-sync.service deletes that link and its
-# wants link, and `retired` below covers a run that skips that step. A restarted
-# service, not a started one, so an edit to the sandbox lands on this deploy.
-- name: Stop the retired user-scope Beacon Hermes poll watcher
-  ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host stop beacon-hermes-poll.service
-  register: beacon_user_unit_stop
-  changed_when: false
-  # A unit the host already dropped answers "not loaded", which is not a
-  # failure. Every other error, a user bus this run cannot reach above all, must
-  # stop the play: it would leave two pollers on one cursor and one log.
-  failed_when:
-    - beacon_user_unit_stop.rc != 0
-    - "'not loaded' not in (beacon_user_unit_stop.stderr | lower)"
-
-- name: Enable the Beacon Hermes poll watcher
-  ansible.builtin.systemd_service:
-    name: beacon-hermes-poll.service
-    enabled: true
-    state: restarted
-    daemon_reload: true
-  ignore_errors: "{{ ansible_check_mode }}"
-
 # The monthly full restore drill (fleet-ops#9770). Its units are shipped under
 # rootfs/, so the copy above installed them; this starts the timer once. The
 # first drill runs at the first 1st after this deploy: a timer with no stored

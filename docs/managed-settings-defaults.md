@@ -3,9 +3,13 @@
 `rootfs/etc/claude-code/managed-settings.json` is the box-wide Claude Code
 managed settings file itself, not a drop-in. `ansible/host.yml` installs it with
 the same `validate:` as the drop-ins, so a file that is not a JSON object never
-reaches `/etc` and cannot stop Claude Code from starting. It carries the
-subagent model, the advisor model, the per-model settings, the hand-picked
-`model-lanes` plugin and the box-wide permission `deny` and `ask` lists.
+reaches `/etc` and cannot stop Claude Code from starting. It carries only
+the box-wide permission `deny` and `ask` lists: Read and Edit denies on the seat
+and tincan secrets (fleet-ops#10567, fleet-ops#11114), an Edit deny on the deploy
+clone (fleet-ops#9437), the Wrangler deny (customer-data deletion and
+out-of-pipeline deploys stay process-gated), and asks on force pushes and other
+commands that destroy data or reboot the box. The model, plugin and style rules
+left on 2026-11-01 (fleet-ops#10935): stock features only.
 `/etc/claude-code` is not in `owned_dirs`: every file in it is covered by an
 explicit copy task, a single-file one or a directory one, never a sweep.
 

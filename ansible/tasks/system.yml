@@ -98,6 +98,32 @@
     cache_valid_time: 3600
     lock_timeout: 300
 
+# Laptop packages a VPS never uses: battery power (upower), device firmware
+# updates (fwupd; the provider owns this host's firmware), Intel thermal control
+# (thermald), Thunderbolt (bolt) and iPhone USB (usbmuxd). udisks2 and
+# accountsservice stay because removing either removes plasma-desktop, the VNC
+# desktop. samba stays because a Mac LaunchAgent mounts its share every minute.
+# The cloud image also ships guest tools for hypervisors this KVM host is not on:
+# VMware (open-vm-tools), LXD (lxd-agent-loader, lxd-installer), and iSCSI disks
+# (open-iscsi), which it has none of. packagekit stays because
+# software-properties-common depends on it.
+- name: Remove laptop and other-hypervisor packages
+  ansible.builtin.apt:
+    name:
+      - upower
+      - fwupd
+      - fwupd-signed
+      - thermald
+      - bolt
+      - usbmuxd
+      - open-vm-tools
+      - open-iscsi
+      - lxd-agent-loader
+      - lxd-installer
+    state: absent
+    purge: true
+    lock_timeout: 300
+
 - name: Install sysctl settings
   ansible.builtin.copy:
     src: "{{ item }}"

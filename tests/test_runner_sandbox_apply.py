@@ -4,8 +4,7 @@ change reaches it only at its next start. The unit restarts the idle runners who
 drop-in is newer than their start, one pass, on the handler's start after a deploy
 and on the timer every 5 min, which catches a runner that was busy then.
 
-These tests run the unit's real ExecStart (extracted the way tests/test_provider_watch.py
-extracts provider-watch's) against stub systemctl and ps, with real stat and real date
+These tests run the unit's real ExecStart against stub systemctl and ps, with real stat and real date
 reading the real drop-in files the test writes into a tmp DROPIN_ROOT. What they pin:
 which runner restarts, which runner is busy, the name boundary between agent-1 and
 agent-13, the restart-failure exit, the skip of a unit without a start timestamp, a

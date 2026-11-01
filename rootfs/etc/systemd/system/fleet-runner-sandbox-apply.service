@@ -20,7 +20,7 @@
 # SYSTEMCTL, PS, STAT, DATE and DROPIN_ROOT exist so the tests run this very
 # ExecStart against stub systemctl and ps
 # (tests/test_runner_sandbox_apply.py); the host never overrides them.
-# $$ doubling ($FLOCK, $units, ...) as in fleet-provider-watch.service; a literal
+# $$ doubling ($FLOCK, $units, ...) for systemd's own expansion; a literal
 # percent is doubled for systemd (the +%%s of date, the -c %%Y of stat), and the
 # awk lookup is a cut, because inside the double quotes bash would expand awk's
 # $1 first and set -u would kill the unit. The bash is one single-quoted string

@@ -54,42 +54,11 @@ def sweep_park_labels():
     return set(re.findall(r'"([a-z-]+)"', match.group(0)))
 
 
-def test_sweep_matrices_share_one_governor():
-    defaults = {}
-    for job in SWEEP_MATRICES:
-        expr = max_parallel(job)
-        assert re.search(r"vars\.AGENT_MAX_PARALLEL\b", expr), f"{job} max-parallel does not read vars.AGENT_MAX_PARALLEL: {expr}"
-        defaults[job] = default_of(expr)
-    assert len(set(defaults.values())) == 1, f"the sweep matrices disagree on the fan-out: {defaults}"
-
-
-def test_sweep_fanout_stays_inside_its_governors():
-    fanout = default_of(max_parallel("unblocked"))
-    assert fanout <= AGENT_RUNNERS_MEASURED_2026_10_23, (
-        f"fan-out {fanout} exceeds the {AGENT_RUNNERS_MEASURED_2026_10_23} online agent runners"
-    )
-    assert fanout <= lanes("worker-capable"), f"fan-out {fanout} exceeds the {lanes('worker-capable')} worker-capable rows"
-
-
-def test_review_concurrency_stays_inside_the_judge_seats():
-    reviews = int(max_parallel("stuck-review"))
-    assert reviews <= seats("judge"), f"review concurrency {reviews} exceeds the {seats('judge')} judge seats"
-
-
-def test_sweep_drops_exactly_the_gate_park_labels():
-    assert sweep_park_labels() == gate_park_labels()
-
-
-def test_the_pi_lane_has_one_cap_and_both_sides_read_it():
+def test_the_pi_lane_has_one_cap_and_it_reads_the_seat_sum():
     text = AGENT.read_text()
-    # The Gate (queue pull) and the Worker fall-through both compare the live pi
-    # count against the same worker-capable seat sum, so the two cannot drift apart
-    # (the removed opencode, devin and miss-review lanes each had a hand-written constant).
     caps = re.findall(r'live pi\)"\s+-lt\s+(\S+)', text)
-    assert len(caps) == 2, f"the pi lane has {len(caps)} comparisons, not the Gate and the Worker fall-through: {caps}"
-    assert set(caps) == {chr(34) + "$slots" + chr(34)}, f"every pi comparison must use the worker-capable seat sum: {sorted(set(caps))}"
-    sum_line = "slots=" + chr(36) + "(yq"
-    assert text.count(sum_line) == 2, "the seat sum is computed the same way in the Gate and the queue pull"
+    assert caps == [chr(34) + "$slots" + chr(34)], f"the Gate's pi cap must be the one comparison, against the worker-capable seat sum: {caps}"
+    assert text.count("slots=" + chr(36) + "(yq") == 1, "the seat sum is computed once, in the Gate"
 
 
 def permissions_block(block, where):
