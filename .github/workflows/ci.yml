@@ -17,9 +17,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
-      - name: Tools (ansible-core for the host play, systemd for unit files)
-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ansible-core systemd >/dev/null
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Tools (ansible-core for the host play, systemd for unit files, promtool for alert rules)
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ansible-core systemd prometheus >/dev/null
       - name: The host play parses (it is the deploy; a broken play breaks the box)
         run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
       - name: Unit files verify (three merges broke the box in one night, 2026-10-29)
