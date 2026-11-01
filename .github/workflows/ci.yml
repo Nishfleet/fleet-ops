@@ -27,7 +27,7 @@ jobs:
         run: |
           shopt -s nullglob
           # Host-only binaries the units name; a stub is enough for verify.
-          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/claude /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /home/runner/.local/bin/tofu /opt/node-v22.23.3/bin/node /usr/bin/restic /usr/bin/rootlesskit /usr/bin/syncthing /usr/bin/tigervncserver; do sudo install -D -m755 /bin/true "$b"; done; sudo chown -R "$USER" "$HOME/.local"
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/claude /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /home/runner/.local/bin/tofu /opt/node-v22.23.3/bin/node /usr/bin/restic /usr/bin/rootlesskit /usr/bin/syncthing /usr/bin/tigervncserver /var/lib/fleet-runner/test_instance/runsvc.sh; do sudo install -D -m755 /bin/true "$b"; done; sudo chown -R "$USER" "$HOME/.local"
           systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path rootfs/etc/systemd/system/*.service rootfs/etc/systemd/system/*.timer rootfs/etc/systemd/user/*.service rootfs/etc/systemd/user/*.timer
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with: {python-version: "3.12"}
