@@ -12,12 +12,6 @@ on:
       review_sha:
         description: head sha hold-risky held; the review approves or blocks exactly this sha
         type: string
-      arm_pr:
-        description: PR number whose head carries an approval and is not armed (agent-dispatch stuck-arm)
-        type: string
-      arm_sha:
-        description: head sha the sweep saw approved; the arm uses --match-head-commit with exactly this sha
-        type: string
 
   # The Daily (nish.sh/daily), fleet-ops main only; the job tells a cron run from a workflow_call by the empty inputs.ref.
   schedule:
@@ -484,19 +478,19 @@ jobs:
   # Arms an approved head as the worker App, re-reading the PR, so a moved head or a closed PR is left alone (fleet-ops#10435).
   arm:
     needs: review
-    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && needs.review.outputs.approved_sha != '' }}
     # Not the two review runners: an arm waited 10+ minutes there behind reviews (2026-10-29). It needs only the App key.
     runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 10
     permissions:
       pull-requests: write
     concurrency:
-      group: arm-${{ github.repository }}-${{ inputs.arm_pr || inputs.review_pr }}
+      group: arm-${{ github.repository }}-${{ inputs.review_pr }}
       cancel-in-progress: false
     env:
       REPO: ${{ github.repository }}
-      PR: ${{ inputs.arm_pr || inputs.review_pr }}
-      SHA: ${{ inputs.arm_sha || needs.review.outputs.approved_sha }}
+      PR: ${{ inputs.review_pr }}
+      SHA: ${{ needs.review.outputs.approved_sha }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - id: app-key

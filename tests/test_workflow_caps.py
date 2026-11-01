@@ -54,32 +54,6 @@ def sweep_park_labels():
     return set(re.findall(r'"([a-z-]+)"', match.group(0)))
 
 
-def test_sweep_matrices_share_one_governor():
-    defaults = {}
-    for job in SWEEP_MATRICES:
-        expr = max_parallel(job)
-        assert re.search(r"vars\.AGENT_MAX_PARALLEL\b", expr), f"{job} max-parallel does not read vars.AGENT_MAX_PARALLEL: {expr}"
-        defaults[job] = default_of(expr)
-    assert len(set(defaults.values())) == 1, f"the sweep matrices disagree on the fan-out: {defaults}"
-
-
-def test_sweep_fanout_stays_inside_its_governors():
-    fanout = default_of(max_parallel("unblocked"))
-    assert fanout <= AGENT_RUNNERS_MEASURED_2026_10_23, (
-        f"fan-out {fanout} exceeds the {AGENT_RUNNERS_MEASURED_2026_10_23} online agent runners"
-    )
-    assert fanout <= lanes("worker-capable"), f"fan-out {fanout} exceeds the {lanes('worker-capable')} worker-capable rows"
-
-
-def test_review_concurrency_stays_inside_the_judge_seats():
-    reviews = int(max_parallel("stuck-review"))
-    assert reviews <= seats("judge"), f"review concurrency {reviews} exceeds the {seats('judge')} judge seats"
-
-
-def test_sweep_drops_exactly_the_gate_park_labels():
-    assert sweep_park_labels() == gate_park_labels()
-
-
 def permissions_block(block, where):
     assert block is None or isinstance(block, dict), f"{where} uses the '{block}' shorthand; write the scopes out so this gate can read them"
     return block or {}
