@@ -54,19 +54,6 @@
     - hermes-serve.service
   ignore_errors: "{{ ansible_check_mode }}"
 
-# The runner sandbox apply unit (fleet-ops#11248) restarts the runner units whose
-# drop-in is newer than their start and that hold no Runner.Worker process: the
-# handler covers the deploy and this timer catches a runner that was busy then,
-# within 5 min of its job ending. Starting the timer schedules the first pass;
-# it never runs the service now.
-- name: Enable the runner sandbox apply timer
-  ansible.builtin.systemd_service:
-    name: fleet-runner-sandbox-apply.timer
-    enabled: true
-    state: started
-    daemon_reload: true
-  ignore_errors: "{{ ansible_check_mode }}"
-
 # The monthly full restore drill (fleet-ops#9770). Its units are shipped under
 # rootfs/, so the copy above installed them; this starts the timer once. The
 # first drill runs at the first 1st after this deploy: a timer with no stored
