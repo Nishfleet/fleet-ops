@@ -7,7 +7,7 @@ ENROLLED = {r["name"]: r for r in CFG["repos"]}
 DEFERRED = {r["name"]: r for r in CFG["deferred"]}
 SWEEP_ONLY = {r["name"] for r in CFG["sweep_only"]}
 EXCLUDED = {r["name"] for r in CFG["excluded"]}
-NEW = ("TinyStudio.io-public", "aiconverter-app")
+NEW = ("TinyStudio.io-public",)
 UNHOOKED = (
     "nish-vault",
     "claude-mods",
@@ -95,13 +95,12 @@ def test_archived_tinystudio_in_is_not_admitted():
 
 
 def test_zero_five_nine_exclusive_deferrals_are_gone():
-    assert "siterep-public" not in DEFERRED
     for r in CFG["deferred"]:
         assert "0509-exclusive" not in r.get("reason", "").lower(), r["name"]
 
 
 def test_launch_push_repos_stay_enrolled_like_0509():
-    for name in ("siterep-public", "seo-fix-kit"):
+    for name in ("seo-fix-kit",):
         entry = ENROLLED[name]
         assert entry["product"] is True, name
         assert set(ENROLLED["0509"]) <= set(entry), name

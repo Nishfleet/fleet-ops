@@ -20,16 +20,6 @@
       "enrolled_by": "Nish, 2026-10-12 (0509-only dispatch freeze lifted)"
     },
     {
-      "name": "aiconverter-app",
-      "product": true,
-      "enrolled_by": "Nish, 2026-10-12 (0509-only dispatch freeze lifted)"
-    },
-    {
-      "name": "siterep-public",
-      "product": true,
-      "enrolled_by": "Nish, 2026-10-15 (Site Rep; the launch push to 2026-10-29 ended 2026-10-28 with 0 paying workspaces: the numbers and Nish's continue/adjust/stop call are Nishfleet/siterep-public#232; normal intake order from 2026-10-28)"
-    },
-    {
       "name": "seo-fix-kit",
       "product": true,
       "enrolled_by": "Nish, 2026-10-15 (SEO Fix Kit; enrolled 2026-10-28 after the repo moved into Nishfleet on 2026-10-16; the launch push to 2026-10-29 ended 2026-10-28 with 0 paid Fix Packs: the numbers and Nish's continue/adjust/stop call are Nishfleet/seo-fix-kit#317; normal intake order from 2026-10-28)"
@@ -123,7 +113,19 @@
       "name": "rera-report-card",
       "product": true,
       "deferred_by": "owner reset, 2026-11-01 (fleet-ops#10935)",
-      "reason": "product dispatch is paused for the reset, and rera-report-card#59 deleted its agent-dispatch.yml stub when the repo moved to hosted CI, so the stub check has nothing to read. Re-enrol by PR when the repo joins the new lane."
+      "reason": "product dispatch is paused for the reset, and rera-report-card deleted its agent-dispatch.yml stub (rera-report-card#59) when the repo moved to hosted CI, so the stub check has nothing to read. Re-enrol by PR when the repo joins the new lane."
+    },
+    {
+      "name": "aiconverter-app",
+      "product": true,
+      "deferred_by": "owner reset, 2026-11-01 (fleet-ops#10935)",
+      "reason": "product dispatch is paused for the reset, and aiconverter-app deleted its agent-dispatch.yml stub when the repo moved to hosted CI, so the stub check has nothing to read. Re-enrol by PR when the repo joins the new lane."
+    },
+    {
+      "name": "siterep-public",
+      "product": true,
+      "deferred_by": "owner reset, 2026-11-01 (fleet-ops#10935)",
+      "reason": "product dispatch is paused for the reset, and siterep-public deleted its agent-dispatch.yml stub when the repo moved to hosted CI, so the stub check has nothing to read. Re-enrol by PR when the repo joins the new lane."
     }
   ]
 }
