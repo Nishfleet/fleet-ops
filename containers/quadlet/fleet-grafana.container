@@ -42,7 +42,6 @@ Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/
 Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
 Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
 Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/dashboards:/etc/grafana/dashboards:ro
-Volume=%h/.config/fleet-worker/nishfleet-worker.private-key.pem:/run/secrets/github-app.pem:ro
 Volume=%h/.config/fleet-ops/grafana-admin-password:/run/secrets/grafana-admin-password:ro
 # One-hour GitHub App token for the alert webhooks (fleet-ops#9445), rewritten
 # every 20 min by fleet-grafana-github-token.service. A directory, not a file:
@@ -77,7 +76,7 @@ Environment=GF_ANALYTICS_REPORTING_ENABLED=false
 Environment=GF_ANALYTICS_CHECK_FOR_UPDATES=false
 Environment=GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
 Environment=GF_NEWS_NEWS_FEED_ENABLED=false
-Environment=GF_PLUGINS_PREINSTALL_SYNC=grafana-github-datasource@2.9.2,yesoreyeram-infinity-datasource@4.1.1
+Environment=GF_PLUGINS_PREINSTALL_SYNC=yesoreyeram-infinity-datasource@4.1.1
 Environment=GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/fleet.json
 # Grafana cancels a datasource fetch at its evaluation timeout, and the 30s default is too
 # short for the alert rules that read GitHub: GitHub caps a workflow-run list at 1,000 rows, so
