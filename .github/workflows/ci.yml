@@ -133,11 +133,13 @@ jobs:
         # stub). rc alone does not cover it (fleet-ops#9436): systemd 255 logs an unknown
         # key or unparseable value as a warning and still exits 0 on ubuntu-24.04, so the
         # step fails on any output line from any unit (fleet-ops#10286). A [Install]
-        # target naming no target prints nothing, so it stays unseen.
+        # target naming no target prints nothing, so it stays unseen. Lines about the runner
+        # image's own units under /usr/lib/systemd are printed but do not fail the step: no
+        # repo change can fix them (fleet-ops#10935: the image's CPUAccounting= warnings).
         if: always()
         run: |
           shopt -s nullglob; set -o pipefail
-          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/*.service rootfs/etc/systemd/system/*.timer rootfs/etc/systemd/system/*.path 2>&1 | awk 'BEGIN { bad = 0 } { bad = 1; print } END { exit bad }'
+          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/*.service rootfs/etc/systemd/system/*.timer rootfs/etc/systemd/system/*.path 2>&1 | awk 'BEGIN { bad = 0 } /^\/usr\/lib\/systemd\// { print "runner image, not counted: " $0; next } { bad = 1; print } END { exit bad }'
       - name: GitHub App token units mint and refresh (fleet-ops#9445, #9738)
         # Runs the unit's real ExecStart under systemd (system scope here, user
         # scope on the host: same parser) against tests/github_app_stub.py, which
