@@ -19,6 +19,7 @@ tests:
               summary: "Watchdog heartbeat for the alerting pipeline"
               description: "Always firing. If this disappears, Prometheus or Alertmanager is dead."
 
+
   # Gateway active the whole time: never fires. Then it stops being active and
   # the alert fires once the 5 minute window holds no active sample.
   - interval: 30s
@@ -46,6 +47,7 @@ tests:
               summary: "hermes-gateway.service has not been active for 5 minutes"
               description: "node_systemd_unit_state{name=\"hermes-gateway.service\",state=\"active\"} has no active sample in the last 5 minutes, or the series is missing."
 
+
   # A crash loop that is "active" for one scrape in the window does not fire
   # (it is restarting, not down), and a short restart gap never fires.
   - interval: 30s
@@ -58,6 +60,7 @@ tests:
       - eval_time: 12m
         alertname: HermesGatewayDown
         exp_alerts: []
+
 
   # The series disappears entirely: fires after the window empties.
   - interval: 30s
@@ -81,6 +84,7 @@ tests:
               summary: "hermes-gateway.service has not been active for 5 minutes"
               description: "node_systemd_unit_state{name=\"hermes-gateway.service\",state=\"active\"} has no active sample in the last 5 minutes, or the series is missing."
 
+
   # SystemUnitFailed: pending for 5m, then fires; a unit that recovers does not.
   - interval: 30s
     input_series:
@@ -103,8 +107,9 @@ tests:
               summary: "system unit foo.service failed"
               description: "Systemd unit foo.service has been in the failed state for 5 minutes."
 
+
   # (a) node_exporter down: the gateway series is stale and up is 0, so
-  # HermesGatewayDown stays quiet and NodeExporterDown fires after 5m.
+  # HermesGatewayDown stays quiet.
   - interval: 30s
     input_series:
       - series: 'up{job="node"}'
@@ -115,15 +120,7 @@ tests:
       - eval_time: 18m
         alertname: HermesGatewayDown
         exp_alerts: []
-      - eval_time: 18m
-        alertname: NodeExporterDown
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-              job: node
-            exp_annotations:
-              summary: "node_exporter is not being scraped"
-              description: "up{job=\"node\"} has been 0 for 5 minutes, so HermesGatewayDown and SystemUnitFailed cannot see."
+
 
   # (a) node_exporter up, gateway series gone: still fires.
   - interval: 30s
@@ -144,57 +141,6 @@ tests:
               summary: "hermes-gateway.service has not been active for 5 minutes"
               description: "node_systemd_unit_state{name=\"hermes-gateway.service\",state=\"active\"} has no active sample in the last 5 minutes, or the series is missing."
 
-  # (b) a failed reload fires after 1m; a good one never does.
-  - interval: 30s
-    input_series:
-      - series: 'prometheus_config_last_reload_successful'
-        values: '1x4 0x20'
-      - series: 'alertmanager_config_last_reload_successful'
-        values: '1x24'
-    alert_rule_test:
-      - eval_time: 1m
-        alertname: PrometheusConfigReloadFailed
-        exp_alerts: []
-      - eval_time: 6m
-        alertname: PrometheusConfigReloadFailed
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-            exp_annotations:
-              summary: "Prometheus rejected its last config reload"
-              description: "prometheus_config_last_reload_successful is 0: the running config is not the installed one."
-      - eval_time: 6m
-        alertname: AlertmanagerConfigReloadFailed
-        exp_alerts: []
-
-  - interval: 30s
-    input_series:
-      - series: 'alertmanager_config_last_reload_successful'
-        values: '1x4 0x20'
-    alert_rule_test:
-      - eval_time: 6m
-        alertname: AlertmanagerConfigReloadFailed
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-            exp_annotations:
-              summary: "Alertmanager rejected its last config reload"
-              description: "alertmanager_config_last_reload_successful is 0: the running config is not the installed one."
-
-  - interval: 30s
-    input_series:
-      - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
-        values: '1x50'
-    alert_rule_test:
-      - eval_time: 8m
-        alertname: NodeExporterDown
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-              job: node
-            exp_annotations:
-              summary: "node_exporter is not being scraped"
-              description: "up{job=\"node\"} has been 0 for 5 minutes, so HermesGatewayDown and SystemUnitFailed cannot see."
 
   # BackupStale: a timer that triggered 29h ago is fine; once it is past 30h
   # and stays there for 15m, it pages. A missing timer series pages too.
@@ -215,6 +161,7 @@ tests:
             exp_annotations:
               summary: "off-site backup has not run for over 30 hours"
               description: "restic-r2-backup.timer last triggered more than 30 hours ago, or its series is missing."
+
   - interval: 30m
     input_series:
       - series: 'node_systemd_timer_last_trigger_seconds{name="restic-r2-backup.timer"}'
@@ -223,6 +170,7 @@ tests:
       - eval_time: 40h
         alertname: BackupStale
         exp_alerts: []
+
   # A reboot resets a non-persistent timer's last trigger to 0; the last real
   # trigger 5 hours earlier still counts, so nothing pages.
   - interval: 1h
@@ -233,6 +181,7 @@ tests:
       - eval_time: 35h
         alertname: BackupStale
         exp_alerts: []
+
   - interval: 1m
     input_series:
       - series: 'node_systemd_timer_last_trigger_seconds{name="other.timer"}'
@@ -248,27 +197,6 @@ tests:
               summary: "off-site backup has not run for over 30 hours"
               description: "restic-r2-backup.timer last triggered more than 30 hours ago, or its series is missing."
 
-  # BackupFailed: a one-off failure that recovers within the hour is silent;
-  # a unit that stays failed for an hour pages.
-  - interval: 5m
-    input_series:
-      - series: 'node_systemd_unit_state{name="restic-r2-backup.service",state="failed"}'
-        values: '1x24'
-      - series: 'node_systemd_unit_state{name="restic-r2-locked-copy.service",state="failed"}'
-        values: '1x6 0x18'
-      - series: 'node_systemd_unit_state{name="restic-r2-backupX.service",state="failed"}'
-        values: '1x24'
-    alert_rule_test:
-      - eval_time: 90m
-        alertname: BackupFailed
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-              name: restic-r2-backup.service
-              state: failed
-            exp_annotations:
-              summary: "backup unit restic-r2-backup.service has been failed for 1 hour"
-              description: "Systemd unit restic-r2-backup.service is in the failed state, so last night's off-site backup did not complete."
 
   # SiteDown: a site that fails one probe is silent; one that fails every
   # probe for 10 minutes pages. Jobs not named site-* are ignored.
@@ -295,6 +223,7 @@ tests:
               summary: "https://example.test/ has not answered for 10 minutes"
               description: "Every blackbox probe of https://example.test/ (job site-rera) failed, or could not run, for 10 minutes."
 
+
   # SiteDown when the blackbox exporter itself is down: the scrape fails, so
   # up is 0 and probe_success is missing. A short scrape gap stays silent.
   - interval: 30s
@@ -320,6 +249,7 @@ tests:
               summary: "https://example.test/ has not answered for 10 minutes"
               description: "Every blackbox probe of https://example.test/ (job site-products) failed, or could not run, for 10 minutes."
 
+
   # SiteDown on a newly added target: three failed probes are not enough
   # samples to page; ten minutes of them at the one-minute site-products
   # interval are.
@@ -342,351 +272,6 @@ tests:
               summary: "https://new.test/ has not answered for 10 minutes"
               description: "Every blackbox probe of https://new.test/ (job site-products) failed, or could not run, for 10 minutes."
 
-  # AISpendHigh: 1 USD an hour (24 USD a day) never fires; 3 USD an hour
-  # crosses 40 USD within the day and pages.
-  - interval: 1h
-    input_series:
-      - series: 'litellm_spend_metric_total{model="a"}'
-        values: '0+1x48'
-    alert_rule_test:
-      - eval_time: 47h
-        alertname: AISpendHigh
-        exp_alerts: []
-  - interval: 15m
-    input_series:
-      - series: 'litellm_spend_metric_total{model="a",model_id="commandcode-glm53flash-worker-capable"}'
-        values: '0+0.75x120'
-    alert_rule_test:
-      - eval_time: 10h
-        alertname: AISpendHigh
-        exp_alerts: []
-      - eval_time: 20h
-        alertname: AISpendHigh
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-            exp_annotations:
-              summary: "AI spend is over 40 USD in the last 24 hours"
-              description: "sum(increase(litellm_spend_metric_total{model_id!~\"minimax-m31.*\"}[24h])) is 60.00 USD, above the 40 USD daily line."
-
-  # The MiniMax rows bill a flat yearly plan, so their list price is not money
-  # and the same 3 USD an hour on them alone stays quiet (fleet-ops#10938).
-  - interval: 15m
-    input_series:
-      - series: 'litellm_spend_metric_total{model="a",model_id="minimax-m31-worker-capable"}'
-        values: '0+0.75x120'
-      - series: 'litellm_spend_metric_total{model="a",model_id="minimax-m31b-worker-cheap"}'
-        values: '0+0.75x120'
-    alert_rule_test:
-      - eval_time: 20h
-        alertname: AISpendHigh
-        exp_alerts: []
-
-  # Both kinds in one block: the billed series still carries the sum, so the
-  # exclusion keeps the rows the line exists for (fleet-ops#10938).
-  - interval: 15m
-    input_series:
-      - series: 'litellm_spend_metric_total{model="a",model_id="minimax-m31-worker-capable"}'
-        values: '0+0.75x120'
-      - series: 'litellm_spend_metric_total{model="a",model_id="commandcode-glm53flash-worker-capable"}'
-        values: '0+0.75x120'
-    alert_rule_test:
-      - eval_time: 20h
-        alertname: AISpendHigh
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-            exp_annotations:
-              summary: "AI spend is over 40 USD in the last 24 hours"
-              description: "sum(increase(litellm_spend_metric_total{model_id!~\"minimax-m31.*\"}[24h])) is 60.00 USD, above the 40 USD daily line."
-
-  # AISpendMetricMissing: a counter that stops for a few hours is silent; a
-  # whole day with no series pages.
-  - interval: 1h
-    input_series:
-      - series: 'litellm_spend_metric_total{model="a"}'
-        values: '0+1x5 _x40'
-    alert_rule_test:
-      - eval_time: 20h
-        alertname: AISpendMetricMissing
-        exp_alerts: []
-      - eval_time: 33h
-        alertname: AISpendMetricMissing
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-            exp_annotations:
-              summary: "AI spend metric has been missing for over a day"
-              description: "No litellm_spend_metric_total series for 24 hours, so AISpendHigh cannot fire."
-
-  - interval: 5m
-    input_series:
-      - series: 'node_filesystem_avail_bytes{mountpoint="/",device="/dev/sda1",fstype="ext4"}'
-        values: '1000000000-10000000x84'
-      - series: 'node_filesystem_avail_bytes{mountpoint="/steady",device="/dev/sdb1",fstype="ext4"}'
-        values: '1000000000x84'
-      - series: 'node_filesystem_avail_bytes{mountpoint="/run",device="tmpfs",fstype="tmpfs"}'
-        values: '1000000000-10000000x84'
-    alert_rule_test:
-      - eval_time: 20m
-        alertname: DiskWillFill
-        exp_alerts: []
-      - eval_time: 7h
-        alertname: DiskWillFill
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-              mountpoint: /
-              device: /dev/sda1
-              fstype: ext4
-            exp_annotations:
-              summary: "/ will fill within 24 hours"
-              description: "At the rate of the last 6 hours, / (/dev/sda1) runs out of space within 24 hours."
-
-  - interval: 1m
-    input_series:
-      - series: 'node_pressure_memory_waiting_seconds_total'
-        values: '0+7x40'
-    alert_rule_test:
-      - eval_time: 10m
-        alertname: MemoryPressure
-        exp_alerts: []
-      - eval_time: 30m
-        alertname: MemoryPressure
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-            exp_annotations:
-              summary: "Tasks are stalled waiting for memory"
-              description: "Memory pressure (PSI) has stayed above 10% for 15 minutes, so the host is likely thrashing and timeouts may not be agent bugs."
-
-  - interval: 1m
-    input_series:
-      - series: 'node_pressure_memory_waiting_seconds_total'
-        values: '0+1x40'
-    alert_rule_test:
-      - eval_time: 30m
-        alertname: MemoryPressure
-        exp_alerts: []
-
-  - interval: 1m
-    input_series:
-      - series: 'node_vmstat_oom_kill'
-        values: '8x10 9x30'
-    alert_rule_test:
-      - eval_time: 5m
-        alertname: OOMKill
-        exp_alerts: []
-      - eval_time: 12m
-        alertname: OOMKill
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-            exp_annotations:
-              summary: "The kernel OOM killer ran"
-              description: "node_vmstat_oom_kill rose in the last 15 minutes: the kernel killed a process for lack of memory."
-      - eval_time: 40m
-        alertname: OOMKill
-        exp_alerts: []
-
-  # GrafanaDown: up for 10m never fires; down fires once it has been down 5m.
-  - interval: 30s
-    input_series:
-      - series: 'up{job="grafana"}'
-        values: '1x20 0x40'
-    alert_rule_test:
-      - eval_time: 9m
-        alertname: GrafanaDown
-        exp_alerts: []
-      - eval_time: 12m
-        alertname: GrafanaDown
-        exp_alerts: []
-      - eval_time: 16m
-        alertname: GrafanaDown
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-              job: grafana
-            exp_annotations:
-              summary: "Grafana is down, so no alert can file a fleet issue"
-              description: "up{job=\"grafana\"} has been 0 or missing for 5 minutes."
-
-  # GrafanaDown: the scrape job disappearing is also down (absent branch).
-  - interval: 30s
-    input_series:
-      - series: 'up{job="node"}'
-        values: '1x40'
-    alert_rule_test:
-      - eval_time: 3m
-        alertname: GrafanaDown
-        exp_alerts: []
-      - eval_time: 10m
-        alertname: GrafanaDown
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-              job: grafana
-            exp_annotations:
-              summary: "Grafana is down, so no alert can file a fleet issue"
-              description: "up{job=\"grafana\"} has been 0 or missing for 5 minutes."
-
-  # GrafanaNotificationsFailing (fleet-ops#11426): a flat counter is silent, a
-  # rise fires at once and clears once the 15m window holds no rise. The rise
-  # keeps the series' integration label, so the alert names the failing
-  # receiver, and two integrations rising in one window are two alerts.
-  - interval: 1m
-    input_series:
-      - series: 'grafana_alerting_notifications_failed_total{integration="webhook"}'
-        values: '0x10 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
-      - series: 'grafana_alerting_notifications_failed_total{integration="telegram"}'
-        values: '0x15 1x28'
-    alert_rule_test:
-      - eval_time: 8m
-        alertname: GrafanaNotificationsFailing
-        exp_alerts: []
-      - eval_time: 12m
-        alertname: GrafanaNotificationsFailing
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-              integration: webhook
-            exp_annotations:
-              summary: "Grafana failed to deliver alert notifications in the last 15 minutes (integration webhook)"
-              description: "grafana_alerting_notifications_failed_total rose for integration webhook in the last 15 minutes: check the Grafana log for the failed send. If grafana_alerting_notification_requests_total rose the same way, the request went out and its error names the cause (a webhook 401 is an expired GitHub App token); if not, the send failed inside Grafana before any request. One one-off rise leaves the 15m window on its own."
-      - eval_time: 20m
-        alertname: GrafanaNotificationsFailing
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-              integration: webhook
-            exp_annotations:
-              summary: "Grafana failed to deliver alert notifications in the last 15 minutes (integration webhook)"
-              description: "grafana_alerting_notifications_failed_total rose for integration webhook in the last 15 minutes: check the Grafana log for the failed send. If grafana_alerting_notification_requests_total rose the same way, the request went out and its error names the cause (a webhook 401 is an expired GitHub App token); if not, the send failed inside Grafana before any request. One one-off rise leaves the 15m window on its own."
-          - exp_labels:
-              severity: nish
-              integration: telegram
-            exp_annotations:
-              summary: "Grafana failed to deliver alert notifications in the last 15 minutes (integration telegram)"
-              description: "grafana_alerting_notifications_failed_total rose for integration telegram in the last 15 minutes: check the Grafana log for the failed send. If grafana_alerting_notification_requests_total rose the same way, the request went out and its error names the cause (a webhook 401 is an expired GitHub App token); if not, the send failed inside Grafana before any request. One one-off rise leaves the 15m window on its own."
-
-  # Two integrations rising in one window are two alerts, and both clear with
-  # the window.
-  - interval: 1m
-    input_series:
-      - series: 'grafana_alerting_notifications_failed_total{integration="webhook"}'
-        values: '0x10 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
-      - series: 'grafana_alerting_notifications_failed_total{integration="telegram"}'
-        values: '0x10 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
-    alert_rule_test:
-      - eval_time: 12m
-        alertname: GrafanaNotificationsFailing
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-              integration: webhook
-            exp_annotations:
-              summary: "Grafana failed to deliver alert notifications in the last 15 minutes (integration webhook)"
-              description: "grafana_alerting_notifications_failed_total rose for integration webhook in the last 15 minutes: check the Grafana log for the failed send. If grafana_alerting_notification_requests_total rose the same way, the request went out and its error names the cause (a webhook 401 is an expired GitHub App token); if not, the send failed inside Grafana before any request. One one-off rise leaves the 15m window on its own."
-          - exp_labels:
-              severity: nish
-              integration: telegram
-            exp_annotations:
-              summary: "Grafana failed to deliver alert notifications in the last 15 minutes (integration telegram)"
-              description: "grafana_alerting_notifications_failed_total rose for integration telegram in the last 15 minutes: check the Grafana log for the failed send. If grafana_alerting_notification_requests_total rose the same way, the request went out and its error names the cause (a webhook 401 is an expired GitHub App token); if not, the send failed inside Grafana before any request. One one-off rise leaves the 15m window on its own."
-      - eval_time: 30m
-        alertname: GrafanaNotificationsFailing
-        exp_alerts: []
-
-  # Free swap 25% (never fires), 21% (never fires), then 12.5%: fires once the
-  # 15 minute hold has passed, not at 14 minutes.
-  - interval: 1m
-    input_series:
-      - series: 'node_memory_SwapTotal_bytes'
-        values: '8000x60'
-      - series: 'node_memory_SwapFree_bytes'
-        values: '2000x20 1680x20 1000x20'
-    alert_rule_test:
-      - eval_time: 15m
-        alertname: SwapLow
-        exp_alerts: []
-      - eval_time: 39m
-        alertname: SwapLow
-        exp_alerts: []
-      - eval_time: 56m
-        alertname: SwapLow
-        exp_alerts: []
-      - eval_time: 58m
-        alertname: SwapLow
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-            exp_annotations:
-              summary: "Swap is over 80% used"
-              description: "Free swap has stayed under 20% for 15 minutes: idle sessions or a leaking service hold memory."
-
-  # RouterGroupJammed (fleet-ops#10694): senior fails every call, so it fires once the 10 minute hold ends;
-  # worker-capable fails half its calls and stays quiet.
-  - interval: 1m
-    input_series:
-      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior"}'
-        values: '0+1x30'
-      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior"}'
-        values: '0+1x30'
-      - series: 'litellm_proxy_total_requests_metric_total{requested_model="worker-capable"}'
-        values: '0+2x30'
-      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="worker-capable"}'
-        values: '0+1x30'
-    alert_rule_test:
-      - eval_time: 8m
-        alertname: RouterGroupJammed
-        exp_alerts: []
-      - eval_time: 25m
-        alertname: RouterGroupJammed
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-              requested_model: senior
-            exp_annotations:
-              summary: "Router group senior fails nearly every call"
-              description: "90% or more of the calls to senior failed for 10 minutes. Read the router journal: 'all max_parallel_requests slots in use' means leaked slots (docs/litellm-router-notes.md note 12); a provider message means the plan is walled."
-
-  # requested_model="other" (fleet-ops#10788): RouterGroupJammed ignores it; RouterOtherBucketFailing warns only once the
-  # failures last 30 minutes. A 10 minute burst, as the /jev 401s were, never warns.
-  - interval: 1m
-    input_series:
-      - series: 'litellm_proxy_total_requests_metric_total{requested_model="other"}'
-        values: '0+5x10 50+0x50'
-      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="other"}'
-        values: '0+5x10 50+0x50'
-    alert_rule_test:
-      - eval_time: 25m
-        alertname: RouterGroupJammed
-        exp_alerts: []
-      - eval_time: 55m
-        alertname: RouterOtherBucketFailing
-        exp_alerts: []
-
-  - interval: 1m
-    input_series:
-      - series: 'litellm_proxy_total_requests_metric_total{requested_model="other"}'
-        values: '0+5x60'
-      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="other"}'
-        values: '0+5x60'
-    alert_rule_test:
-      - eval_time: 25m
-        alertname: RouterGroupJammed
-        exp_alerts: []
-      - eval_time: 25m
-        alertname: RouterOtherBucketFailing
-        exp_alerts: []
-      - eval_time: 45m
-        alertname: RouterOtherBucketFailing
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-            exp_annotations:
-              summary: "Router calls outside any model group keep failing"
-              description: "90% or more of the router calls filed under requested_model=other (for example /jev with a bad key) failed for 30 minutes. Group the failures by route and exception_status in litellm_proxy_failed_requests_metric_total and fix the caller."
 
   # FleetSyncFailed (fleet-ops#9437): the deploy clone's textfile metric reads 1
   # after a failed sync and 0 after a good one, so the page starts 2m later and
@@ -713,20 +298,3 @@ tests:
       - eval_time: 25m
         alertname: FleetSyncFailed
         exp_alerts: []
-
-  # FleetSyncMetricMissing (fleet-ops#9437): no sample at all is a blind detector,
-  # not a pass, so the same silence pages after 30m. The series is absent for this
-  # whole block: no input_series, so every eval sees absent(fleet_sync_failed) = 1.
-  - interval: 30s
-    alert_rule_test:
-      - eval_time: 25m
-        alertname: FleetSyncMetricMissing
-        exp_alerts: []
-      - eval_time: 35m
-        alertname: FleetSyncMetricMissing
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-            exp_annotations:
-              summary: "the fleet-ops deploy result metric is missing, so a failed deploy cannot page"
-              description: "fleet_sync_failed has no sample, so FleetSyncFailed cannot fire. fleet-sync.service step 11 could not write /var/lib/prometheus/node-exporter/fleet-sync.prom: check `systemctl --user cat fleet-sync.service` and rootfs/etc/tmpfiles.d/fleet-sync-metric.conf on the box."

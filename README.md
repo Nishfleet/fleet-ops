@@ -4,6 +4,8 @@ The fleet's operational surface under version control: systemd user units,
 shell scripts, and Pi prompts that run on Nish's VPS. CI-gated so no unit,
 script, or prompt lands unseen.
 
+How the fleet runs, in one page: [docs/README.md](docs/README.md).
+
 One doc per topic under `docs/`. Each topic below was a README section; add new
 operational prose to the topic's own file, not here.
 

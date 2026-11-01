@@ -17,9 +17,8 @@
     mode: preserve
 
 # Claude Code merges /etc/claude-code/managed-settings.d/*.json into its
-# managed settings: here, the agents' auto-mode rules, the hook that
-# bounces routine asks to Nish, the Beacon telemetry env and the enabled
-# plugins (README, "Agent autonomy drop-in", "Beacon OTLP drop-in" and
+# managed settings: here, the agents' auto-mode rules, the Beacon
+# telemetry env and the enabled plugins (README, "Agent autonomy drop-in", "Beacon OTLP drop-in" and
 # "Claude plugin drop-ins"). The box-wide file those merge into,
 # managed-settings.json, has its own task below (README, "Managed-settings
 # defaults"). A drop-in

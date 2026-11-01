@@ -3,16 +3,13 @@
 `rootfs/etc/claude-code/managed-settings.d/50-agent-autonomy.json` is a Claude
 Code managed-settings drop-in; Claude Code merges every
 `/etc/claude-code/managed-settings.d/*.json` into the managed settings. It does
-four things:
+three things:
 
 - Tells the auto-mode safety checker which orgs and repos are ours.
 - Allows auto-merge (`gh pr merge --auto`) of an agent's own green PR in the
   repos whose rulesets require checks. Not `--admin`, not approving, not any
   other repo.
 - Allows cleanup of an agent's own comments and its own systemd units.
-- Adds a prompt hook on agent messages to Nish that bounces asks about routine,
-  reversible steps, so the agent does the step and reports the result. Reserved
-  matters (money, secrets, irreversible steps, safety gates) still go through.
 
 Every `autoMode` array keeps `"$defaults"`, so these rules add to the built-in
 ones and never replace them. `ansible/host.yml` installs the drop-in with a

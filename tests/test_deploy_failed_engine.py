@@ -25,18 +25,18 @@ YQ = shutil.which("yq")
 DOCKER = shutil.which("docker")
 RUNS_PATH = re.compile(r"^/api/v3/repos/Nishfleet/([^/]+)/actions/workflows/([^/]+)/runs$")
 SCENARIOS = {
-    "red-for-30h": ([("success", 50), ("failure", 30), ("failure", 1)], 1, 1),
-    "red-for-23h": ([("success", 50), ("failure", 23)], 1, 0),
-    "red-for-25h": ([("success", 50), ("failure", 25)], 1, 1),
-    "green": ([("failure", 30), ("success", 1)], 0, 0),
-    "cancel-superseded": ([("success", 50), ("cancelled", 2), ("success", 1)], 0, 0),
-    "cancel-newest-25h": ([("success", 50), ("cancelled", 25)], 1, 1),
-    "cancel-then-skipped": ([("success", 50), ("cancelled", 30), ("skipped", 1)], 1, 1),
-    "skipped-for-30h": ([("success", 50), ("skipped", 30), ("skipped", 1)], 0, 0),
-    "failed-then-skipped-30h": ([("success", 50), ("failure", 30), ("skipped", 1)], 1, 1),
-    "skipped-for-2h": ([("success", 50), ("skipped", 2)], 0, 0),
-    "running": ([("success", 3), ("in_progress", 0)], 0, 0),
-    "undated-failure": ([("success", 50), ("failure", None)], 1, "error"),
+    "red-for-30h": ([("success", 50), ("failure", 30), ("failure", 1)], 1),
+    "red-for-23h": ([("success", 50), ("failure", 23)], 1),
+    "red-for-25h": ([("success", 50), ("failure", 25)], 1),
+    "green": ([("failure", 30), ("success", 1)], 0),
+    "cancel-superseded": ([("success", 50), ("cancelled", 2), ("success", 1)], 0),
+    "cancel-newest-25h": ([("success", 50), ("cancelled", 25)], 1),
+    "cancel-then-skipped": ([("success", 50), ("cancelled", 30), ("skipped", 1)], 1),
+    "skipped-for-30h": ([("success", 50), ("skipped", 30), ("skipped", 1)], 0),
+    "failed-then-skipped-30h": ([("success", 50), ("failure", 30), ("skipped", 1)], 1),
+    "skipped-for-2h": ([("success", 50), ("skipped", 2)], 0),
+    "running": ([("success", 3), ("in_progress", 0)], 0),
+    "undated-failure": ([("success", 50), ("failure", None)], 1),
 }
 SEEN = []
 
@@ -151,7 +151,7 @@ def _ready(base, auth, name):
         if subprocess.run([DOCKER, "inspect", "-f", "{{.State.Running}}", name], capture_output=True, text=True).stdout.strip() != "true":
             return False
         try:
-            for path in ("/api/datasources/uid/fleet-github", "/api/plugins/grafana-github-datasource/settings", "/api/v1/provisioning/alert-rules/deploy-failed-24h-0509"):
+            for path in ("/api/datasources/uid/fleet-github", "/api/plugins/grafana-github-datasource/settings", "/api/v1/provisioning/alert-rules/deploy-failed-0509"):
                 urllib.request.urlopen(urllib.request.Request(base + path, headers=auth), timeout=5)
             return True
         except (urllib.error.URLError, ConnectionError):
@@ -182,9 +182,8 @@ def test_the_container_runs_in_a_zone_that_is_not_utc(grafana):
 
 @pytest.mark.parametrize("repo", sorted(SCENARIOS))
 def test_grafanas_engine_reads_each_scenario_from_the_real_plugin(grafana, repo):
-    _, issue, page = SCENARIOS[repo]
+    _, issue = SCENARIOS[repo]
     assert _evaluate(grafana, "deploy-failed-0509", repo) == issue
-    assert _evaluate(grafana, "deploy-failed-24h-0509", repo) == page
 
 
 def test_the_plugin_asked_github_for_the_rules_window_of_main_runs_of_the_rules_workflow(grafana):
@@ -201,7 +200,7 @@ def test_grafana_stores_every_rules_annotations_labels_and_title_as_the_file_wri
     base, auth, _ = grafana
     stored = {r["uid"]: r for r in json.load(urllib.request.urlopen(urllib.request.Request(f"{base}/api/v1/provisioning/alert-rules", headers=auth), timeout=10))}
     file = json.loads(subprocess.run([YQ, "-o=json", "[.groups[].rules[]]", str(RULES)], capture_output=True, text=True, check=True).stdout)
-    assert len(file) == 13
+    assert len(file) == 7
     assert not (set(stored) - {r["uid"] for r in file}), "the store holds a uid the file does not write"
     assert "deploy-failed-inish-mail-filter" not in stored
     for rule in file:

@@ -1,7 +1,7 @@
 {
   "uid": "fleet",
   "title": "Fleet",
-  "description": "Box health, runners, AI spend and the agent queue on one screen.",
+  "description": "Symptoms only. Server detail: the Node Exporter Full dashboard. Work: GitHub issue and PR lists.",
   "tags": [
     "fleet"
   ],
@@ -22,6 +22,12 @@
   },
   "links": [
     {
+      "title": "Server: Node Exporter Full",
+      "type": "link",
+      "url": "/d/rYdddlPWk",
+      "targetBlank": false
+    },
+    {
       "title": "Issues on GitHub",
       "type": "link",
       "url": "https://github.com/issues?q=is%3Aopen+org%3ANishfleet+label%3Aneeds-nish-decision",
@@ -37,1513 +43,15 @@
   "panels": [
     {
       "type": "row",
-      "id": 74,
-      "title": "Product pull requests merged, last 7 days",
-      "gridPos": {
-        "x": 0,
-        "y": 0,
-        "w": 24,
-        "h": 1
-      },
+      "title": "Broken services",
+      "id": 900,
       "collapsed": false,
-      "panels": []
-    },
-    {
-      "type": "table",
-      "id": 75,
-      "title": "Merged per repo, last 7 days",
-      "description": "Product pull requests merged in the last 7 days, one row per product repo. This is the fleet number.",
+      "panels": [],
       "gridPos": {
-        "x": 0,
-        "y": 1,
+        "h": 1,
         "w": 24,
-        "h": 6
-      },
-      "timeFrom": "7d",
-      "hideTimeOverride": true,
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Mixed --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
-          },
-          "queryType": "Pull_Requests",
-          "owner": "Nishfleet",
-          "repository": "",
-          "options": {
-            "query": "is:merged repo:Nishfleet/0509 repo:Nishfleet/aiconverter-app repo:Nishfleet/rera-report-card repo:Nishfleet/seo-fix-kit repo:Nishfleet/siterep-public repo:Nishfleet/TinyStudio.io-public",
-            "timeField": 2
-          }
-        }
-      ],
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "groupBy",
-          "options": {
-            "fields": {
-              "repo": {
-                "aggregations": [],
-                "operation": "groupby"
-              },
-              "number": {
-                "aggregations": [
-                  "count"
-                ],
-                "operation": "aggregate"
-              }
-            }
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "renameByName": {
-              "repo": "Product repo",
-              "number (count)": "Merged"
-            }
-          }
-        }
-      ],
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "sortBy": [
-          {
-            "displayName": "Merged",
-            "desc": true
-          }
-        ]
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto"
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "type": "row",
-      "title": "Waiting on you",
-      "collapsed": false,
-      "gridPos": {
         "x": 0,
-        "y": 7,
-        "w": 24,
-        "h": 1
-      },
-      "id": 1,
-      "panels": []
-    },
-    {
-      "type": "stat",
-      "id": 2,
-      "title": "Decisions",
-      "description": "Open issues labelled needs-nish-decision.",
-      "gridPos": {
-        "x": 0,
-        "y": 8,
-        "w": 5,
-        "h": 8
-      },
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Dashboard --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "datasource",
-            "uid": "-- Dashboard --"
-          },
-          "panelId": 3
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "count"
-          ],
-          "fields": "/^number$/",
-          "values": false
-        },
-        "colorMode": "background",
-        "graphMode": "none",
-        "textMode": "value",
-        "justifyMode": "center"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "noValue": "0",
-          "unit": "none",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "type": "table",
-      "id": 3,
-      "title": "Decisions waiting on you",
-      "gridPos": {
-        "x": 5,
-        "y": 8,
-        "w": 19,
-        "h": 8
-      },
-      "timeFrom": "5y",
-      "hideTimeOverride": true,
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Mixed --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
-          },
-          "queryType": "Issues",
-          "owner": "Nishfleet",
-          "repository": "",
-          "options": {
-            "query": "is:open label:needs-nish-decision",
-            "timeField": 0
-          }
-        }
-      ],
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "calculateField",
-          "options": {
-            "mode": "reduceRow",
-            "reduce": {
-              "include": [
-                "number"
-              ],
-              "reducer": "lastNotNull"
-            },
-            "replaceFields": false,
-            "alias": "Open"
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "includeByName": {
-              "repo": true,
-              "number": true,
-              "title": true,
-              "created_at": true,
-              "Open": true
-            },
-            "indexByName": {
-              "title": 0,
-              "repo": 1,
-              "number": 2,
-              "created_at": 3,
-              "Open": 4
-            },
-            "renameByName": {
-              "title": "Question",
-              "repo": "Project",
-              "number": "#",
-              "created_at": "Asked"
-            }
-          }
-        }
-      ],
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "sortBy": [
-          {
-            "displayName": "Asked",
-            "desc": true
-          }
-        ]
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto"
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "title"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open on GitHub",
-                    "url": "https://github.com/${__data.fields.repo}/issues/${__data.fields.number}",
-                    "targetBlank": true
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "number"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 80
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "created_at"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "dateTimeFromNow"
-              },
-              {
-                "id": "custom.width",
-                "value": 140
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Open"
-            },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "data-links"
-                }
-              },
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open",
-                    "url": "https://github.com/${__data.fields.repo}/issues/${__data.fields.number}",
-                    "targetBlank": true
-                  }
-                ]
-              },
-              {
-                "id": "custom.width",
-                "value": 80
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "type": "row",
-      "title": "Work",
-      "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 16,
-        "w": 24,
-        "h": 1
-      },
-      "id": 10,
-      "panels": []
-    },
-    {
-      "type": "text",
-      "id": 4,
-      "title": "",
-      "gridPos": {
-        "x": 0,
-        "y": 17,
-        "w": 24,
-        "h": 3
-      },
-      "options": {
-        "mode": "markdown",
-        "content": "Open a row to stop, redo or comment on GitHub.\nTo give an order in words, use the Fleet control chat in the Claude app.\nA click on Open opens that issue or run in a new tab."
-      }
-    },
-    {
-      "type": "stat",
-      "id": 11,
-      "title": "Waiting",
-      "description": "Open issues labelled agent-ready.",
-      "gridPos": {
-        "x": 0,
-        "y": 20,
-        "w": 3,
-        "h": 4
-      },
-      "timeFrom": "5y",
-      "hideTimeOverride": true,
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Mixed --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
-          },
-          "queryType": "Issues",
-          "owner": "Nishfleet",
-          "repository": "",
-          "options": {
-            "query": "is:open label:agent-ready",
-            "timeField": 0
-          }
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "count"
-          ],
-          "fields": "/^number$/",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "noValue": "0",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        }
-      ]
-    },
-    {
-      "type": "stat",
-      "id": 12,
-      "title": "Claimed",
-      "description": "Counts the Being worked on now table. A claim can outlive its run; \"Running now\" is the live count.",
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Dashboard --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "datasource",
-            "uid": "-- Dashboard --"
-          },
-          "panelId": 5,
-          "withTransforms": true
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "count"
-          ],
-          "fields": "/^number$/",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "noValue": "0",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "x": 3,
-        "y": 20,
-        "w": 3,
-        "h": 4
-      }
-    },
-    {
-      "type": "stat",
-      "id": 19,
-      "title": "Running now",
-      "description": "Agent jobs actually running right now (see the table below).",
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Dashboard --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "datasource",
-            "uid": "-- Dashboard --"
-          },
-          "panelId": 17,
-          "withTransforms": true
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "count"
-          ],
-          "fields": "/^Started$/",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "noValue": "0",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "blue",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "x": 6,
-        "y": 20,
-        "w": 4,
-        "h": 4
-      }
-    },
-    {
-      "type": "stat",
-      "id": 13,
-      "title": "Failed, retrying",
-      "description": "Open issues that failed once and were re-queued to the senior lane (strong-only + an \"agent run failed\" comment).",
-      "timeFrom": "5y",
-      "hideTimeOverride": true,
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Mixed --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
-          },
-          "queryType": "Issues",
-          "owner": "Nishfleet",
-          "repository": "",
-          "options": {
-            "query": "is:open label:strong-only \"agent run failed\" in:comments",
-            "timeField": 0
-          }
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "count"
-          ],
-          "fields": "/^number$/",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "noValue": "0",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "x": 10,
-        "y": 20,
-        "w": 4,
-        "h": 4
-      },
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        }
-      ]
-    },
-    {
-      "type": "stat",
-      "id": 14,
-      "title": "Stuck",
-      "description": "Open issues labelled agent-blocked or needs-orchestrator.",
-      "gridPos": {
-        "x": 14,
-        "y": 20,
-        "w": 3,
-        "h": 4
-      },
-      "timeFrom": "5y",
-      "hideTimeOverride": true,
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Mixed --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
-          },
-          "queryType": "Issues",
-          "owner": "Nishfleet",
-          "repository": "",
-          "options": {
-            "query": "is:open label:agent-blocked,needs-orchestrator",
-            "timeField": 0
-          }
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "count"
-          ],
-          "fields": "/^number$/",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "noValue": "0",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        }
-      ]
-    },
-    {
-      "type": "stat",
-      "id": 15,
-      "title": "To merge",
-      "description": "Open pull requests across Nishfleet and Drive.",
-      "gridPos": {
-        "x": 17,
-        "y": 20,
-        "w": 3,
-        "h": 4
-      },
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Mixed --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
-          },
-          "queryType": "Pull_Requests",
-          "owner": "Nishfleet",
-          "repository": "",
-          "options": {
-            "query": "is:open",
-            "timeField": 4
-          }
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "count"
-          ],
-          "fields": "/^number$/",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "noValue": "0",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        }
-      ]
-    },
-    {
-      "type": "stat",
-      "id": 16,
-      "title": "Shipped",
-      "description": "Pull requests merged across Nishfleet and Drive in the last 24 hours.",
-      "gridPos": {
-        "x": 20,
-        "y": 20,
-        "w": 4,
-        "h": 4
-      },
-      "timeFrom": "24h",
-      "hideTimeOverride": true,
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Mixed --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
-          },
-          "queryType": "Pull_Requests",
-          "owner": "Nishfleet",
-          "repository": "",
-          "options": {
-            "query": "is:merged",
-            "timeField": 2
-          }
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "count"
-          ],
-          "fields": "/^number$/",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "noValue": "0",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        }
-      ]
-    },
-    {
-      "type": "table",
-      "id": 5,
-      "title": "Being worked on now",
-      "description": "Open issues labelled agent-in-progress. Claimed counts this table.",
-      "gridPos": {
-        "x": 0,
-        "y": 24,
-        "w": 24,
-        "h": 8
-      },
-      "timeFrom": "5y",
-      "hideTimeOverride": true,
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Mixed --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
-          },
-          "queryType": "Issues",
-          "owner": "Nishfleet",
-          "repository": "",
-          "options": {
-            "query": "is:open label:agent-in-progress",
-            "timeField": 0
-          }
-        }
-      ],
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "calculateField",
-          "options": {
-            "mode": "reduceRow",
-            "reduce": {
-              "include": [
-                "number"
-              ],
-              "reducer": "lastNotNull"
-            },
-            "replaceFields": false,
-            "alias": "Open"
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "includeByName": {
-              "repo": true,
-              "title": true,
-              "updated_at": true,
-              "number": true,
-              "Open": true
-            },
-            "indexByName": {
-              "title": 0,
-              "repo": 1,
-              "updated_at": 2,
-              "Open": 3,
-              "number": 4
-            },
-            "renameByName": {
-              "updated_at": "minutes since last update"
-            }
-          }
-        }
-      ],
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "sortBy": [
-          {
-            "displayName": "minutes since last update",
-            "desc": true
-          }
-        ]
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto"
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "title"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open on GitHub",
-                    "url": "https://github.com/${__data.fields.repo}/issues/${__data.fields.number}",
-                    "targetBlank": true
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Open"
-            },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "data-links"
-                }
-              },
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open",
-                    "url": "https://github.com/${__data.fields.repo}/issues/${__data.fields.number}",
-                    "targetBlank": true
-                  }
-                ]
-              },
-              {
-                "id": "custom.width",
-                "value": 80
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "number"
-            },
-            "properties": [
-              {
-                "id": "custom.hidden",
-                "value": true
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "updated_at"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "dateTimeFromNow"
-              },
-              {
-                "id": "custom.width",
-                "value": 180
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "type": "table",
-      "id": 17,
-      "title": "Running now",
-      "description": "agent-dispatch runs started in the last 3 hours that have not finished (0509, fleet-ops, TinyStudio.io-public, drive). Click a row to open the run.",
-      "timeFrom": "3h",
-      "hideTimeOverride": true,
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Mixed --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
-          },
-          "queryType": "Workflow_Runs",
-          "owner": "Nishfleet",
-          "repository": "0509",
-          "options": {
-            "owner": "Nishfleet",
-            "repository": "0509",
-            "workflow": "agent-dispatch.yml",
-            "branch": ""
-          }
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
-          },
-          "queryType": "Workflow_Runs",
-          "owner": "Nishfleet",
-          "repository": "fleet-ops",
-          "options": {
-            "owner": "Nishfleet",
-            "repository": "fleet-ops",
-            "workflow": "agent-dispatch.yml",
-            "branch": ""
-          }
-        },
-        {
-          "refId": "C",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
-          },
-          "queryType": "Workflow_Runs",
-          "owner": "Nishfleet",
-          "repository": "TinyStudio.io-public",
-          "options": {
-            "owner": "Nishfleet",
-            "repository": "TinyStudio.io-public",
-            "workflow": "agent-dispatch.yml",
-            "branch": ""
-          }
-        },
-        {
-          "refId": "D",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
-          },
-          "queryType": "Workflow_Runs",
-          "owner": "Nishfleet",
-          "repository": "drive",
-          "options": {
-            "owner": "Nishfleet",
-            "repository": "drive",
-            "workflow": "agent-dispatch.yml",
-            "branch": ""
-          }
-        }
-      ],
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "filterByValue",
-          "options": {
-            "type": "exclude",
-            "match": "any",
-            "filters": [
-              {
-                "fieldName": "status",
-                "config": {
-                  "id": "equal",
-                  "options": {
-                    "value": "completed"
-                  }
-                }
-              }
-            ]
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "includeByName": {
-              "event": true,
-              "status": true,
-              "run_started_at": true,
-              "html_url": true
-            },
-            "indexByName": {
-              "event": 0,
-              "status": 1,
-              "run_started_at": 2,
-              "html_url": 3
-            },
-            "renameByName": {
-              "event": "Started by",
-              "status": "State",
-              "run_started_at": "Started"
-            }
-          }
-        }
-      ],
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "sortBy": [
-          {
-            "displayName": "Started",
-            "desc": true
-          }
-        ]
-      },
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "event"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open the run",
-                    "url": "${__data.fields.html_url}",
-                    "targetBlank": true
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "run_started_at"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "dateTimeFromNow"
-              },
-              {
-                "id": "custom.width",
-                "value": 130
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "status"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 110
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "html_url"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Open"
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "data-links"
-                }
-              },
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open",
-                    "url": "${__data.fields.html_url}",
-                    "targetBlank": true
-                  }
-                ]
-              },
-              {
-                "id": "custom.width",
-                "value": 80
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 32,
-        "w": 12,
-        "h": 8
-      }
-    },
-    {
-      "type": "table",
-      "id": 18,
-      "title": "Failed, retrying or stuck",
-      "gridPos": {
-        "x": 12,
-        "y": 32,
-        "w": 12,
-        "h": 8
-      },
-      "timeFrom": "5y",
-      "hideTimeOverride": true,
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Mixed --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github"
-          },
-          "queryType": "Issues",
-          "owner": "Nishfleet",
-          "repository": "",
-          "options": {
-            "query": "is:open label:agent-blocked,needs-orchestrator,strong-only",
-            "timeField": 0
-          }
-        }
-      ],
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "calculateField",
-          "options": {
-            "mode": "reduceRow",
-            "reduce": {
-              "include": [
-                "number"
-              ],
-              "reducer": "lastNotNull"
-            },
-            "replaceFields": false,
-            "alias": "Open"
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "includeByName": {
-              "repo": true,
-              "number": true,
-              "title": true,
-              "updated_at": true,
-              "Open": true
-            },
-            "indexByName": {
-              "title": 0,
-              "repo": 1,
-              "number": 2,
-              "updated_at": 3,
-              "Open": 4
-            },
-            "renameByName": {
-              "title": "Job",
-              "repo": "Project",
-              "number": "#",
-              "updated_at": "Last activity"
-            }
-          }
-        }
-      ],
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "sortBy": [
-          {
-            "displayName": "Last activity",
-            "desc": true
-          }
-        ]
-      },
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "title"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open on GitHub",
-                    "url": "https://github.com/${__data.fields.repo}/issues/${__data.fields.number}",
-                    "targetBlank": true
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "number"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 70
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "updated_at"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "dateTimeFromNow"
-              },
-              {
-                "id": "custom.width",
-                "value": 130
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Open"
-            },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "data-links"
-                }
-              },
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open",
-                    "url": "https://github.com/${__data.fields.repo}/issues/${__data.fields.number}",
-                    "targetBlank": true
-                  }
-                ]
-              },
-              {
-                "id": "custom.width",
-                "value": 80
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "type": "row",
-      "title": "Workers",
-      "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 40,
-        "w": 24,
-        "h": 1
-      },
-      "id": 20,
-      "panels": []
-    },
-    {
-      "type": "stat",
-      "id": 21,
-      "title": "Agent workers online (of 12)",
-      "gridPos": {
-        "x": 0,
-        "y": 41,
-        "w": 6,
-        "h": 5
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "fleet-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "count(node_systemd_unit_state{name=~\"actions.runner.Nishfleet.netcup-agent-.*\",state=\"active\"} == 1)",
-          "instant": true
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "background",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "noValue": "0",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              },
-              {
-                "color": "green",
-                "value": 12
-              }
-            ]
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "type": "stat",
-      "id": 22,
-      "title": "All runners online (of 21)",
-      "gridPos": {
-        "x": 6,
-        "y": 41,
-        "w": 6,
-        "h": 5
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "fleet-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "count(node_systemd_unit_state{name=~\"actions.runner.*\",state=\"active\"} == 1)",
-          "instant": true
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "background",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "noValue": "0",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              },
-              {
-                "color": "green",
-                "value": 21
-              }
-            ]
-          }
-        },
-        "overrides": []
+        "y": 0
       }
     },
     {
@@ -1552,10 +60,10 @@
       "title": "Broken services",
       "description": "systemd units in the failed state.",
       "gridPos": {
-        "x": 12,
-        "y": 41,
-        "w": 4,
-        "h": 5
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 1
       },
       "datasource": {
         "type": "prometheus",
@@ -1609,10 +117,10 @@
       "id": 24,
       "title": "Which services are broken",
       "gridPos": {
-        "x": 16,
-        "y": 41,
-        "w": 8,
-        "h": 5
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 5
       },
       "datasource": {
         "type": "prometheus",
@@ -1660,15 +168,15 @@
     },
     {
       "type": "row",
-      "id": 50,
-      "title": "AI providers",
+      "title": "AI seats",
+      "id": 901,
       "collapsed": false,
       "panels": [],
       "gridPos": {
-        "x": 0,
-        "y": 46,
+        "h": 1,
         "w": 24,
-        "h": 1
+        "x": 0,
+        "y": 12
       }
     },
     {
@@ -1725,10 +233,10 @@
       },
       "description": "LiteLLM deployments answering normally.",
       "gridPos": {
+        "h": 4,
+        "w": 8,
         "x": 0,
-        "y": 47,
-        "w": 4,
-        "h": 5
+        "y": 13
       }
     },
     {
@@ -1785,10 +293,10 @@
       },
       "description": "Deployments with some failures (LiteLLM partial outage).",
       "gridPos": {
-        "x": 4,
-        "y": 47,
-        "w": 4,
-        "h": 5
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 13
       }
     },
     {
@@ -1845,10 +353,10 @@
       },
       "description": "Deployments LiteLLM marks as a full outage.",
       "gridPos": {
-        "x": 8,
-        "y": 47,
-        "w": 4,
-        "h": 5
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 13
       }
     },
     {
@@ -1945,356 +453,34 @@
         ]
       },
       "gridPos": {
-        "x": 12,
-        "y": 47,
-        "w": 12,
-        "h": 5
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 17
       }
     },
     {
       "type": "row",
-      "title": "Server",
+      "title": "AI calls",
+      "id": 902,
       "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 52,
-        "w": 24,
-        "h": 1
-      },
-      "id": 30,
-      "panels": []
-    },
-    {
-      "type": "gauge",
-      "id": 31,
-      "title": "Processor busy",
-      "gridPos": {
-        "x": 0,
-        "y": 53,
-        "w": 6,
-        "h": 5
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "fleet-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
-          "instant": true
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showThresholdMarkers": true
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "decimals": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 75
-              },
-              {
-                "color": "red",
-                "value": 90
-              }
-            ]
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "type": "gauge",
-      "id": 32,
-      "title": "Memory used",
-      "gridPos": {
-        "x": 6,
-        "y": 53,
-        "w": 6,
-        "h": 5
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "fleet-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
-          "instant": true
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showThresholdMarkers": true
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "decimals": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 80
-              },
-              {
-                "color": "red",
-                "value": 92
-              }
-            ]
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "type": "gauge",
-      "id": 33,
-      "title": "Disk used",
-      "gridPos": {
-        "x": 12,
-        "y": 53,
-        "w": 6,
-        "h": 5
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "fleet-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "100 * (1 - node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"})",
-          "instant": true
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showThresholdMarkers": true
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "decimals": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 80
-              },
-              {
-                "color": "red",
-                "value": 90
-              }
-            ]
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "type": "gauge",
-      "id": 34,
-      "title": "Swap used",
-      "gridPos": {
-        "x": 18,
-        "y": 53,
-        "w": 6,
-        "h": 5
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "fleet-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "100 * (1 - node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes)",
-          "instant": true
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showThresholdMarkers": true
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "decimals": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 60
-              },
-              {
-                "color": "red",
-                "value": 85
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "description": "Overflow memory kept on disk when RAM is full."
-    },
-    {
-      "type": "timeseries",
-      "id": 35,
-      "title": "Processor and memory over time",
-      "gridPos": {
-        "x": 0,
-        "y": 58,
-        "w": 24,
-        "h": 7
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "fleet-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
-          "legendFormat": "Processor busy"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
-          "legendFormat": "Memory used"
-        }
-      ],
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "type": "row",
-      "id": 70,
-      "title": "Where the CPU goes",
-      "collapsed": false,
+      "panels": [],
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 65
-      },
-      "panels": []
+        "y": 24
+      }
     },
     {
-      "type": "gauge",
-      "id": 71,
-      "title": "CPU pressure",
-      "description": "Percentage of wall time runnable tasks waited for a CPU, from node_exporter's node_pressure_cpu_waiting_seconds_total. This is the pressure stall signal from /proc/pressure/cpu: how much of the time work that wanted a core was waiting for one.",
+      "type": "stat",
+      "id": 43,
+      "title": "AI calls failed, 24h",
       "gridPos": {
-        "h": 5,
-        "w": 6,
+        "h": 4,
+        "w": 8,
         "x": 0,
-        "y": 66
+        "y": 25
       },
       "datasource": {
         "type": "prometheus",
@@ -2307,8 +493,8 @@
             "type": "prometheus",
             "uid": "fleet-prometheus"
           },
-          "expr": "rate(node_pressure_cpu_waiting_seconds_total[5m]) * 100",
-          "legendFormat": "CPU pressure, last 5 min"
+          "expr": "sum(increase(litellm_proxy_failed_requests_metric_total[24h])) or vector(0)",
+          "instant": true
         }
       ],
       "options": {
@@ -2319,18 +505,70 @@
           "fields": "",
           "values": false
         },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "id": 44,
+      "title": "AI failure rate, 24h",
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 25
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fleet-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fleet-prometheus"
+          },
+          "expr": "100 * (sum(increase(litellm_proxy_failed_requests_metric_total[24h])) or vector(0)) / sum(increase(litellm_proxy_total_requests_metric_total[24h]))",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
       },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
-          "min": 0,
-          "max": 100,
           "decimals": 1,
-          "color": {
-            "mode": "thresholds"
-          },
+          "noValue": "0",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -2340,7 +578,7 @@
               },
               {
                 "color": "orange",
-                "value": 15
+                "value": 10
               },
               {
                 "color": "red",
@@ -2354,14 +592,14 @@
     },
     {
       "type": "stat",
-      "id": 72,
-      "title": "Cores in use",
-      "description": "Whole-host cores busy, expressed as a count of cores rather than a percent. The Processor busy gauge above already shows the same signal as a percent, so this answers the other half of the question: on a 12-core box, 11 cores in use is near saturation and 2 cores in use is not, even though the two percentages are 91% and 16%.",
+      "id": 41,
+      "title": "Paid AI spend, 24h",
+      "description": "LiteLLM's cost estimate for model calls in the last 24 hours. Prepaid and free seats count as $0.",
       "gridPos": {
-        "h": 5,
-        "w": 6,
-        "x": 6,
-        "y": 66
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 25
       },
       "datasource": {
         "type": "prometheus",
@@ -2374,8 +612,8 @@
             "type": "prometheus",
             "uid": "fleet-prometheus"
           },
-          "expr": "count(count by (cpu) (node_cpu_seconds_total{mode=\"idle\"})) * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
-          "legendFormat": "Cores in use"
+          "expr": "sum(increase(litellm_spend_metric_total[24h]))",
+          "instant": true
         }
       ],
       "options": {
@@ -2388,34 +626,19 @@
         },
         "colorMode": "value",
         "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
+        "textMode": "value"
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
+          "unit": "currencyUSD",
           "decimals": 2,
-          "color": {
-            "mode": "thresholds"
-          },
+          "noValue": "0",
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "text",
                 "value": null
-              },
-              {
-                "color": "orange",
-                "value": 8
-              },
-              {
-                "color": "red",
-                "value": 11
               }
             ]
           }
@@ -2424,85 +647,16 @@
       }
     },
     {
-      "type": "timeseries",
-      "id": 73,
-      "title": "CPU pressure over time",
-      "description": "The pressure alert fires when the 15-minute line stays above 25% for 15 minutes. The host was last measured at load 21 on 12 cores (2026-10-05) with nothing showing where the time went.",
-      "gridPos": {
-        "h": 7,
-        "w": 24,
-        "x": 0,
-        "y": 71
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "fleet-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "rate(node_pressure_cpu_waiting_seconds_total[5m]) * 100",
-          "legendFormat": "Pressure, last 5 min"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "rate(node_pressure_cpu_waiting_seconds_total[15m]) * 100",
-          "legendFormat": "Pressure, last 15 min (alert basis)"
-        },
-        {
-          "refId": "C",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
-          "legendFormat": "Processor busy"
-        }
-      ],
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
       "type": "row",
-      "id": 60,
       "title": "Website and backups",
+      "id": 903,
       "collapsed": false,
       "panels": [],
       "gridPos": {
-        "x": 0,
-        "y": 78,
+        "h": 1,
         "w": 24,
-        "h": 1
+        "x": 0,
+        "y": 29
       }
     },
     {
@@ -2574,10 +728,10 @@
       },
       "description": "Homepage answers with a 2xx every 30s (blackbox exporter).",
       "gridPos": {
+        "h": 4,
+        "w": 12,
         "x": 0,
-        "y": 79,
-        "w": 4,
-        "h": 5
+        "y": 30
       }
     },
     {
@@ -2637,10 +791,10 @@
         "overrides": []
       },
       "gridPos": {
-        "x": 4,
-        "y": 79,
-        "w": 4,
-        "h": 5
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 30
       }
     },
     {
@@ -2723,307 +877,10 @@
         ]
       },
       "gridPos": {
-        "x": 8,
-        "y": 79,
-        "w": 16,
-        "h": 5
-      }
-    },
-    {
-      "type": "row",
-      "title": "AI",
-      "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 84,
+        "h": 7,
         "w": 24,
-        "h": 1
-      },
-      "id": 40,
-      "panels": []
-    },
-    {
-      "type": "stat",
-      "id": 41,
-      "title": "Paid AI spend, 24h",
-      "description": "LiteLLM's cost estimate for model calls in the last 24 hours. Prepaid and free seats count as $0.",
-      "gridPos": {
         "x": 0,
-        "y": 85,
-        "w": 6,
-        "h": 4
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "fleet-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "sum(increase(litellm_spend_metric_total[24h]))",
-          "instant": true
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "decimals": 2,
-          "noValue": "0",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "type": "stat",
-      "id": 42,
-      "title": "AI calls, 24h",
-      "gridPos": {
-        "x": 6,
-        "y": 85,
-        "w": 6,
-        "h": 4
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "fleet-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "sum(increase(litellm_proxy_total_requests_metric_total[24h]))",
-          "instant": true
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "decimals": 0,
-          "noValue": "0",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "type": "stat",
-      "id": 43,
-      "title": "AI calls failed, 24h",
-      "gridPos": {
-        "x": 12,
-        "y": 85,
-        "w": 6,
-        "h": 4
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "fleet-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "sum(increase(litellm_proxy_failed_requests_metric_total[24h])) or vector(0)",
-          "instant": true
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "decimals": 0,
-          "noValue": "0",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "type": "stat",
-      "id": 44,
-      "title": "AI failure rate, 24h",
-      "gridPos": {
-        "x": 18,
-        "y": 85,
-        "w": 6,
-        "h": 4
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "fleet-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "100 * (sum(increase(litellm_proxy_failed_requests_metric_total[24h])) or vector(0)) / sum(increase(litellm_proxy_total_requests_metric_total[24h]))",
-          "instant": true
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "decimals": 1,
-          "noValue": "0",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 10
-              },
-              {
-                "color": "red",
-                "value": 25
-              }
-            ]
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "type": "timeseries",
-      "id": 45,
-      "title": "AI spend per hour, by model",
-      "gridPos": {
-        "x": 0,
-        "y": 89,
-        "w": 24,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "fleet-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "fleet-prometheus"
-          },
-          "expr": "sum by (model) (increase(litellm_spend_metric_total[1h]))",
-          "legendFormat": "{{model}}",
-          "interval": "1h"
-        }
-      ],
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "decimals": 3,
-          "custom": {
-            "drawStyle": "bars",
-            "stacking": {
-              "mode": "normal",
-              "group": "A"
-            },
-            "fillOpacity": 80,
-            "lineWidth": 1,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
+        "y": 34
       }
     }
   ]
