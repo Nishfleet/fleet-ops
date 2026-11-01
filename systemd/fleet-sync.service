@@ -177,6 +177,11 @@ ExecStart=-/bin/rm -f %h/.config/systemd/user/fleet-cua-desk-check.service %h/.c
 #     hand, so this rm is its only cleanup. Delete this step once a deploy has run it.
 ExecStart=-/usr/bin/systemctl --user stop fleet-gh-login-check.timer fleet-gh-login-check.path fleet-gh-login-check.service
 ExecStart=-/bin/rm -f %h/.config/systemd/user/fleet-gh-login-check.service %h/.config/systemd/user/fleet-gh-login-check.path %h/.config/systemd/user/fleet-gh-login-check.timer %h/.config/systemd/user/timers.target.wants/fleet-gh-login-check.timer %h/.config/systemd/user/default.target.wants/fleet-gh-login-check.path
+# 2h''. The Hermes xAI login check is retired (fleet-ops#10935 step 3): it only
+#     watched a login file, not a user-felt symptom. Linked by hand like 2h', so this
+#     rm is its only cleanup. Delete this step once a deploy has run it.
+ExecStart=-/usr/bin/systemctl --user stop fleet-hermes-xai-login-check.timer fleet-hermes-xai-login-check.path fleet-hermes-xai-login-check.service
+ExecStart=-/bin/rm -f %h/.config/systemd/user/fleet-hermes-xai-login-check.service %h/.config/systemd/user/fleet-hermes-xai-login-check.path %h/.config/systemd/user/fleet-hermes-xai-login-check.timer %h/.config/systemd/user/timers.target.wants/fleet-hermes-xai-login-check.timer %h/.config/systemd/user/default.target.wants/fleet-hermes-xai-login-check.path
 # 2i. The Beacon Hermes poll watcher is a system unit now (fleet-ops#11089): it parses Telegram
 #     text, and a unit the user manager starts gets none of the mount sandbox keys on this box
 #     (docs/user-unit-sandboxing.md), so its file moved to rootfs/etc/systemd/system/, where
