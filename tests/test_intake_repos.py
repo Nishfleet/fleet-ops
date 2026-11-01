@@ -19,11 +19,9 @@ GONE = ("tether", "mailbox")
 
 
 def test_deleted_repos_appear_in_no_section():
-    """tether and mailbox were deleted, and a dead name in .repos makes later-sweep fail every pass.
+    """tether and mailbox were deleted, and a dead name in .repos fails every pass that mints a token per repo.
 
-    later-sweep mints one App token per .repos name and lists that repo's open
-    issues; a deleted repo fails both, so the whole run prints failed=1
-    (fleet-ops#11087).
+    fleet-ops#11087.
     """
     for name in GONE:
         assert name not in ENROLLED, name
