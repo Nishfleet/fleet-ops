@@ -48,6 +48,8 @@
 - name: Install the Hermes gateway service with Hermes' own installer
   ansible.builtin.command:
     argv: ["{{ nish_home }}/.local/bin/hermes", gateway, install, --system, --run-as-user, nish, --if-missing, --no-start-now]
+  environment:
+    HERMES_HOME: "{{ nish_home }}/.hermes"
   register: hermes_gateway_install
   changed_when: "'already installed' not in (hermes_gateway_install.stdout | lower)"
   when: not ansible_check_mode
