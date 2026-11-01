@@ -166,14 +166,12 @@ ExecStart=-/bin/rm -f %h/.config/systemd/user/later-sweep.service %h/.config/sys
 #     has run it.
 ExecStart=-/usr/bin/systemctl --user stop fleet-provider-watch.timer fleet-provider-watch.service
 ExecStart=-/bin/rm -rf %h/.config/systemd/user/fleet-provider-watch.service %h/.config/systemd/user/fleet-provider-watch.timer %h/.config/systemd/user/timers.target.wants/fleet-provider-watch.timer %h/.local/state/provider-watch
-# 2h. The hourly Cua desk check (fleet-cua-desk-check.timer): link the unit pair so
-#     every deploy carries edits to it, the same way as step 2g, and enable the
-#     timer on every deploy like 2f, because a check that is silently off is the
-#     failure it ships to fix (2026-10-18: the desk was deleted and three daily
-#     walks failed with no page). Off switch: delete this step and the enable line
-#     below, then `systemctl --user disable --now fleet-cua-desk-check.timer`.
-ExecStart=/bin/sh -c 'for f in fleet-cua-desk-check.service fleet-cua-desk-check.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
-ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-cua-desk-check.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-cua-desk-check.timer
+# 2h. The hourly Cua desk check is retired (fleet-ops#10935 step 3): it only watched
+#     another unit, and a failed desk routine is not a user-felt symptom. Step 2.1's
+#     shape: stop the pair, then rm the unit links and the enable link. Delete this
+#     step once a deploy has run it.
+ExecStart=-/usr/bin/systemctl --user stop fleet-cua-desk-check.timer fleet-cua-desk-check.service
+ExecStart=-/bin/rm -f %h/.config/systemd/user/fleet-cua-desk-check.service %h/.config/systemd/user/fleet-cua-desk-check.timer %h/.config/systemd/user/timers.target.wants/fleet-cua-desk-check.timer
 # 2i. The Beacon Hermes poll watcher is a system unit now (fleet-ops#11089): it parses Telegram
 #     text, and a unit the user manager starts gets none of the mount sandbox keys on this box
 #     (docs/user-unit-sandboxing.md), so its file moved to rootfs/etc/systemd/system/, where
@@ -269,7 +267,6 @@ ExecStart=/usr/bin/systemctl --user daemon-reload
 #    every container at once. That blast radius is a wider call than this issue.
 #    Off switch: delete this step and ~/.config/fleet-ops/grafana-quadlet.container.
 ExecStart=/bin/sh -c 'test -f %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container && { cmp -s %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container %h/.config/fleet-ops/grafana-quadlet.container || { /usr/bin/systemctl --user try-restart fleet-grafana.service && /usr/bin/install -C -D -m 0600 %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container %h/.config/fleet-ops/grafana-quadlet.container; }; }'
-ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-d1-restore-drill.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-clone-lag.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other

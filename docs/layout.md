@@ -97,13 +97,6 @@
   `PrivateTmp=yes`. fleet-host-config installs the file and `ansible/tasks/services.yml` enables
   and restarts it; `fleet-sync.service` step 2i stops and deletes the user link it replaces. Off
   switch: delete the file and that task, then `systemctl disable --now beacon-hermes-poll.service`.
-- `systemd/fleet-cua-desk-check.service` and `.timer` — fail, and so page through
-  `fleet-unit-failed@`, when `cua sandbox ls --local` does not list `local:desk`
-  as `ready`, or when a routine's `lastOutcome` in `~/.cua/persistent/routines.json`
-  starts with `failed` (2026-10-18: the desk was pruned and three daily walks failed
-  with no page). Hourly; it only reads. `fleet-sync.service` step 2h links both and
-  enables the timer on every deploy. Off switch: remove that step and its enable
-  line, then `systemctl --user disable --now fleet-cua-desk-check.timer`.
 - `systemd/fleet-clone-lag.service` and `.timer` — fail, and so page through
   `fleet-unit-failed@`, when the oldest commit on `origin/main` the deploy clone
   does not have is more than 35 min old, so a merge that reached no deploy is loud
