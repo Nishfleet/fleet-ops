@@ -172,6 +172,11 @@ ExecStart=-/bin/rm -rf %h/.config/systemd/user/fleet-provider-watch.service %h/.
 #     step once a deploy has run it.
 ExecStart=-/usr/bin/systemctl --user stop fleet-cua-desk-check.timer fleet-cua-desk-check.service
 ExecStart=-/bin/rm -f %h/.config/systemd/user/fleet-cua-desk-check.service %h/.config/systemd/user/fleet-cua-desk-check.timer %h/.config/systemd/user/timers.target.wants/fleet-cua-desk-check.timer
+# 2h'. The gh login check is retired (fleet-ops#10935 step 3): workers use App
+#     tokens, and a lost owner login is not a user-felt symptom. It was linked by
+#     hand, so this rm is its only cleanup. Delete this step once a deploy has run it.
+ExecStart=-/usr/bin/systemctl --user stop fleet-gh-login-check.timer fleet-gh-login-check.path fleet-gh-login-check.service
+ExecStart=-/bin/rm -f %h/.config/systemd/user/fleet-gh-login-check.service %h/.config/systemd/user/fleet-gh-login-check.path %h/.config/systemd/user/fleet-gh-login-check.timer %h/.config/systemd/user/timers.target.wants/fleet-gh-login-check.timer %h/.config/systemd/user/default.target.wants/fleet-gh-login-check.path
 # 2i. The Beacon Hermes poll watcher is a system unit now (fleet-ops#11089): it parses Telegram
 #     text, and a unit the user manager starts gets none of the mount sandbox keys on this box
 #     (docs/user-unit-sandboxing.md), so its file moved to rootfs/etc/systemd/system/, where
