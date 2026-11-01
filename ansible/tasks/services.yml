@@ -40,6 +40,20 @@
     daemon_reload: true
   ignore_errors: "{{ ansible_check_mode }}"
 
+# The kept relay listener and Hermes (fleet-ops#10935): their sandbox lines
+# live in their own unit files and drop-ins, which install-config.yml copies.
+- name: Enable the relay listener and Hermes
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - tincan-listen-claude-vps.service
+    - hermes-gateway.service
+    - hermes-serve.service
+  ignore_errors: "{{ ansible_check_mode }}"
+
 # The runner sandbox apply unit (fleet-ops#11248) restarts the runner units whose
 # drop-in is newer than their start and that hold no Runner.Worker process: the
 # handler covers the deploy and this timer catches a runner that was busy then,
