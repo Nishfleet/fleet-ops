@@ -100,7 +100,7 @@
 
 # Laptop packages a VPS never uses: battery power (upower), device firmware
 # updates (fwupd; the provider owns this host's firmware), Intel thermal control
-# (thermald), Thunderbolt (bolt) and iPhone USB (usbmuxd). samba stays because a Mac LaunchAgent mounts its share every minute.
+# (thermald), Thunderbolt (bolt) and iPhone USB (usbmuxd). samba and ffmpeg went 2026-11-02: the share was an empty folder no client had opened since 2026-10-23, and nothing uses ffmpeg.
 # The cloud image also ships guest tools for hypervisors this KVM host is not on:
 # VMware (open-vm-tools), LXD (lxd-agent-loader, lxd-installer), and iSCSI disks
 # (open-iscsi), which it has none of. packagekit stays because
@@ -118,6 +118,9 @@
       - open-iscsi
       - lxd-agent-loader
       - lxd-installer
+      - samba
+      - samba-vfs-modules
+      - ffmpeg
     state: absent
     purge: true
     lock_timeout: 300
