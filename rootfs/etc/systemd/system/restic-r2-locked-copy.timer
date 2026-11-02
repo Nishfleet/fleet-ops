@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily copy of the encrypted Restic repository into locked R2 storage
+
+[Timer]
+OnCalendar=*-*-* 06:15:00 Asia/Kolkata
+RandomizedDelaySec=30m
+Persistent=true
+Unit=restic-r2-locked-copy.service
+
+[Install]
+WantedBy=timers.target
