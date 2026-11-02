@@ -590,22 +590,15 @@ into `agent-state/backups/litellm.dump` before every run, and that dump is the
 only LiteLLM Postgres copy in restic: the raw data dir is not in
 `config/restic/include.txt` (a file copy of a running Postgres is not
 crash-consistent and churned about 700 MiB a day). Restore with `pg_restore`.
-Retention is one policy for the backup and maintenance units, kept 7 daily,
-4 weekly and 3 monthly snapshots grouped by host and tags
-(`config/restic/retention.env`, `config/restic/README.md` "Retention"). The
-restic units are deliberately host-only, not an oversight: the backup,
-locked-copy, maintenance, restore-test and verify services, their timers and
-the size-guard service live only under `/etc/systemd/system/restic-r2-*`,
-because the unit files name the backup targets and this repo is public
-(Nish, 2026-10-03, "split"). `/etc/fleet-ops/box-only` lists them, so
-`fleet-host-config.service`'s drift check skips them; this repo tracks only the
-additive drop-ins under `rootfs/` and the lists in `config/restic/`, so this
-section does not schedule them — the one pair tracked whole is the monthly
-restore drill (`restic-r2-restore-drill.service` and `.timer`), which is new,
-names no backup target and no credential, and is enabled by
-`tasks/services.yml`. A box rebuild cannot restore the box-only units from the
-repo — copy them off the live box to private storage before wiping it, and
-never commit the copies here.
+Retention is the backup unit's own forget line: 7 daily, 5 weekly and 12
+monthly snapshots grouped by host and tags. The restic units are in the repo
+under `rootfs/etc/systemd/system/restic-r2-*` and the play installs them
+(fleet-ops#10935, JOB restic): the nightly backup (pg_dump, backup, forget
+--prune, heartbeat, then the locked copy through `OnSuccess=`), the weekly
+verify (`restic check --read-data-subset=5%`), and the monthly restore drill
+(`restic restore latest --verify` plus a `pg_restore --list` count of the
+LiteLLM dump). Credentials and heartbeat URLs stay in the box-only env files
+they name.
 
 Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service
 fleet-litellm-redis.service fleet-litellm-proxy.service`, then `rm -rf` the

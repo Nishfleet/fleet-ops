@@ -94,6 +94,15 @@
       # The nish-vault runner; its workflows run on GitHub-hosted runners
       # (Nishfleet/nish-vault, fleet-ops#10935).
       - actions.runner.nish3451-nish-vault.netcup-vault-1.service
+      # Hand-installed restic extras (JOB restic, fleet-ops#10935): backup's
+      # forget and verify's check cover maintenance, the monthly drill covers
+      # the restore test, and the backup's OnSuccess= starts the locked copy.
+      - restic-r2-maintenance.timer
+      - restic-r2-maintenance.service
+      - restic-r2-restore-test.timer
+      - restic-r2-restore-test.service
+      - restic-r2-size-guard.service
+      - restic-r2-locked-copy.timer
     retired_user_units:
       - fleet-sync.service
       - fleet-litellm-proxy-config.path
@@ -134,6 +143,20 @@
       - /etc/systemd/system/restic-r2-restore-test.service.d/30-on-failure.conf
       - /etc/systemd/system/restic-r2-size-guard.service.d/30-on-failure.conf
       - /etc/systemd/system/restic-r2-verify.service.d/30-on-failure.conf
+      - /etc/systemd/system/restic-r2-maintenance.service
+      - /etc/systemd/system/restic-r2-maintenance.timer
+      - /etc/systemd/system/restic-r2-maintenance.service.d
+      - /etc/systemd/system/timers.target.wants/restic-r2-maintenance.timer
+      - /etc/systemd/system/restic-r2-restore-test.service
+      - /etc/systemd/system/restic-r2-restore-test.timer
+      - /etc/systemd/system/restic-r2-restore-test.service.d
+      - /etc/systemd/system/timers.target.wants/restic-r2-restore-test.timer
+      - /etc/systemd/system/restic-r2-size-guard.service
+      - /etc/systemd/system/restic-r2-locked-copy.timer
+      - /etc/systemd/system/restic-r2-backup.service.d
+      - /etc/systemd/system/restic-r2-locked-copy.service.d
+      - /etc/restic/retention.env
+      - /etc/restic/netcup-r2-excludes
       # Folded into rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades.
       - /etc/apt/apt.conf.d/52nish-unattended-anthropic
       - /etc/apt/apt.conf.d/52-auto-reboot
@@ -389,7 +412,6 @@
       loop:
         - fleet-update.service
         - restic-r2-backup.service
-        - restic-r2-size-guard.service
       register: oneshot_failed
       changed_when: false
       failed_when: oneshot_failed.rc not in [0, 1]

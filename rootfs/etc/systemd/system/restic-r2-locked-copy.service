@@ -1,5 +1,6 @@
 # Stock rclone lines (was /usr/local/sbin/restic-r2-locked-copy, removed 2026-09-25).
 # copy -> checksum check -> reclaim objects older than the 30-day lock (reclaim may fail).
+# No timer: restic-r2-backup.service starts it through OnSuccess=.
 [Unit]
 Description=Copy the encrypted Restic repository into 30-day-locked R2 storage
 Wants=network-online.target
@@ -28,6 +29,3 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 ProtectHome=true
 ReadWritePaths=/var/cache/restic-live /run/lock
-
-[Install]
-WantedBy=multi-user.target
