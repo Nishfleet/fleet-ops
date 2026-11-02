@@ -1,74 +1,21 @@
 ## Install
 
-There is no installer. Every live user-scope path is a **symlink into this
-repo**, so a push to `main` is the deploy (`deploy-box.yml` runs
-`fleet-sync.service`, a fetch plus `--ff-only` merge, described below) — the
-file the fleet runs and the file in git are the same inode. Nothing is copied,
-so nothing can drift, and the
-5,948 LOC that used to copy files and then hunt for the drift copying caused
-(`install.sh`, `MANIFEST`, `bin/fleet-ops-deploy`, `bin/fleet-deploy-check`,
-`bin/fleet-ops-drift.py`) were deleted on 2026-09-18.
-
-`deploy-box.yml` starts `fleet-sync.service` on every push to main, which
-keeps the clone current. It is the only deploy machinery on the box. Its two
-deploy steps come first and its security probe runs last in that same job: a red
-probe still fails the run, and it can never skip the deploy steps, because a
-separate job could probe one box and deploy on another. To check it by hand:
+There is no installer. `deploy-box.yml` starts `fleet-host-config.service` on every
+push to main. It runs `ansible-pull` into `/var/lib/fleet-ops/repo` and applies
+`ansible/host.yml`, which copies nish's user units, quadlets and config files
+(`ansible/tasks/user-files.yml`) and installs `rootfs/` as root. To check it by hand:
 
 ```
-systemctl --user status fleet-sync.service
-systemctl --user start fleet-sync.service   # force a sync now
-journalctl --user -u fleet-sync.service -n 50
+journalctl -u fleet-host-config.service -n 60 --no-pager   # PLAY RECAP failed=0
 ```
-
-The unit fails loudly on a dirty or diverged clone. That is
-correct: the live source must be clean `origin/main`, and a failed
-`fleet-sync.service` fires `OnFailure=fleet-unit-failed@` (healthchecks.io
-fail ping, fleet-ops#9033).
-
-The sync is a `git fetch` of `main` into `refs/remotes/origin/main`
-followed by a `git merge --ff-only` of that named ref — never
-`git pull`, which merges the multi-entry `FETCH_HEAD` and dies with
-`Cannot fast-forward to multiple branches` when anything else in the
-clone has written that file (fleet-ops#8893). One `sh` line then runs
-`git merge-base --is-ancestor` in both directions: together they are true
-only when `HEAD == origin/main`, so a deploy window that ends a commit
-short fails the unit instead of leaving the live clone quietly behind.
-The line prints `DEPLOY-BLOCKED`, the branch, `HEAD` and `origin/main`,
-the commits that are not on main, and `switch main` as the fix, because
-the bare exit code this replaced left six red deploy-box runs printing
-only `exit code 1` (fleet-ops#9967). A session that needs a work branch
-uses a worktree: a work branch checked out in the deploy clone blocks
-every deploy.
 
 ### Wiring a NEW unit (one-time, by hand)
 
-`man systemctl`: _"link PATH... Link a unit file that is not in the unit file
-search path into the unit file search path. This command expects an absolute
-path to a unit file."_ Add the unit file to `systemd/`, merge it, then once:
-
-```
-systemctl --user link  /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>
-systemctl --user enable --now /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>   # timers and .path units
-systemd-analyze verify /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>
-```
-
-`systemctl --user list-unit-files | grep linked` shows the linked set.
-Retiring a unit is the mirror image: `systemctl --user disable --now <unit>`
-then `systemctl --user unlink <unit>` (or `rm ~/.config/systemd/user/<unit>`)
-and delete the file from `systemd/`.
-
-Drop-in directories (`<unit>.service.d/*.conf`) are not unit files, so
-`systemctl link` does not take them. Symlink them by hand, once:
-
-```
-mkdir -p ~/.config/systemd/user/<unit>.service.d
-ln -sfn /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>.service.d/<x>.conf \
-        ~/.config/systemd/user/<unit>.service.d/<x>.conf
-```
-
-Same idiom for a new Pi prompt (`~/.pi/agent/prompts/<x>.md`). One `ln -sfn`,
-once, and git owns it from then on. New scripts are not added at all: the
+Add the unit file to `systemd/` and to the loop in `ansible/tasks/user-files.yml`,
+which copies it on every deploy, then enable it once with
+`systemctl --user enable --now <unit>`. Retiring a unit: list it in
+`retired_user_units` and its file in `retired` in `ansible/host.yml`
+(see `ansible/tasks/retired-and-drift.yml`). New scripts are not added at all: the
 glue-zero rule (docs/ARCHITECTURE.md) allows config values, unit lines and
 prompt lines only — a stock feature replaces an organ or nothing does.
 
@@ -168,20 +115,9 @@ jq '. * ($o[0]) | del(.respect_workspace_trust)' --slurpfile o <repo>/template/d
 
 ### Canonical checkout (fleet-ops#372)
 
-The live source — the tree every live symlink resolves into:
-
-`/home/nish/workspaces/tooling/fleet-ops-deploy-clone`
-
-It must stay on branch `main`, clean. Feature and auditor work uses a linked
-worktree. `products/fleet-ops` still points at the worktree parent
-(`/home/nish/workspaces/tooling/fleet-ops`) until no linked worktrees remain
-there; that parent carries the pre-rewrite init history (16 commits with no
-merge-base against `origin/main`). Do not deploy from it and do not delete it
-while worktrees are attached. Workers do not create worktrees from the
-deploy-clone: each `git clone`s into its own
-`agent-worktrees/issue-<repo>-<N>` directory (`.mirrors` as an optional
-reference), and the deploy clone is mounted read-only in the worker jail
-(fleet-ops#410).
+The live source is `/var/lib/fleet-ops/repo`, the root-owned checkout
+`ansible-pull` refreshes from `main` on every deploy. Nothing edits it by hand.
+Work happens in a clone of your own.
 
 The old non-canonical-checkout guard lived in `install.sh`: it refused a
 mutating install from any other tree, because an install from a worktree

@@ -4,8 +4,8 @@
 # scheduled apply every deploy secret goes dead. This oneshot is that apply;
 # cloudflare-tokens-apply.timer starts it weekly.
 #
-# Runs from the deploy clone (the stable install tree, AGENTS.md "Machine
-# wiring"), never from a worktree. The deploy clone must stay clean, so the
+# Runs from /var/lib/fleet-ops/repo, the root-owned checkout ansible-pull
+# deploys from main, never from a worktree. That tree is read-only here, so the
 # provider cache goes to TF_DATA_DIR under ~/.cache (not in restic, rebuilt by
 # init) instead of infra/cloudflare-tokens/.terraform.
 #
@@ -46,7 +46,7 @@ Wants=network-online.target
 # one command the README documents and start the unit again.
 ExecStartPre=/bin/sh -c 'f=%h/.config/cloudflare/vps-cidrs.tfvars; [ -r \"$$f\" ] || { echo \"$$f is missing: place it or refresh it with the one command in infra/cloudflare-tokens/README.md\" >&2; exit 1; }; v4=$$(curl -4 -fsS --max-time 15 --retry 2 https://ifconfig.me); v6=$$(curl -6 -fsS --max-time 15 --retry 2 https://ifconfig.me); [ -n \"$$v4\" ] && [ -n \"$$v6\" ] || { echo \"could not read the current egress addresses of the host (curl to ifconfig.me failed); failing closed: the vps-grafana token is IP-locked, so the apply must not run on a stale file. If the file is stale, refresh it with the one command in infra/cloudflare-tokens/README.md; the next green run re-mints the token.\" >&2; exit 1; }; grep -oE \"[0-9A-Fa-f:.]+/(32|128)\" \"$$f\" | grep -qFx \"$$v4/32\" && grep -oE \"[0-9A-Fa-f:.]+/(32|128)\" \"$$f\" | grep -qFx \"$$v6/128\" || { echo \"vps_cidrs in $$f does not hold the host egress addresses ($$v4/32, $$v6/128); the vps-grafana token is IP-locked to them. Refresh the file with the one command in infra/cloudflare-tokens/README.md and start this unit again.\" >&2; exit 1; }'
 Type=oneshot
-WorkingDirectory=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
+WorkingDirectory=/var/lib/fleet-ops/repo
 EnvironmentFile=%h/.config/cloudflare/token-minter.env
 # State encryption (infra/cloudflare-tokens/README.md, "State encryption"): the
 # OpenTofu state holds each token it minted, so once this file exists the state

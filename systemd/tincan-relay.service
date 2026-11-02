@@ -17,8 +17,7 @@
 # First start needs a one-time login: the journal prints "go to: https://login.tailscale.com/a/..."
 # Open it signed in as Nish and approve. State then lives in ~/.local/state/tincan-relay/tsnet.
 #
-# Install (after merge, from the deploy clone):
-#   systemctl --user link   /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-relay.service
+# Install: ansible/tasks/user-files.yml copies this file on every deploy; enable it once:
 #   systemctl --user enable --now tincan-relay.service
 # Admin (invite, agents, trace): tincan <cmd> --socket ~/.local/state/tincan-relay/admin.sock
 # Switch off: systemctl --user disable --now tincan-relay.service

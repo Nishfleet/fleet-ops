@@ -18,7 +18,7 @@ FLAGS = (
     "--strict-mcp-config",
     "--disable-slash-commands",
     "--setting-sources project,local",
-    "--mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config",
+    "--mcp-config /var/lib/fleet-ops/repo/config/tincan-listener-mcp.json --strict-mcp-config",
 )
 
 

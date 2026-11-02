@@ -5,7 +5,7 @@
 #
 # Runs as root from its OWN clone in /var/lib/fleet-ops/repo, fetched
 # anonymously from GitHub main (the repo is public), so nothing a user-level
-# process writes on this box reaches root: not the deploy clone, not its refs.
+# process writes on this box reaches root: not a nish-owned clone, not its refs.
 # Only reviewed, merged main gets applied. --clean throws away any local edit
 # in that clone before each run. --verify-commit makes ansible-pull refuse a
 # commit GitHub did not sign. The keys come from ansible/host.yml, which imports
