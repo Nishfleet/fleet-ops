@@ -15,21 +15,24 @@ concurrency:
   cancel-in-progress: true
 jobs:
   review:
-    if: ${{ !github.event.pull_request.draft && github.event.pull_request.user.id != 49699333 }} # not Dependabot: its recipe approves patch and minor bumps
+    # Same-repo, non-draft, not Dependabot (its recipe approves patch and minor bumps). A fork's
+    # text never reaches the reviewer, so a fork cannot talk its way to an approval.
+    if: ${{ !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' }}
     runs-on: [self-hosted, agent]
     timeout-minutes: 20
     permissions:
       pull-requests: write
     env:
-      GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number }}
     steps:
       - name: Read the pull request (text only, nothing from it runs)
+        env: {GH_TOKEN: "${{ github.token }}"}
         run: |
           set -euo pipefail
           gh pr view "$PR" -R "$REPO" --json title,body --template '{{.title}}'$'\n\n''{{.body}}' > "$RUNNER_TEMP/pr.md"
-          gh pr diff "$PR" -R "$REPO" | head -c 400000 > "$RUNNER_TEMP/pr.diff"
+          gh pr diff "$PR" -R "$REPO" > "$RUNNER_TEMP/pr.full.diff"
+          head -c 400000 "$RUNNER_TEMP/pr.full.diff" > "$RUNNER_TEMP/pr.diff"
           [ -s "$RUNNER_TEMP/pr.diff" ] || { echo "::error::empty diff"; exit 1; }
       - name: Review on the Grok seat
         run: |
@@ -43,11 +46,12 @@ jobs:
           Request changes only for a blocking finding: a bug, a security problem or a rule break. Nits never block. If the diff is clean, say so in one line and approve.
           CHARTER
           { echo "# Pull request"; cat "$RUNNER_TEMP/pr.md"; echo; echo "# Diff"; echo '```diff'; cat "$RUNNER_TEMP/pr.diff"; echo '```'; } > "$RUNNER_TEMP/prompt.md"
-          "$HOME/.local/bin/pi" --print --no-tools --no-session --no-context-files --no-extensions --no-mcp --no-skills \
+          pi --print --no-tools --no-session --no-context-files --no-mcp --no-skills \
             --system-prompt "$(cat "$RUNNER_TEMP/charter.md")" --provider xai-oauth --model grok-4.7 \
             < "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/review.md"
           cat "$RUNNER_TEMP/review.md"
       - name: Post the verdict
+        env: {GH_TOKEN: "${{ github.token }}"}
         run: |
           set -euo pipefail
           verdict=$(grep -oE '^VERDICT: (APPROVE|REQUEST_CHANGES)' "$RUNNER_TEMP/review.md" | tail -1 | cut -d' ' -f2)
