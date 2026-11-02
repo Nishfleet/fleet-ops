@@ -50,8 +50,6 @@ SEAT_FILE = {
     "COMMANDCODE_API_KEY": "commandcode",
     "MINIMAX_API_KEY": "minimax",
     "OPENCODE_API_KEY": "opencode",
-    "STEPFUN_API_KEY": "stepfun",
-    "SYNTHETIC_API_KEY": "synthetic",
     "VERCEL_AI_GATEWAY_JEV_KEY": "typesafe-jev",
     "ZAI_API_KEY": "zai",
 }

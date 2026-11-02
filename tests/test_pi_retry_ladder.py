@@ -6,8 +6,8 @@ seconds"}` and pi 1.4.0 burns its own retry ladder against that wait. The ladder
 is pure exponential backoff — `min(baseDelayMs * 2**attempt, maxAgentDelayMs)`
 per wait, from pi's `retry` settings block (pi docs/settings.md) — with no
 parsing of the server-named delay, so the only way to wait out the 900-second
-window (`cooldown_time: 900` on the worker rows in `config/litellm-proxy.yaml`,
-fleet-ops#11151) is a ladder whose cumulative wait crosses 900 seconds before
+window (a row's `cooldown_time`, else the router-wide one, in
+`config/litellm-proxy.yaml`, fleet-ops#11151) is a ladder whose cumulative wait crosses 900 seconds before
 the retries run out.
 
 The shipped block was `{"maxRetries": 6, "baseDelayMs": 10000}`: waits
@@ -48,13 +48,15 @@ requires_settings = pytest.mark.skipif(
 
 def worker_cooldown_ms() -> int:
     text = ROUTER_CONFIG.read_text()
-    blocks = re.findall(r"- model_name: (\S+)\n(.*?)(?=- model_name:|\Z)", text, re.S)
+    model_list, router_settings = text.split("\nrouter_settings:\n", 1)
+    router_default = re.search(r"^  cooldown_time: (\d+)", router_settings, re.M)
+    assert router_default, "router_settings has no numeric cooldown_time"
+    blocks = re.findall(r"- model_name: (\S+)\n(.*?)(?=- model_name:|\Z)", model_list, re.S)
     cooldowns = []
     for name, body in blocks:
         if name != "worker-capable":
             continue
-        found = re.search(r"cooldown_time: (\d+)", body)
-        assert found, f"worker-capable row with no numeric cooldown_time: {body[:120]}"
+        found = re.search(r"cooldown_time: (\d+)", body) or router_default
         cooldowns.append(int(found.group(1)))
     assert cooldowns, "no worker-capable cooldown_time in config/litellm-proxy.yaml"
     return min(cooldowns) * 1000
