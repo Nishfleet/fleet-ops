@@ -34,7 +34,6 @@
     - fleet-grafana-github-token.timer
     - fleet-worker-github-token@.service
     - syncthing.service
-    - tigervnc.service
     - tincan-relay.service
     - tmux-spawn-.scope.d/50-interactive-cpu-priority.conf
   notify: Reload nish's user manager
@@ -108,6 +107,5 @@
     - fleet-d1-restore-drill.timer
     - fleet-grafana-github-token.timer
     - syncthing.service
-    - tigervnc.service
     - tincan-relay.service
   changed_when: false

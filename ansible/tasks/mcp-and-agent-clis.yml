@@ -143,35 +143,6 @@
   when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^  chrome-devtools:')
   diff: false
 
-- name: Install the Bot Desktop packages Hermes computer_use needs on a headless host
-  ansible.builtin.apt:
-    name:
-      - tigervnc-standalone-server
-      - xfce4-panel
-      - xfwm4
-      - xfdesktop4
-      - xfce4-settings
-      - dbus-x11
-      - x11-xserver-utils
-      - x11-utils
-      - x11-xkb-utils
-      - xauth
-      - fonts-dejavu-core
-    state: present
-    install_recommends: false
-    lock_timeout: 300
-
-- name: Let Hermes start its own headless Bot Desktop when computer_use needs a display
-  become: true
-  become_user: nish
-  ansible.builtin.lineinfile:
-    path: "{{ nish_home }}/.hermes/config.yaml"
-    line: "bot_desktop: {auto_start: true}"
-  vars:
-    hermes_text: "{{ hermes_config.content | default('') | b64decode }}"
-  when: hermes_config.content is defined and hermes_text is not search('(?m)^bot_desktop:')
-  diff: false
-
 - name: Read Hermes' scheduled jobs
   become: true
   become_user: nish

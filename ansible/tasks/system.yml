@@ -100,9 +100,7 @@
 
 # Laptop packages a VPS never uses: battery power (upower), device firmware
 # updates (fwupd; the provider owns this host's firmware), Intel thermal control
-# (thermald), Thunderbolt (bolt) and iPhone USB (usbmuxd). udisks2 and
-# accountsservice stay because removing either removes plasma-desktop, the VNC
-# desktop. samba stays because a Mac LaunchAgent mounts its share every minute.
+# (thermald), Thunderbolt (bolt) and iPhone USB (usbmuxd). samba stays because a Mac LaunchAgent mounts its share every minute.
 # The cloud image also ships guest tools for hypervisors this KVM host is not on:
 # VMware (open-vm-tools), LXD (lxd-agent-loader, lxd-installer), and iSCSI disks
 # (open-iscsi), which it has none of. packagekit stays because
@@ -122,6 +120,40 @@
       - lxd-installer
     state: absent
     purge: true
+    lock_timeout: 300
+
+# The graphical desktop: KDE Plasma, the XFCE "Bot Desktop" and the TigerVNC
+# server. Nothing on the box uses a display: Hermes and Tether do computer use in
+# Cua cloud Spaces, and Chrome runs headless (fleet-ops#10935). autoremove takes
+# the libraries only these packages pulled in. xrdp and xorg were never installed
+# and are listed so a stray install goes too.
+- name: Remove the graphical desktop
+  ansible.builtin.apt:
+    name:
+      - plasma-desktop
+      - plasma-workspace
+      - kwin-x11
+      - breeze
+      - dolphin
+      - konsole
+      - xfce4-panel
+      - xfce4-settings
+      - xfdesktop4
+      - xfwm4
+      - tigervnc-common
+      - tigervnc-standalone-server
+      - tigervnc-tools
+      - xrdp
+      - xorg
+      - x11-apps
+      - x11-utils
+      - x11-xkb-utils
+      - x11-xserver-utils
+      - xauth
+      - dbus-x11
+    state: absent
+    purge: true
+    autoremove: true
     lock_timeout: 300
 
 - name: Install sysctl settings
