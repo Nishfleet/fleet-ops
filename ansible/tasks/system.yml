@@ -118,6 +118,9 @@
       - open-iscsi
       - lxd-agent-loader
       - lxd-installer
+      - samba
+      - samba-vfs-modules
+      - ffmpeg
     state: absent
     purge: true
     lock_timeout: 300
