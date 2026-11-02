@@ -1,0 +1,59 @@
+name: review
+# The independent reviewer (fleet-ops#10935, owner 2026-11-02: "both"): a non-Claude
+# seat reads the pull request's diff and approves or requests changes as
+# github-actions[bot]. Its approval is enough for plumbing; paths CODEOWNERS gives the
+# owner still need the owner's click. Grader is never the builder's model family
+# (vault decisions ledger 2026-09-26). The reviewer never runs the pull request's
+# code: no checkout, no tools, the diff as text only, so pull_request_target is safe.
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_call:
+permissions: {}
+concurrency:
+  group: review-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft && github.event.pull_request.user.id != 49699333 }} # not Dependabot: its recipe approves patch and minor bumps
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 20
+    permissions:
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Read the pull request (text only, nothing from it runs)
+        run: |
+          set -euo pipefail
+          gh pr view "$PR" -R "$REPO" --json title,body --template '{{.title}}'$'\n\n''{{.body}}' > "$RUNNER_TEMP/pr.md"
+          gh pr diff "$PR" -R "$REPO" | head -c 400000 > "$RUNNER_TEMP/pr.diff"
+          [ -s "$RUNNER_TEMP/pr.diff" ] || { echo "::error::empty diff"; exit 1; }
+      - name: Review on the Grok seat
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/charter.md" <<'CHARTER'
+          You are the independent reviewer for a small software company. You did not write this change and you never will; your only job is to say whether it may merge.
+          Judge the diff against: (1) correctness, a bug a user or an operator would hit; (2) security, a leaked secret, injection, SSRF, a weakened check; (3) the company's rules: the smallest change that fixes the cause, no glue (a script, wrapper, hook, poller or harness around a vendor tool), no over-engineering (a layer, knob or option the cause does not need), the vendor's documented way over invention, and public-repo text that names no host, home path, credential path or account id.
+          Write the findings first, each with file and line, a one-line reason and a severity (blocking, should-fix, nit). Then the last line, exactly one of:
+          VERDICT: APPROVE
+          VERDICT: REQUEST_CHANGES
+          Request changes only for a blocking finding: a bug, a security problem or a rule break. Nits never block. If the diff is clean, say so in one line and approve.
+          CHARTER
+          { echo "# Pull request"; cat "$RUNNER_TEMP/pr.md"; echo; echo "# Diff"; echo '```diff'; cat "$RUNNER_TEMP/pr.diff"; echo '```'; } > "$RUNNER_TEMP/prompt.md"
+          "$HOME/.local/bin/pi" --print --no-tools --no-session --no-context-files --no-extensions --no-mcp --no-skills \
+            --system-prompt "$(cat "$RUNNER_TEMP/charter.md")" --provider xai-oauth --model grok-4.7 \
+            < "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/review.md"
+          cat "$RUNNER_TEMP/review.md"
+      - name: Post the verdict
+        run: |
+          set -euo pipefail
+          verdict=$(grep -oE '^VERDICT: (APPROVE|REQUEST_CHANGES)' "$RUNNER_TEMP/review.md" | tail -1 | cut -d' ' -f2)
+          { echo "Independent review (Grok 4.7, fleet-ops review.yml):"; echo; cat "$RUNNER_TEMP/review.md"; } > "$RUNNER_TEMP/body.md"
+          case "$verdict" in
+            APPROVE) gh pr review "$PR" -R "$REPO" --approve --body-file "$RUNNER_TEMP/body.md" ;;
+            REQUEST_CHANGES) gh pr review "$PR" -R "$REPO" --request-changes --body-file "$RUNNER_TEMP/body.md" ;;
+            *) echo "::error::the reviewer gave no verdict line"; exit 1 ;;
+          esac
