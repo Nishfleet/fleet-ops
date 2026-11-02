@@ -156,6 +156,78 @@
     autoremove: true
     lock_timeout: 300
 
+# Installed before the purge below so autoremove keeps them. psql and
+# pg_restore: final-checks logs in to the router's database with psql, and the
+# restore test reads the router dump with pg_restore. file: agents run it (26
+# sessions in October); only ImageMagick pulled it in.
+- name: Install the Postgres client and file
+  ansible.builtin.apt:
+    name:
+      - postgresql-client
+      - file
+    state: present
+    lock_timeout: 300
+
+# Packages nothing on the box uses (owner's package review, fleet-ops#10935):
+# the system Postgres and Redis (the router runs its own in podman; the system
+# ones are disabled), WebKit and GStreamer libraries left by a Playwright
+# install-deps (only Chromium is installed, and Chrome brings its own deps),
+# ImageMagick, native-build tools no build here calls (cmake, ninja, autoconf),
+# the old desktop's VNC viewer, X core fonts and UI fonts, and Ubuntu extras no
+# one runs (byobu, screen, landscape, pollinate, sosreport, GPU drivers tool).
+- name: Remove packages nothing on the box uses
+  ansible.builtin.apt:
+    name:
+      - postgresql
+      - postgresql-16
+      - postgresql-contrib
+      - redis-server
+      - redis-tools
+      - imagemagick
+      - gstreamer1.0-libav
+      - gstreamer1.0-plugins-bad
+      - gstreamer1.0-plugins-good
+      - gstreamer1.0-plugins-base
+      - libgstreamer-gl1.0-0
+      - libgstreamer-plugins-bad1.0-0
+      - libgstreamer-plugins-base1.0-0
+      - libmanette-0.2-0
+      - libwoff1
+      - libenchant-2-2
+      - libhyphen0
+      - libavif16
+      - libharfbuzz-icu0
+      - libevent-2.1-7t64
+      - libwebpdemux2
+      - cmake
+      - ninja-build
+      - autoconf
+      - libcurl4-gnutls-dev
+      - byobu
+      - screen
+      - landscape-common
+      - pollinate
+      - xtightvncviewer
+      - xorriso
+      - p7zip-full
+      - parallel
+      - pass
+      - git-lfs
+      - gettext
+      - sosreport
+      - ubuntu-drivers-common
+      - net-tools
+      - duf
+      - btop
+      - fonts-inter
+      - fonts-jetbrains-mono
+      - xfonts-cyrillic
+      - xfonts-scalable
+    state: absent
+    purge: true
+    autoremove: true
+    lock_timeout: 300
+
 - name: Install sysctl settings
   ansible.builtin.copy:
     src: "{{ item }}"
