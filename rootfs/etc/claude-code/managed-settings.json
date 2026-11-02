@@ -8,7 +8,6 @@
       "Bash(cat *secret*)",
       "Bash(*/.config/fleet-ops/seats/*)",
       "Bash(*/.config/tincan/*)",
-      "Edit(//home/nish/workspaces/tooling/fleet-ops-deploy-clone/**)",
       "Bash(wrangler:*)",
       "Bash(npx wrangler:*)",
       "Bash(npm exec wrangler:*)",

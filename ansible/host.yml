@@ -32,7 +32,7 @@
     agent_runner_retired_ids: "{{ range(1, 37) | reject('equalto', 23) | list }}"
     # The agent pool: netcup-agent-1 to 15 (Nish, fleet-ops#10935, 2026-11-01: 15,
     # raised only after measuring), run as fleet-runner by tasks/runners.yml.
-    fleet_runner_ids: "{{ range(1, 16) | list }}"
+    fleet_runner_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     fleet_runner_pi_version: 1.4.0
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
@@ -89,10 +89,13 @@
     retired_units:
       - fleet-runner-sandbox-apply.timer
       - fleet-runner-sandbox-apply.service
+      - tincan-listen-issue-desk.service
     retired_user_units:
       - fleet-sync.service
       - fleet-litellm-proxy-config.path
       - fleet-grafana-provisioning.path
+      # The VNC desktop; the box has no graphical desktop (fleet-ops#10935).
+      - tigervnc.service
     retired:
       # The nish runner jails, their re-apply timer and restart grant, and the review
       # runners' user state; fleet-runner@.service replaces them (fleet-ops#10935).
@@ -128,22 +131,20 @@
       - /etc/apt/apt.conf.d/52-auto-reboot
       # Codex is retired here; its rules file left the repo (fleet-ops#10935 C5).
       - "{{ nish_home }}/.codex/rules/fleet-floor.rules"
+      # The VNC desktop unit and its enable link (fleet-ops#10935).
+      - "{{ nish_home }}/.config/systemd/user/tigervnc.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/tigervnc.service"
       # Replaced by "Install the router config" and the Grafana reload in
       # tasks/services.yml (fleet-ops#10935 E2).
       - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.path"
       - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.service"
       - "{{ nish_home }}/.config/systemd/user/fleet-grafana-provisioning.path"
       - "{{ nish_home }}/.config/systemd/user/fleet-grafana-provisioning.service"
-      # fleet-sync's unit and the dead links it left; tasks/user-files.yml installs
-      # the files now (fleet-ops#10935 E1).
-      - "{{ nish_home }}/.config/systemd/user/fleet-sync.service"
-      - "{{ nish_home }}/.config/systemd/user/default.target.wants/fleet-sync.service"
       - "{{ nish_home }}/.config/fleet-worker/bootstrap.html"
       - "{{ nish_home }}/.cursor/hooks/guard_cursor_packet.py"
       - "{{ nish_home }}/.cursor/rules/shared-memory.mdc"
-      - "{{ nish_home }}/workspaces/tooling/fleet-ops-deploy-clone/.git/hooks/reference-transaction"
-      - /etc/tmpfiles.d/fleet-sync-metric.conf
-      - /var/lib/prometheus/node-exporter/fleet-sync.prom
+      # Disabled listener whose extension and prompt left the repo; box-only file.
+      - /etc/systemd/system/tincan-listen-issue-desk.service
       # Read only by the hand-install drift check, deleted 2026-11-01.
       - /etc/fleet-ops/box-only
     nish_home: "{{ '~nish' | expanduser }}"

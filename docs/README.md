@@ -32,3 +32,5 @@ Nothing changes the box by hand. A hand fix is lost on the next deploy.
 - Each firing alert opens a fleet-ops issue, so a worker can fix it.
 - Each rule carries a `severity` label. Only `critical` rules page the owner.
   The target (fleet-ops#10935): under 10 rules, each a user-felt symptom.
+
+The box applies main only when its top commit is GitHub-signed (ansible-pull --verify-commit); merges through the queue are signed, direct pushes are not.

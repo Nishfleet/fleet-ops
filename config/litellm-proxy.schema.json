@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). A row on api.z.ai/api/coding/paas/v4, api.stepfun.ai/step_plan/v1, token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1 or api.minimax.io/anthropic must park the same way on its first 429 with a 6 h cooldown, because those 429s are a weekly quota, a drained prepaid balance, a monthly token cap or a spent token plan with fixed reset clocks, not bursts (fleet-ops#11146, #11234, #11417). A row on api.synthetic.new/openai/v1 must park on its first 429 (RateLimitErrorAllowedFails: 0) with the 900 s burst cool: its shared key answers both the 5-hour subscription pool's wall and the provider's own 'Too many concurrent requests' burst 429, LiteLLM v1.105.0 splits cooldown thresholds and lengths per exception class only so no config can tell the two kinds apart by text, and the short park keeps the burst trade bounded while the row re-probes itself (fleet-ops#11476, note 17 in docs/litellm-router-notes.md). Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). A worker-group row whose supports_prompt_caching is false must set litellm_params.order: 2 so long sessions fall to it only as overflow (order filtering is applied after the cooldown filter in LiteLLM v1.98.0 router.py, proven by tests/test_router_order2_overflow.py). router_settings.redis_host, redis_port and redis_password (os.environ/REDIS_PASSWORD) are required and redis_url is forbidden (v1.98.0 drops the password when redis_url is set; the cache has requirepass): session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings. router_settings.allowed_fails_policy.NotFoundErrorAllowedFails must be 0 (fleet-ops#9469): a 404 is a withdrawn free model or a dead model id, and the per-exception threshold falls back to the router-level allowed_fails (1) for a key the policy does not name, so without it a dead lane needs two 404s to park and leaks one to the next caller. See the allowed_fails_policy property for the mechanism and for what the 404 cooldown costs on the quota-walled rows.",
+  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). router_settings.redis_host, redis_port and redis_password (os.environ/REDIS_PASSWORD) are required and redis_url is forbidden (v1.98.0 drops the password when redis_url is set; the cache has requirepass): session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings. Paid-plan rows are plain (owner roster, fleet-ops#10935, 2026-11-01): no order, weight, row cooldown or 429-park rule lives here; a failed call is retried, then falls back.",
   "type": "object",
   "required": ["model_list", "router_settings"],
   "if": { "properties": { "model_list": { "contains": { "$ref": "#/$defs/tetherGroupRow" } } } },
@@ -102,75 +102,6 @@
       "items": {
         "type": "object",
         "required": ["model_name", "litellm_params", "model_info"],
-        "allOf": [
-          {
-            "$comment": "fleet-ops#9365: a worker-group row proven unable to cache (supports_prompt_caching false) must sit at order 2, so long-session traffic stays on cache-capable rows and the false row serves only as overflow when order-1 rows are in cooldown.",
-            "if": {
-              "required": ["model_name", "model_info"],
-              "properties": {
-                "model_name": { "pattern": "^worker" },
-                "model_info": {
-                  "required": ["supports_prompt_caching"],
-                  "properties": { "supports_prompt_caching": { "const": false } }
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "litellm_params": {
-                  "required": ["order"],
-                  "properties": { "order": { "const": 2 } }
-                }
-              }
-            }
-          },
-          {
-            "$comment": "Every worker row carries an integer weight >= 1 (Nish 2026-10-13 asked for more traffic on the unlimited ds41flash rows). LiteLLM v1.98.0 simple_shuffle.py:43-46 turns weighted picking on only when the FIRST healthy row of the group has a weight, and reads a missing weight as 0: one worker row without it either switches the weighting off or gives that row a 0 share (a bench the header forbids). A weight of 0 or below is the same bench, so the floor is 1.",
-            "if": {
-              "required": ["model_name"],
-              "properties": { "model_name": { "pattern": "^worker" } }
-            },
-            "then": {
-              "properties": {
-                "litellm_params": {
-                  "required": ["weight"],
-                  "properties": { "weight": { "type": "integer", "minimum": 1 } }
-                }
-              }
-            }
-          },
-          {
-            "$comment": "fleet-ops#11146: a row on api.z.ai/api/coding/paas/v4, api.stepfun.ai/step_plan/v1, token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1 or api.minimax.io/anthropic sits on a quota wall with a fixed reset clock, not a burst: the z.ai Coding Plan answers 429 code 1310 'Weekly/Monthly Limit Exhausted' naming its reset time, the Step Plan answers 429 'you have no left credit' while the prepaid balance is drained, the Alibaba token plan answers 429 'Your token-plan 1-month quota has been exhausted' naming its reset date, and the MiniMax token plan answers 429 'Token Plan usage limit reached (2056)' while the plan is spent: with the MINIMAX_API_KEY rows riding the burst treatment their plan re-enterings landed 179 of those 429s inside the #11417 alert window on 2026-10-31 (fleet-ops#11417). The 900 s burst cool with allowed_fails 1 re-enters the wall every 15 min and leaks it to the caller: 58.9% of worker-capable chat calls failed at 2026-10-30 02:28Z with 19 of the 29 worker-capable rows walled, and on 2026-10-31 the judge group held the RouterGroupJammed alert on the token-plan row alone, 107 of its 'quota has been exhausted' 429s in the journal from 20:00Z. The row parks on its first 429 for 6 h and re-probes about 4x/day, so a reset is picked up within hours (the #9075/#9122 treatment). No MiniMax api_base row carries max_parallel_requests (the rule below, #11417): with the row's 6 h park in force, the router's own concurrency 429 (notes 9 and 17: it is raised before any provider call, it counts into the cooldown, and a row's own cooldown_time names the park length per class) would park a healthy plan row 6 h on one slot spike, and the v1.105.0 slot leak (fleet-ops#10762) fills the slots of a freed-never stream; the plan's own 429s hold the key instead (the #10694 treatment).",
-            "if": {
-              "required": ["litellm_params"],
-              "properties": {
-                "litellm_params": {
-                  "required": ["api_base"],
-                  "properties": {
-                    "api_base": { "const": "https://api.z.ai/api/coding/paas/v4" }
-                  }
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "litellm_params": {
-                  "required": ["cooldown_time"],
-                  "properties": { "cooldown_time": { "const": 21600 } }
-                },
-                "model_info": {
-                  "required": ["allowed_fails_policy"],
-                  "properties": {
-                    "allowed_fails_policy": {
-                      "required": ["RateLimitErrorAllowedFails"],
-                      "properties": { "RateLimitErrorAllowedFails": { "const": 0 } }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        ],
         "properties": {
           "litellm_params": {
             "type": "object",
@@ -184,14 +115,7 @@
             "properties": {
               "cooldown_time": { "$ref": "#/$defs/rowCooldown" },
               "supports_prompt_caching": { "type": "boolean" },
-              "cache_proof": { "type": "string", "minLength": 1 },
-              "allowed_fails_policy": {
-                "$comment": "fleet-ops#9469 (PR 9472 coordinator risk): a row-level allowed_fails_policy resolves per exception type BEFORE the router policy (Router.get_allowed_fails_from_policy), so a row naming NotFoundErrorAllowedFails: 1 needs two 404s to park and re-opens the leak the router-level 0 closes. If a row names the key at all, it must be 0.",
-                "type": "object",
-                "properties": {
-                  "NotFoundErrorAllowedFails": { "const": 0 }
-                }
-              }
+              "cache_proof": { "type": "string", "minLength": 1 }
             }
           }
         }
@@ -201,31 +125,18 @@
     "router_settings": {
       "type": "object",
       "not": { "required": ["redis_url"] },
-      "required": ["redis_host", "redis_port", "redis_password", "fallbacks", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
+      "required": ["redis_host", "redis_port", "redis_password", "fallbacks", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "retry_policy"],
       "properties": {
         "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
-        "allowed_fails_policy": {
-          "$comment": "fleet-ops#9469: a 404 is a withdrawn free model or a model id that no longer exists, and it must park the row on the FIRST one. LiteLLM v1.98.0 resolves the threshold per exception type (Router.get_allowed_fails_from_policy), and a key the policy does not name falls back to the router-level allowed_fails (1) - two 404s - so a dead lane is picked again and leaks the 404 to the next caller. NotFoundErrorAllowedFails is required and pinned to 0 for that reason. The other four keys are the ones this file already sets; additionalProperties is false so a typo (NotFoundErrorAllowedFail, NotFoundErrorFails) is a rejected config rather than a silent fallback to 1. When LiteLLM adds an exception type, add its key here too - a rejection naming an unknown key is expected friction, not a bug. A row's own cooldown_time is what the 404 cooldown lasts: 21600 s on the rows parked for a named quota wall, 900 s elsewhere - the rules above pin each family, so see config/litellm-proxy.yaml.",
-          "type": "object",
-          "required": ["NotFoundErrorAllowedFails"],
-          "additionalProperties": false,
-          "properties": {
-            "AuthenticationErrorAllowedFails": { "type": "integer", "minimum": 0 },
-            "RateLimitErrorAllowedFails": { "type": "integer", "minimum": 0 },
-            "TimeoutErrorAllowedFails": { "type": "integer", "minimum": 0 },
-            "InternalServerErrorAllowedFails": { "type": "integer", "minimum": 0 },
-            "NotFoundErrorAllowedFails": { "type": "integer", "const": 0 }
-          }
-        },
         "model_group_alias": {
-          "$comment": "fleet-ops#9330 desk arm of the 3-day token trial, and nothing else: an alias renames a group Pi already picks, so Pi's compaction.modelOverrides (keyed provider/model) can shorten that arm's context without moving a single call to another seat. Only a worker group a Pi job can pick has one, which is why worker-public is here and assistant is not. Pinned as a closed map because an alias also renames the fallback chain: Router._get_model_from_alias resolves the name before routing, but fallback_lookup_groups keys on the requested name, so an alias with no fallbacks entry of its own inherits nothing and a failed row ends the call (the 'No fallback model group' shape of fleet-ops#9290). tests/test_workflow_caps.py asserts each pair here is real, that no alias name shadows a model_name, and that the desk name agent.yml builds is listed.",
+          "$comment": "fleet-ops#9330 desk arm of the 3-day token trial, and nothing else: an alias renames a group Pi already picks, so Pi's compaction.modelOverrides (keyed provider/model) can shorten that arm's context without moving a single call to another seat. Only a worker group a Pi job can pick has one, which is why worker-public is here and assistant is not. One exception: judge -> assistant keeps the old judge callers answered after the judge group was deleted (fleet-ops#10935). Pinned as a closed map because an alias also renames the fallback chain: Router._get_model_from_alias resolves the name before routing, but fallback_lookup_groups keys on the requested name, so an alias with no fallbacks entry of its own inherits nothing and a failed row ends the call (the 'No fallback model group' shape of fleet-ops#9290). tests/test_workflow_caps.py asserts each pair here is real, that no alias name shadows a model_name, and that the desk name agent.yml builds is listed.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "assistant": { "const": "worker-capable" },
             "worker-capable-desk": { "const": "worker-capable" },
             "worker-public": { "const": "worker-capable" },
-            "worker-public-desk": { "const": "worker-capable" }
+            "worker-public-desk": { "const": "worker-capable" },
+            "judge": { "const": "assistant" }
           }
         },
         "fallbacks": {

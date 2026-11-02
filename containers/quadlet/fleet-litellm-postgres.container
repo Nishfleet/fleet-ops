@@ -25,8 +25,8 @@ Environment=PGDATA=%h/.local/share/fleet-litellm-postgres
 # Password auth for every connection (scram-sha-256: unix socket, 127.0.0.1, ::1).
 # The cluster already exists, so the image's POSTGRES_HOST_AUTH_METHOD (initdb time only) does
 # nothing: pg_hba.conf comes from the repo through hba_file. The directory is mounted, not the
-# file. The source is the deploy clone, which fleet-sync refuses to deploy from unless it is on
-# origin/main; a missing clone makes the start fail, loudly.
+# file. The source is /var/lib/fleet-ops/repo, the checkout ansible-pull deploys from main; a
+# missing directory makes the start fail, loudly.
 # Preconditions, checked on the live host before this merged (fleet-ops#10064): both login roles
 # (litellm, nish; there is no `postgres` role) hold SCRAM-SHA-256 verifiers in pg_authid,
 # ~/.pgpass (0600, host `*`) has both, and ~/.config/fleet-ops/litellm-db.env (0600, hex password,
@@ -35,7 +35,7 @@ Environment=PGDATA=%h/.local/share/fleet-litellm-postgres
 # default ~/.pgpass).
 # Lockout recovery: delete the Volume= (config/postgres) and Exec= lines and restart; the data
 # dir's own pg_hba.conf (still `trust`) applies again.
-Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/postgres:/etc/fleet-postgres:ro
+Volume=/var/lib/fleet-ops/repo/config/postgres:/etc/fleet-postgres:ro
 Exec=postgres -c hba_file=/etc/fleet-postgres/pg_hba.conf
 
 [Service]

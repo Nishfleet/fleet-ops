@@ -2,7 +2,7 @@
 # One screen for box health, the 21 runner units, LiteLLM spend (Prometheus)
 # and the agent issue/PR queue (GitHub, via the nishfleet-worker App; the
 # GitHub data source only reads). Data sources and the dashboard are
-# provisioned from config/grafana in the deploy clone; the UI cannot save edits
+# provisioned from config/grafana in /var/lib/fleet-ops/repo; the UI cannot save edits
 # and the login form is off, so anonymous viewers are the only users.
 # fleet-ops#9355 adds the Cloudflare cost alarm: the Infinity data source
 # (preinstalled below) calls the Cloudflare GraphQL analytics API with the
@@ -38,10 +38,10 @@ UserNS=keep-id:uid=472,gid=472
 Volume=%h/.local/share/fleet-grafana:/var/lib/grafana
 # Mount datasources, dashboards, and alerting. The image's unused
 # provisioning dir (plugins) stays empty, so startup logs no errors.
-Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
-Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/dashboards:/etc/grafana/dashboards:ro
+Volume=/var/lib/fleet-ops/repo/config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+Volume=/var/lib/fleet-ops/repo/config/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+Volume=/var/lib/fleet-ops/repo/config/grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
+Volume=/var/lib/fleet-ops/repo/config/grafana/dashboards:/etc/grafana/dashboards:ro
 Volume=%h/.config/fleet-ops/grafana-admin-password:/run/secrets/grafana-admin-password:ro
 # One-hour GitHub App token for the alert webhooks (fleet-ops#9445), rewritten
 # every 20 min by fleet-grafana-github-token.service. A directory, not a file:

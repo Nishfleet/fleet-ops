@@ -1,5 +1,9 @@
 [
+  {"name": "CommandCode", "api_base": "https://api.commandcode.ai/provider/v1", "billing": "prepaid", "source": "fleet-ops#8855 (recharged by Nish 2026-09-28)"},
+  {"name": "MiniMax Token Plan", "api_base": "https://api.minimax.io/anthropic", "billing": "subscription", "source": "fleet-ops#8828, #9009"},
   {"name": "z.ai coding plan", "api_base": "https://api.z.ai/api/coding/paas/v4", "billing": "subscription", "source": "fleet-ops#8929"},
+  {"name": "OpenCode Go", "api_base": "https://opencode.ai/zen/go/v1", "billing": "subscription", "source": "fleet-ops#8035"},
+  {"name": "Alibaba Token Plan (SG)", "api_base": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "billing": "subscription", "source": "fleet-ops#4329, #4445 (assistant group: Hermes chat and old judge callers, fleet-ops#10935)"},
   {"name": "Anthropic Claude API credit", "api_base": "https://api.anthropic.com", "billing": "prepaid", "source": "Nish 2026-10-22 and 2026-10-23, Nishfleet/tether#7 (tether group only, fleet-ops#9980)"},
   {"name": "SuperGrok (xAI subscription)", "api_base": "https://cli-chat-proxy.grok.com/v1", "billing": "subscription", "via": "pi-provider", "source": "item 9, 2026-10-28: runs as a model inside pi through pi's own xai-oauth provider package (config/pi-models.json), not a LiteLLM router row; the login is Hermes's xai-oauth"}
 ]

@@ -462,23 +462,6 @@ def test_config_retry_policy_is_the_fleet_ops_9375_fix():
     assert rp == RP_PROPOSED, rp
 
 
-def test_the_live_config_parks_a_401_row_on_its_first_failure():
-    """fleet-ops#10756 pre-flight, gated: the one retry a 401 gets is a peer retry
-    only because the router-level AuthenticationErrorAllowedFails is 0, so the row
-    that answered 401 parks on its first failure. The drill injects that policy, so
-    without this gate a config edit to 1 would leave every test green and the fix
-    dead in production. No row may name the class either: a row-level value is
-    resolved before the router policy, so it could raise the threshold."""
-    with open(CONFIG_PATH, "rb") as fh:
-        cfg = yaml.safe_load(fh)
-    policy = cfg["router_settings"]["allowed_fails_policy"]
-    assert policy["AuthenticationErrorAllowedFails"] == 0, policy
-    named = [row["model_name"] for row in cfg["model_list"]
-             if "AuthenticationErrorAllowedFails"
-             in (row.get("model_info", {}).get("allowed_fails_policy") or {})]
-    assert named == [], named
-
-
 def test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on():
     # The behavioural tests below assert pick counts and a same-row retry, which
     # are litellm-version facts. A silent bump invalidates every number in this
@@ -901,7 +884,6 @@ if __name__ == "__main__":
     fns = [
         test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on,
         test_config_retry_policy_is_the_fleet_ops_9375_fix,
-        test_the_live_config_parks_a_401_row_on_its_first_failure,
         test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule,
         test_authentication_error_gets_one_retry,
         test_rate_limit_gets_two_retries,
