@@ -35,7 +35,7 @@ groups:
   - name: fleet_host
     rules:
       # Visible, not paged: a failed unit is not by itself an outage. It also
-      # covers a backup, locked copy or size guard run that failed.
+      # covers a backup, locked copy or restore drill run that failed.
       - alert: SystemUnitFailed
         expr: node_systemd_unit_state{state="failed"} == 1
         for: 5m

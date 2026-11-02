@@ -1,17 +1,3 @@
-# The backup unit starts the locked copy through OnSuccess= (restic-r2-backup
-# drop-in 30-copy-on-success.conf), so the box-only copy timer must not fire
-# a copy after a failed backup. Stopped, not removed: it is box-only. A box
-# without the timer is fine.
-- name: Stop the locked-copy timer, the backup unit starts the copy through OnSuccess
-  ansible.builtin.systemd_service:
-    name: restic-r2-locked-copy.timer
-    enabled: false
-    state: stopped
-  register: locked_copy_timer
-  failed_when:
-    - locked_copy_timer.failed | default(false)
-    - "'Could not find the requested service' not in (locked_copy_timer.msg | default(''))"
-
 # OpenTofu runs infra/cloudflare-tokens/ (the per-repo Cloudflare tokens that
 # GitHub Actions secrets are made from). A pinned release, its sha256 in the task, one binary in nish's ~/.local/bin.
 # A bump is a PR that changes the version in the URL and the checksum

@@ -57,15 +57,13 @@
     mode: preserve
     validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
 
-# Restic backup include and exclude lists and the retention policy
-# (config/restic/). The backup and maintenance units read them from
-# /etc/restic/ on every run, so they are installed before the unit drop-ins
-# that name retention.env; a change here is live after
+# Restic backup include and exclude lists (config/restic/). The backup unit
+# reads them from /etc/restic/ on every run; a change here is live after
 # the next fleet-host-config run, no daemon-reload needed. README.md is not
 # copied: it is repo documentation, not box config. Rendered as templates
 # so newer lines can name the home directory through nish_home. Keep
 # Jinja markers ({{, {% and {#) out of their comments and patterns.
-- name: Install restic include, exclude and retention files
+- name: Install restic include and exclude files
   ansible.builtin.template:
     src: "{{ playbook_dir }}/../config/restic/{{ item }}"
     dest: /etc/restic/{{ item }}
@@ -75,7 +73,6 @@
   loop:
     - include.txt
     - exclude.txt
-    - retention.env
 
 # A socket takes new ListenStream addresses only on restart. This copy runs before
 # the tree copy below, which would otherwise write the file first and leave this

@@ -70,10 +70,7 @@ this file goes stale at the next backup.
 - `include.txt` — the backup list, read by `restic backup --files-from`
 - `exclude.txt` — short list of patterns dropped inside included directories
   and in `/etc`, read by `restic backup --exclude-file`
-- `retention.env` — the one retention policy (`RESTIC_FORGET_ARGS`), read as an
-  `EnvironmentFile` by the backup and the maintenance unit
-
-All three are deployed to `/etc/restic/` by `ansible/host.yml` in
+Both are deployed to `/etc/restic/` by `ansible/host.yml` in
 `fleet-host-config.service` (on every push to `main` and daily). No restart or
 daemon-reload needed: the unit reads them fresh on every run.
 
@@ -184,261 +181,55 @@ If a path is missing from the kept table and it cannot be rebuilt, add it to
    `exclude.txt`.
 3. Commit and push. The next `fleet-host-config` run puts the file on the box.
 
-## The size guard (hard stop)
+## Units
 
-`restic-r2-size-guard.service` runs the same backup as a **dry run**
-(`restic backup --dry-run --json`, which uploads nothing) and `jq` reads its
-summary. The unit fails with exit **78** when either limit is crossed:
+The play installs these from `rootfs/etc/systemd/system/` (restic docs:
+"Backing up", "Removing backup snapshots", "Checking integrity", "Restoring
+from backup"):
 
-| Limit | Default | Summary field |
-| --- | --- | --- |
-| New data this run | `SIZE_GUARD_MAX_BYTES=1073741824` (1 GiB) | `data_added` |
-| Snapshot restored size | `SIZE_GUARD_MAX_RESTORED_BYTES=4294967296` (4 GiB) | `total_bytes_processed` |
+- `restic-r2-backup.service` and `.timer`, nightly: `pg_dump` of LiteLLM,
+  `restic backup`, `restic forget --prune`, heartbeat ping, then
+  `OnSuccess=restic-r2-locked-copy.service`.
+- `restic-r2-locked-copy.service`: `rclone copy` into the object-locked bucket,
+  `rclone check`, then reclaim of objects past the lock. No timer: only a good
+  backup starts it.
+- `restic-r2-verify.service` and `.timer`, weekly:
+  `restic check --read-data-subset=5%`.
+- `restic-r2-restore-drill.service` and `.timer`, monthly:
+  `restic restore latest --verify` into a tmpfs, `pg_restore --list` of the
+  LiteLLM dump (fails on zero `TABLE DATA` entries), heartbeat ping.
 
-- `restic-r2-backup.service.d/10-size-guard.conf` gives the backup unit
-  a last `ExecStartPre=/usr/bin/systemctl start restic-r2-size-guard.service`
-  (a oneshot start waits and returns the guard's exit status). A failed guard
-  fails the backup unit **before** its `ExecStart`, so nothing over the limit
-  is uploaded and the heartbeat ping is not sent. It runs after the pg_dump
-  line, so the fresh dump is part of what is measured.
-- `restic-r2-backup.service.d/30-copy-on-success.conf` sets
-  `OnSuccess=restic-r2-locked-copy.service`, so the copy into the `-locked`
-  bucket only follows a backup that finished well: a failed backup or a tripped
-  size guard never reaches it, and nothing can be reclaimed from the locked
-  bucket for 30 days. `OnSuccess=` needs systemd 249 or later. It replaces
-  `Requires=restic-r2-backup.service`, which on a oneshot service *starts* the
-  backup first, so the old 06:15 copy ran a second backup every day.
-  `10-needs-backup.conf` keeps only `After=`. The box-only
-  `restic-r2-locked-copy.timer` is redundant: the playbook task "Stop the
-  locked-copy timer" disables it, because a timer copy after a failed 04:38
-  backup is the case the old `Requires=` blocked. Both units take the same
-  `flock`, so they cannot run together. A hand `systemctl start
-  restic-r2-locked-copy` no longer runs a backup first.
-- The failed unit is the signal: `systemctl list-units --state=failed` shows
-  `restic-r2-size-guard.service` and `restic-r2-backup.service`. Find out what
-  grew (`journalctl -u restic-r2-size-guard`), fix the include or exclude list,
-  then `systemctl reset-failed 'restic-r2-*'` and start the backup again. These
-  are system units, so `systemctl --user list-units --state=failed` shows
-  nothing even when both of them failed.
-- The guard is a pre-flight because restic has no repository size limit and
-  its `--json` status lines carry no `data_added`; only the final summary
-  does. `data_added` from a dry run is dedup-aware: it counts only the blobs
-  the repository does not have yet, so a run whose data is already in the
-  bucket reports 0 and passes both limits.
-- The guard is fail-closed. If the dry run itself fails, the guard unit stops
-  before its `ExecStartPost`, no verdict is written and the unit fails, so the
-  backup unit's `ExecStartPre` fails and nothing is uploaded. That is the safe
-  direction: a snapshot that silently skipped a kept path is not a backup. A
-  jailed worker cannot read `/root`, `/var/spool/cron` and about 37 root-only
-  files under `/etc`, so its dry run fails even when the size is fine, which is
-  why a local dry run adds those paths to an extra local exclude file instead
-  of weakening the shipped list.
-- The `ExecStart` override makes the backup unit read the tracked lists
-  instead of the retired `/etc/restic/netcup-r2-excludes`. Change the paths in
-  `include.txt`, not in the unit.
-
-### Changing a limit, and switching the guard off
-
-Never edit the `jq` line. Override the number with a drop-in:
-
-```bash
-systemctl edit restic-r2-size-guard.service
-#   [Service]
-#   Environment=SIZE_GUARD_MAX_BYTES=4294967296   # 4 GiB
-#   Environment=SIZE_GUARD_MAX_RESTORED_BYTES=0   # 0 = this limit off
-systemctl revert restic-r2-size-guard.service   # back to the shipped numbers
-```
-
-`0` switches **that limit** off and nothing else, so `SIZE_GUARD_MAX_BYTES=0`
-runs the backup with no new-data limit while the 10 GiB restored-size limit
-still applies. Both limits off at once means the guard always passes, which is
-the same as not running it. A dropped `Environment=` line falls back to the
-shipped value, so a wrong edit fails safe rather than open.
-
-Switch it off for one run only when the growth is known and wanted (a first
-backup of a new repository, or a deliberate one-off archive). Revert the
-drop-in afterwards: a guard left off is how the next unexcluded cache grows the
-snapshot again.
-
-A first-ever backup trips the guard: an empty repository holds no blobs, so
-`data_added` is the whole 1.5 GiB and that is over the 1 GiB limit. Run the
-first backup of a new repository with a raised limit, or let the box's existing
-repository carry the history, where `data_added` is only what changed since the
-last snapshot. The local proof on the PR ran its first backup with the limit
-raised to 4 GiB and every later run at the numbers shipped then.
-
-The companion alarm is the Cloudflare R2 bucket-size alarm (#9355). The guard
-is the cheap stop before the upload; the alarm catches a repository that grew
-over many runs, each of them under the threshold.
+Every restic and rclone job takes one `flock`, and waits up to 15 minutes.
+A failed unit is reported by the `SystemUnitFailed` alert.
 
 ## Retention
 
-One policy, defined once in `retention.env` and read by both
-`restic-r2-backup.service` (an `ExecStartPost`) and
-`restic-r2-maintenance.service` (the weekly run):
-
 ```
-restic forget --group-by host,tags --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune
+restic forget --group-by host,tags --keep-daily 7 --keep-weekly 5 --keep-monthly 12 --prune
 ```
 
 Without `--group-by host,tags` restic groups snapshots by host *and path set*,
 and the policy is applied inside each group. Every change to `include.txt`
-starts a new group, so four old groups, with snapshots back to 2026-09-19 and
-one restoring at 9.16 GiB, kept their own newest 7 days and never aged out:
-33 snapshots and 10.4 GB in the live bucket on 2026-10-21, against a kept set
-of about 1.5 GiB. Grouping by host and tags treats the whole history as one.
-
-The units are drop-ins on the box-only base units, so a base unit keeps its
-own old forget line until a drop-in replaces it: `20-retention.conf` resets
-`ExecStartPost=` (the old line and the heartbeat ping) and puts back the new
-forget and the ping, and the maintenance drop-in resets `ExecStart=`. The
-resets were checked line by line against the base units: the backup unit
-carried exactly that forget and the ping, and the maintenance unit exactly a
-forget and a check (its heartbeat is an `ExecStartPost=` the drop-in leaves
-alone). Neither forget line has a `-` prefix: a failed prune fails the unit.
+starts a new group that the policy never ages out. The forget line has no `-`
+prefix: a failed prune fails the backup, so no heartbeat is sent and the locked
+copy does not start.
 
 The locked bucket is a copy, not a second repository: `restic-r2-locked-copy`
-runs `rclone copy` and then `rclone sync --min-age 31d`. A pack the live
-repository prunes is removed from the locked bucket by the next scheduled copy
-if it is older than 31 days; a younger one stays until the 30-day bucket lock
-expires and the copy after that removes it. So only the last 31 days of
-removed history stay recoverable, and the locked bucket does not drain at once.
-Never run `restic forget` or `restic prune` against the locked bucket, and use
-`--no-lock` for any read there: a lock object cannot be deleted for 30 days.
-The bucket's Infrequent Access transition was removed: that class bills a
-30-day minimum and objects here are deleted at 31 days.
+runs `rclone copy` and then `rclone sync --min-age 31d`, so only the last 31
+days of removed history stay recoverable. Never run `restic forget` or
+`restic prune` against the locked bucket, and use `--no-lock` for any read
+there: a lock object cannot be deleted for 30 days.
 
-The first prune under this policy was run by hand, after a dry run that was
-compared with the run, so the first scheduled run deletes nothing unusual.
+## Box-only files
 
-## Monthly full restore drill
+These hold credentials and stay hand-installed:
 
-`restic-r2-restore-test.service` restores two files: it is the smoke test. It
-cannot answer the question a rebuild asks, which is whether the *whole*
-snapshot comes back and whether what comes back is still what the box holds.
-`restic-r2-restore-drill.service` restores the whole latest snapshot once a
-month and checks it.
-
-It runs `restic restore latest --host netcup-rs2000 --target
-/var/tmp/restic-restore-drill --verify`. `--host` keeps it to this box's
-snapshot, and `--verify` re-reads every restored byte against the snapshot, so
-a clean exit means the repository still holds what it wrote.
-
-The restore never lands on a live path. `TemporaryFileSystem=/var/tmp:size=5G`
-makes the workspace a 5 GiB tmpfs inside the unit's own namespace, so the
-decrypted copies of `~/.ssh` and `~/.config` exist only in RAM while the unit
-runs and are gone when it ends, and a crash or power loss mid-drill leaves
-nothing on disk. The cap also bounds the blast radius: a restore that outgrows
-it fails inside the mount instead of filling the root disk. The workspace is
-bounded by the backup side: `restic-r2-size-guard` refuses a snapshot that
-would restore past 4 GiB, the tmpfs gets 5G (that cap plus slack), and
-`MemoryMax=6G` is that 5G plus restic's own buffers, because tmpfs pages count
-against the unit's cgroup. Raise the three together, or a bigger snapshot is
-killed mid-restore.
-
-The drill then compares one file per path in `include.txt` with the live copy
-(`cmp`), and fails on a mismatch or on nothing being compared. The file it picks
-is older than 7 days and smaller than 1 MiB, because a file rewritten since the
-snapshot (the nightly `litellm.dump`, a `-wal`) is expected to differ and would
-report a false mismatch. restic keeps mtimes, so the restored copy carries the
-file's mtime at snapshot time: a live copy newer than that was edited after the
-snapshot and is skipped as churn, and a live copy that is gone is skipped too.
-A mismatch therefore means the content differs at the same or an older mtime.
-The journal keeps restic's own summary, `Summary: Restored N files/dirs
-(X B) in M:SS` — the size and duration the drill exists to record — followed by
-the drill's counts line, `ok compared, skip skipped, bad mismatched`, with each
-file's own `ok`/`MISMATCH`/`skip` line ahead of it. The unit's own start and
-finish lines in the same journal give the wall time of the whole drill.
-
-The schedule is the 1st at 10:00 IST. The first drill runs at the first 1st
-after install, because a timer with no stored trigger replays nothing;
-`Persistent=true` replays a month the box spent switched off at the next boot
-once a trigger is stored. 10:00 sits between the 06:15 locked copy and the next
-day's 03:27 verify, so the drill's hold on the one restic lock is nowhere near
-a backup.
-
-Read the last runs, or start one now:
-
-```
-journalctl -u restic-r2-restore-drill | grep -E 'Summary:|restore drill:'
-sudo systemctl start restic-r2-restore-drill.service   # holds the restic lock for the run
-```
-
-A failed drill is not a page. It is visible as a failed unit
-(`SystemUnitFailed`, a warning) and, if it stops running at all,
-`RestoreDrillStale` fires after 35 days past its last real trigger, also a
-warning: the backup itself is still running and the data is still on R2, so
-this is readiness, not an outage.
-
-This proves the data, not the box. How to rebuild the host from nothing is the
-rebuild plan in the private vault playbooks, rehearsed once on a scratch VM.
-
-## Not deployed from here
-
-The restic units themselves are box-only, installed by root under
-`/etc/systemd/system/restic-r2-*` and deliberately not tracked here: the
-tracked copies had silently diverged from what runs on the box, and a
-`fleet-host-config` run would then "fix" live behaviour. The unit files this
-repo ships are additive, and each one keeps what the box-only units already do
-and changes one thing:
-
-- `restic-r2-backup.service.d/10-size-guard.conf` adds the guard
-  `ExecStartPre` and makes the backup unit read the tracked lists instead of
-  the retired exclude file. The box-only unit's pg_dump, unlock, flock,
-  hardening and heartbeat stay.
-- `restic-r2-size-guard.service` is the dry run and the two limits. It is
-  started by the drop-in, never by a timer.
-- `restic-r2-restore-drill.service` and `restic-r2-restore-drill.timer` are the
-  one pair with no box-only predecessor: the drill is new, so both files are
-  shipped whole instead of as a drop-in, and `tasks/services.yml` enables the
-  timer.
-- `restic-r2-backup.service.d/20-retention.conf` and
-  `restic-r2-maintenance.service.d/10-retention.conf` replace the box-only
-  forget lines with the policy from `retention.env`.
-- `restic-r2-backup.service.d/30-copy-on-success.conf` starts the locked copy
-  through `OnSuccess=`; `restic-r2-locked-copy.service.d/10-needs-backup.conf`
-  keeps only the `After=` order.
-
-These must already exist on the box; they hold credentials and stay
-hand-installed:
-
-- `/etc/restic/netcup-r2.env` — `RESTIC_REPOSITORY`, `RESTIC_PASSWORD`,
-  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (deliberately excluded from the
-  backup, see above)
-- `/etc/restic/netcup-r2-excludes` — the retired exclude list, kept until the
-  next restore test proves the new ones
-- `/etc/tiny-studio/heartbeats.env` — `HC_BACKUP_URL`, `HC_LOCKED_COPY_URL`,
-  `HC_MAINTAINANCE_URL`
+- `/etc/restic/netcup-r2.env` — the restic repository and its keys
+  (deliberately excluded from the backup, see above)
+- `/etc/tiny-studio/heartbeats.env` — `HC_BACKUP_URL`, `HC_LOCKED_COPY_URL`
+- `/home/nish/.config/fleet-ops/keystone-hc.env` — `HC_URL_RESTORE`, pinged by
+  the drill
 - `/etc/rclone/tiny-studio-r2.conf` — the `live:` and `locked:` remotes
 
-If `/etc/restic/netcup-r2.env` goes missing the unit does not run at all
-(`ConditionPathExists`), which is the intended failure mode: no credentials, no
-backup, no silent empty snapshot.
-
-## After the merge: one operator step on the box
-
-`fleet-host-config.service` copies `include.txt` and `exclude.txt` into
-`/etc/restic/` and then fails on any file under a directory it owns that the
-repo does not ship and `/etc/fleet-ops/box-only` does not list. At 15:07 IST on
-2026-10-07 that check failed on three restic files installed by hand on the
-box, so the deploy left `fleet-host-config.service` in a `failed` state:
-
-```
-/etc/systemd/system/restic-r2-backup.service.d/10-size-guard.conf,
-/etc/systemd/system/restic-r2-locked-copy.service.d/10-needs-backup.conf,
-/etc/systemd/system/restic-r2-size-guard.service
-```
-
-All three are shipped by this PR under `rootfs/`, so the deploy replaces the
-hand-installed copies with the tracked ones on the next
-`fleet-host-config.service` run. Nothing needs to be added to
-`/etc/fleet-ops/box-only`.
-
-Until that run happens the daily drift check fails again on every merge. That
-is the intended signal that a root-owned file changed by hand, and the merge
-is what stops it: `fleet-host-config.service` runs on every push to `main`.
-
-The drill's timer needs no operator step. `tasks/services.yml` enables and
-starts it, and the first drill runs at the first 1st after that deploy;
-`Persistent=true` catches up only a month the box spent switched off once a
-trigger is stored.
+If `/etc/restic/netcup-r2.env` goes missing the units do not run at all
+(`ConditionPathExists`): no credentials, no backup, no silent empty snapshot.

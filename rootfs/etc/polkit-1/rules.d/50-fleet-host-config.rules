@@ -11,11 +11,9 @@
 // fleet-update.service: the daily update oneshot; re-run after a fix is live.
 // restic-r2-backup.service: the nightly backup oneshot; BackupFailed texts
 // Nish after 2h, so a re-run after the fix clears it.
-// restic-r2-size-guard.service: the backup size check oneshot; same reason.
 var fleetStartableUnits = [
     "fleet-update.service",
-    "restic-r2-backup.service",
-    "restic-r2-size-guard.service"
+    "restic-r2-backup.service"
 ];
 
 polkit.addRule(function(action, subject) {
