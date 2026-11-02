@@ -31,9 +31,10 @@ jobs:
         run: |
           set -euo pipefail
           gh pr view "$PR" -R "$REPO" --json title,body --template '{{.title}}'$'\n\n''{{.body}}' > "$RUNNER_TEMP/pr.md"
-          gh pr diff "$PR" -R "$REPO" > "$RUNNER_TEMP/pr.full.diff"
-          head -c 400000 "$RUNNER_TEMP/pr.full.diff" > "$RUNNER_TEMP/pr.diff"
+          gh pr diff "$PR" -R "$REPO" > "$RUNNER_TEMP/pr.diff"
           [ -s "$RUNNER_TEMP/pr.diff" ] || { echo "::error::empty diff"; exit 1; }
+          # Nothing unread gets a verdict: a diff the seat cannot take whole fails here, unreviewed, so it cannot merge.
+          [ "$(wc -c < "$RUNNER_TEMP/pr.diff")" -le 400000 ] || { echo "::error::diff over 400 KB, split the pull request"; exit 1; }
       - name: Review on the Grok seat
         run: |
           set -euo pipefail
@@ -54,7 +55,7 @@ jobs:
         env: {GH_TOKEN: "${{ github.token }}"}
         run: |
           set -euo pipefail
-          verdict=$(grep -oE '^VERDICT: (APPROVE|REQUEST_CHANGES)' "$RUNNER_TEMP/review.md" | tail -1 | cut -d' ' -f2)
+          verdict=$(grep -oE '^VERDICT: (APPROVE|REQUEST_CHANGES)' "$RUNNER_TEMP/review.md" | tail -1 | cut -d' ' -f2 || true)
           { echo "Independent review (Grok 4.7, fleet-ops review.yml):"; echo; cat "$RUNNER_TEMP/review.md"; } > "$RUNNER_TEMP/body.md"
           case "$verdict" in
             APPROVE) gh pr review "$PR" -R "$REPO" --approve --body-file "$RUNNER_TEMP/body.md" ;;
