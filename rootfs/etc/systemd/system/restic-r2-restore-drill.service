@@ -20,6 +20,7 @@ EnvironmentFile=/etc/restic/netcup-r2.env
 EnvironmentFile=/home/nish/.config/fleet-ops/keystone-hc.env
 Environment=RESTIC_CACHE_DIR=/var/cache/restic-live
 Environment=DRILL_DIR=/var/tmp/restic-restore-drill
+ExecStartPre=/usr/bin/rm -rf /var/tmp/restic-restore-drill
 ExecStartPre=/usr/bin/restic unlock
 ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/restic restore latest --host netcup-rs2000 --target ${DRILL_DIR} --verify
 ExecStart=/usr/bin/bash -c 'set -o pipefail; /usr/bin/pg_restore --list "$${DRILL_DIR}/home/nish/workspaces/agent-state/backups/litellm.dump" | /usr/bin/grep -c "TABLE DATA"'
