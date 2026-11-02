@@ -34,7 +34,7 @@ jobs:
           gh pr diff "$PR" -R "$REPO" > "$RUNNER_TEMP/pr.diff"
           [ -s "$RUNNER_TEMP/pr.diff" ] || { echo "::error::empty diff"; exit 1; }
           # Nothing unread gets a verdict: a diff the seat cannot take whole fails here, unreviewed, so it cannot merge.
-          [ "$(wc -c < "$RUNNER_TEMP/pr.diff")" -le 400000 ] || { echo "::error::diff over 400 KB, split the pull request"; exit 1; }
+          [ "$(wc -c < "$RUNNER_TEMP/pr.diff")" -le 400000 ] || { echo "::error::diff over 400000 bytes, split the pull request"; exit 1; }
       - name: Review on the Grok seat
         run: |
           set -euo pipefail
