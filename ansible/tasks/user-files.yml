@@ -14,15 +14,7 @@
     - app-litellm.slice
     - app-litellm-postgres.slice
     - app-litellm-redis.slice
-    - cloudflare-tokens-apply.service
-    - cloudflare-tokens-apply.timer
-    - fleet-d1-restore-drill.service
-    - fleet-d1-restore-drill.timer
-    - fleet-grafana-github-token.service
-    - fleet-grafana-github-token.timer
-    - fleet-worker-github-token@.service
     - syncthing.service
-    - tincan-relay.service
     - tmux-spawn-.scope.d/50-interactive-cpu-priority.conf
   notify: Reload nish's user manager
 
@@ -89,13 +81,24 @@
 - name: Apply the user manager reload before enabling
   ansible.builtin.meta: flush_handlers
 
-- name: Enable nish's user timers and services
+- name: Enable nish's user services
   ansible.builtin.command:
     argv: [systemctl, --user, --machine=nish@.host, enable, --now, "{{ item }}"]
+  loop:
+    - syncthing.service
+  changed_when: false
+
+# System units with User=nish (fleet-ops#11643), installed from rootfs/. Enabled
+# here, after tasks/retired-and-drift.yml stopped their old user copies.
+- name: Enable the system units that run as nish
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
   loop:
     - cloudflare-tokens-apply.timer
     - fleet-d1-restore-drill.timer
     - fleet-grafana-github-token.timer
-    - syncthing.service
     - tincan-relay.service
-  changed_when: false
+  ignore_errors: "{{ ansible_check_mode }}"

@@ -109,6 +109,16 @@
       - fleet-grafana-provisioning.path
       # The VNC desktop; the box has no graphical desktop (fleet-ops#10935).
       - tigervnc.service
+      # Now system units with User=nish, so SystemUnitFailed sees them (fleet-ops#11643).
+      # Stopped here before tasks/user-files.yml starts the system copies, so two
+      # relays never share one tsnet state dir.
+      - cloudflare-tokens-apply.timer
+      - cloudflare-tokens-apply.service
+      - fleet-d1-restore-drill.timer
+      - fleet-d1-restore-drill.service
+      - fleet-grafana-github-token.timer
+      - fleet-grafana-github-token.service
+      - tincan-relay.service
     retired:
       - /etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service
       - /etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service.d
@@ -176,6 +186,15 @@
       - "{{ nish_home }}/.cursor/rules/shared-memory.mdc"
       # Disabled listener whose extension and prompt left the repo; box-only file.
       - /etc/systemd/system/tincan-listen-issue-desk.service
+      # The user copies of the units rootfs/ now installs as system units (fleet-ops#11643).
+      - "{{ nish_home }}/.config/systemd/user/cloudflare-tokens-apply.service"
+      - "{{ nish_home }}/.config/systemd/user/cloudflare-tokens-apply.timer"
+      - "{{ nish_home }}/.config/systemd/user/fleet-d1-restore-drill.service"
+      - "{{ nish_home }}/.config/systemd/user/fleet-d1-restore-drill.timer"
+      - "{{ nish_home }}/.config/systemd/user/fleet-grafana-github-token.service"
+      - "{{ nish_home }}/.config/systemd/user/fleet-grafana-github-token.timer"
+      - "{{ nish_home }}/.config/systemd/user/fleet-worker-github-token@.service"
+      - "{{ nish_home }}/.config/systemd/user/tincan-relay.service"
       # Read only by the hand-install drift check, deleted 2026-11-01.
       - /etc/fleet-ops/box-only
     nish_home: "{{ '~nish' | expanduser }}"

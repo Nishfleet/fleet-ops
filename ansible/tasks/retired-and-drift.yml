@@ -15,10 +15,11 @@
 
 # stop, not disable --now: disable gives up once the unit file is gone, and a
 # loaded unit keeps running. Enable links go in retired with the unit files.
+# reset-failed drops a failed state the user manager would keep listing.
 - name: Stop and disable retired units in nish's user manager
   ansible.builtin.command:
     argv: [systemctl, --user, --machine=nish@.host, "{{ item.0 }}", "{{ item.1 }}"]
-  loop: "{{ ['stop', 'disable'] | product(retired_user_units) | list }}"
+  loop: "{{ ['stop', 'disable', 'reset-failed'] | product(retired_user_units) | list }}"
   register: retired_user_unit_off
   changed_when: retired_user_unit_off.rc == 0
   failed_when: >-

@@ -17,12 +17,16 @@
 # First start needs a one-time login: the journal prints "go to: https://login.tailscale.com/a/..."
 # Open it signed in as Nish and approve. State then lives in ~/.local/state/tincan-relay/tsnet.
 #
-# Install: ansible/tasks/user-files.yml copies this file on every deploy; enable it once:
-#   systemctl --user enable --now tincan-relay.service
+# Install: ansible/host.yml installs this file and ansible/tasks/user-files.yml enables it.
+# A system unit with User=nish (fleet-ops#11643), so node_exporter's systemd collector sees
+# it fail (StartLimitBurst below); nish's user manager is invisible to it. Same user, same
+# --state-dir as the user unit it replaced, so the tsnet node and the gate carry over. %S
+# would be /var/lib in the system manager (systemd.unit(5), "Specifiers"), so the path is
+# literal and StateDirectory= is gone: the directory already exists, 0700 nish.
 # Admin (invite, agents, trace): tincan <cmd> --socket ~/.local/state/tincan-relay/admin.sock
-# Switch off: systemctl --user disable --now tincan-relay.service
+# Switch off: systemctl disable --now tincan-relay.service
 #   (every Tincan agent then loses its relay until it is started again).
-# Delete: switch off, `systemctl --user unlink tincan-relay.service`, then delete this file in a PR.
+# Delete: switch off, `systemctl disable tincan-relay.service`, then delete this file in a PR.
 # State: ~/.local/state/tincan-relay (relay.db, wake.json, admin.sock, tsnet/, approval.json).
 # Back it up with ~/.local/state.
 [Unit]
@@ -36,9 +40,9 @@ StartLimitBurst=5
 
 [Service]
 Environment=FLEET_TASK_ID=tincan-relay
-StateDirectory=tincan-relay
-StateDirectoryMode=0700
-ExecStart=/home/nish/.local/bin/tincan relay --hostname tincan-relay-vps --state-dir %S/tincan-relay --no-auto-rebind --dist %S/tincan-relay/dist --release-url https://github.com/mvanhorn/agent-tincan/releases/download --upgrade-exit
+User=nish
+Group=nish
+ExecStart=/home/nish/.local/bin/tincan relay --hostname tincan-relay-vps --state-dir /home/nish/.local/state/tincan-relay --no-auto-rebind --dist /home/nish/.local/state/tincan-relay/dist --release-url https://github.com/mvanhorn/agent-tincan/releases/download --upgrade-exit
 Restart=always
 RestartSec=10
 # --dist is where `tincan relay-upgrade --from-github` stages releases (it 404s without it).
@@ -46,4 +50,4 @@ RestartSec=10
 SuccessExitStatus=75
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

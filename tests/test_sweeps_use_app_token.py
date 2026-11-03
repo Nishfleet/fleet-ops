@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SYSTEMD = ROOT / "systemd"
+SYSTEMD = ROOT / "rootfs/etc/systemd/system"
 
 
 def test_only_the_actions_instance_asks_for_actions_write() -> None:

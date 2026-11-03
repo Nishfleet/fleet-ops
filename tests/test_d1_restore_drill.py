@@ -5,8 +5,8 @@ import subprocess
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-UNIT = ROOT / "systemd/fleet-d1-restore-drill.service"
-TIMER = ROOT / "systemd/fleet-d1-restore-drill.timer"
+UNIT = ROOT / "rootfs/etc/systemd/system/fleet-d1-restore-drill.service"
+TIMER = ROOT / "rootfs/etc/systemd/system/fleet-d1-restore-drill.timer"
 
 DUMP = """CREATE TABLE IF NOT EXISTS alpha (id INTEGER PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS beta (name TEXT);
@@ -114,7 +114,7 @@ def _run(tmp_path: pathlib.Path, bindir: pathlib.Path, steps: list[list[str]] | 
         **_env_defaults(),
         "DRILL_KEY": str(tmp_path / "key"),
         "DRILL_STATE": str(state),
-        "RUNTIME_DIRECTORY": str(runtime),
+        "DRILL_OUT": str(runtime),
     }
     env.update(extra or {})
     for argv in _exec(UNIT) if steps is None else steps:
@@ -136,12 +136,13 @@ def test_unit_env_defaults_match_the_test():
     text = UNIT.read_text()
     assert "Environment=GH_REPO=Nishfleet/drive" in text
     assert "Environment=GH_WORKFLOW=d1-export.yml" in text
-    assert "Environment=DRILL_KEY=%h/.config/drive/d1-backup-key.txt" in text
-    assert "Environment=DRILL_STATE=%h/workspaces/agent-state/d1-restore-drill" in text
+    assert "Environment=DRILL_KEY=/home/nish/.config/drive/d1-backup-key.txt" in text
+    assert "Environment=DRILL_STATE=/home/nish/workspaces/agent-state/d1-restore-drill" in text
     assert "Environment=TZ=Asia/Kolkata" in text
     assert "Requires=fleet-worker-github-token@actions:drive.service" in text
-    assert "RuntimeDirectory=fleet-d1-restore-drill" in text
-    assert "RuntimeDirectoryMode=0700" in text
+    assert "User=nish" in text
+    assert "PrivateTmp=yes" in text
+    assert "Environment=DRILL_OUT=/tmp" in text
 
 
 def test_timer_runs_monthly_on_the_host_clock_and_persists():
@@ -274,12 +275,12 @@ def test_the_revoke_step_revokes_the_token_and_removes_its_env_file(tmp_path):
     runtime = tmp_path / "run-user"
     (runtime / "fleet-worker-github-token").mkdir(parents=True)
     (runtime / "fleet-worker-github-token" / "actions:drive.env").write_text("GH_TOKEN=ghs_probe\n")
-    specifiers = (("%%", "\x00"), ("%h", "/home/nish"), ("%t", str(runtime)), ("%N", "fleet-d1-restore-drill.service"))
+    specifiers = (("%%", "\x00"), ("/run/user/1000", str(runtime)), ("%N", "fleet-d1-restore-drill.service"))
     env = {
         "PATH": f"{bindir}:/usr/bin:/bin",
         "STUB_LOG": str(tmp_path / "log"),
         "GH_TOKEN": "ghs_probe",
-        "RUNTIME_DIRECTORY": str(tmp_path / "run"),
+        "DRILL_OUT": str(tmp_path / "run"),
     }
     done = subprocess.run(_exec_stop_post(specifiers)[0], env=env, capture_output=True, text=True, timeout=30)
     assert done.returncode == 0

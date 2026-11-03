@@ -15,10 +15,6 @@
 
 [Unit]
 Description=Fleet view (Grafana, Quadlet)
-# The alert webhook's GitHub token is minted by this oneshot (fleet-ops#9445);
-# the directory it fills must exist before the container mounts it.
-Wants=fleet-grafana-github-token.service
-After=fleet-grafana-github-token.service
 # A crash loop must reach `failed`, which only the user-manager failed list
 # (`systemctl --user list-units --state=failed`) reads: no OnFailure= hook, and
 # the node_systemd_unit_state gauge reads system units only. The default 5
@@ -89,8 +85,8 @@ Environment=GF_UNIFIED_ALERTING_EVALUATION_TIMEOUT=45s
 # The token directory and file must exist before the container mounts them and
 # before Grafana expands $__file{} (a missing file fails the whole alerting
 # provisioning, not just the GitHub route). fleet-grafana-github-token.service
-# normally makes both first (Wants=/After= above); this makes a start safe when
-# that unit is not wired yet or the mint failed, leaving an empty token: the
+# (a system unit, which a user unit cannot order on) fills them every 20 min;
+# this makes a start safe before its first mint or after a failed one, leaving an empty token: the
 # webhook then answers 401 and the delivery rule pages hermes-urgent.
 ExecStartPre=/bin/sh -c 'umask 077; d=%t/fleet-grafana-github-token; mkdir -p "$$d"; test -e "$$d/token" || : > "$$d/token"'
 # Measured 2026-10-02: ~240 MB anon + ~160 MB file cache; 400M kept it in

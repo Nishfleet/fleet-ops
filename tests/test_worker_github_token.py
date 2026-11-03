@@ -9,7 +9,7 @@ import time
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-UNIT = ROOT / "systemd/fleet-worker-github-token@.service"
+UNIT = ROOT / "rootfs/etc/systemd/system/fleet-worker-github-token@.service"
 STUB = ROOT / "tests/github_app_stub.py"
 NAME = "fleet-worker-token-pytest@"
 IN_CI = bool(os.environ.get("GITHUB_ACTIONS"))
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def own_dir(text):
-    text = text.replace("RuntimeDirectory=fleet-worker-github-token\n", f"RuntimeDirectory={ENV_NAME}\n").replace("%t/fleet-worker-github-token/", f"%t/{ENV_NAME}/")
+    text = text.replace("/run/user/1000/fleet-worker-github-token", str(ENV_DIR))
     assert not re.search(r"fleet-worker-github-token(/|\n)", text), "a test unit still names the live token directory"
     return text
 
@@ -60,11 +60,13 @@ def mint(tmp_path_factory):
                 break
         time.sleep(0.25)
     text = own_dir(UNIT.read_text())
-    text = text.replace("%h/.config/fleet-worker/nishfleet-worker.private-key.pem", str(d / "app.pem"))
+    text = text.replace("/home/nish/.config/fleet-worker/nishfleet-worker.private-key.pem", str(d / "app.pem"))
+    text = re.sub(r"^Group=.*\n", "", text, flags=re.M)
+    text = re.sub(r"^User=.*$", f"User={os.environ['USER']}" if IN_CI else "", text, flags=re.M)
     text = re.sub(r"^OnFailure=.*\n", "", text, flags=re.M)
     text = re.sub(r"^Environment=GITHUB_API_URL=.*$", f"Environment=GITHUB_API_URL=http://127.0.0.1:{port}", text, flags=re.M)
     if IN_CI:
-        text = text.replace("[Service]\n", f"[Service]\nUser={os.environ['USER']}\n")
+        sh([*SUDO, "install", "-d", "-m", "0700", "-o", os.environ["USER"], str(ENV_DIR)], check=True)
     unit = d / f"{NAME}.service"
     unit.write_text(text)
     target = UNIT_DIR / f"{NAME}.service"

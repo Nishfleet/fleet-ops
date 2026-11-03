@@ -173,7 +173,7 @@ Turn it on once, by hand, with no one else applying at the same time:
     umask 077
     cp infra/cloudflare-tokens/state-encryption.env.example ~/.config/cloudflare/tofu-state-encryption.env
     # replace the placeholder with the output of: openssl rand -base64 32
-    systemctl --user start cloudflare-tokens-apply.service
+    sudo systemctl start cloudflare-tokens-apply.service
 
 The first apply reads the plain state through the `fallback` member and writes
 it encrypted. OpenTofu writes `.backup` only when the state changes, so the old
@@ -255,8 +255,7 @@ changes nothing on a healthy apply.
 The `precondition` on the token resource stays: with `vps_only =
 true` and an empty `vps_cidrs`, the plan fails (fail-closed) instead of minting
 an unlocked token. That failure stops the whole apply, so no other token is
-renewed either; it is loud (the unit's `OnFailure=` fires the healthchecks fail
-ping) and the tokens keep working until 45 days after their last rotation, which
+renewed either; it is loud (Prometheus `SystemUnitFailed` reports the failed unit) and the tokens keep working until 45 days after their last rotation, which
 leaves about two weeks to place the file after the first failed weekly run.
 
 ## Rotation
@@ -273,15 +272,12 @@ coexist.
 `vps-grafana` has a second consumer that a rewritten file does not reach:
 Grafana mounts a **copy** of the file as the `grafana-cloudflare-api-token`
 Podman secret, and `ansible/tasks/secrets.yml` recreates that copy on a
-host-config run. So the apply's `ExecStartPost` starts
-`fleet-host-config.service`, the writer that already does that, instead of
-writing the secret a second time: it replaces the copy only when the value
-changed and restarts `fleet-grafana.service` only then. Without that step the
-window between a rotation and the next host-config run would leave Grafana
-holding a token the apply had just deleted, and the Cloudflare spend watch
-(fleet-ops#9355) would read nothing meanwhile. There is no host-config timer,
-so that window has no other bound. polkit grants user `nish` the verb `start` on
-that unit and nothing else (`rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules`).
+host-config run (every merge to main, and every boot). Between a rotation and
+that run, Grafana holds the token the apply just deleted, so the Cloudflare
+spend watch (fleet-ops#9355) reads nothing for that window. The apply no longer
+starts the host-config run itself: polkit gives `nish` no start on that unit
+(`rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules`), so the step failed
+every run (fleet-ops#11672).
 
 Rotation happens only when `tofu apply` runs. If no apply happens within 45
 days of the last one, the tokens expire and the deploys that read them fail. The
@@ -294,13 +290,13 @@ right trigger (not an event).
 
 | Unit | File | What |
 |---|---|---|
-| `cloudflare-tokens-apply.service` | `systemd/cloudflare-tokens-apply.service` | oneshot: `tofu -chdir=infra/cloudflare-tokens apply -auto-approve -input=false`, run from `/var/lib/fleet-ops/repo` |
-| `cloudflare-tokens-apply.timer` | `systemd/cloudflare-tokens-apply.timer` | `OnCalendar=weekly`, `Persistent=true`, `RandomizedDelaySec=1h` |
+| `cloudflare-tokens-apply.service` | `rootfs/etc/systemd/system/cloudflare-tokens-apply.service` | oneshot: `tofu -chdir=infra/cloudflare-tokens apply -auto-approve -input=false`, run from `/var/lib/fleet-ops/repo` |
+| `cloudflare-tokens-apply.timer` | `rootfs/etc/systemd/system/cloudflare-tokens-apply.timer` | `OnCalendar=weekly`, `Persistent=true`, `RandomizedDelaySec=1h` |
 
 Weekly, because tokens rotate at 30 days and expire at 45: the apply does nothing
 for three weeks, then replaces them, and two missed weeks still leave slack.
 
-- Credentials: `EnvironmentFile=%h/.config/cloudflare/token-minter.env` for Cloudflare. GitHub
+- Credentials: `EnvironmentFile=/home/nish/.config/cloudflare/token-minter.env` for Cloudflare. GitHub
   secrets are written by the `nishfleet-secrets` GitHub App (Secrets and Environments write only,
   installed on the repos in `main.tf`); its key is `~/.config/cloudflare/nishfleet-secrets.private-key.pem`, mode 0600,
   in the directory every worker jail hides.
@@ -310,25 +306,22 @@ for three weeks, then replaces them, and two missed weeks still leave slack.
   the same file as a hand apply. The provider cache goes to
   `~/.cache/fleet-ops/cloudflare-tokens-tofu` (`TF_DATA_DIR`) because the root-owned checkout is read-only to nish.
   `ExecStartPre` runs `tofu init`.
-- Failure is loud: `OnFailure=fleet-unit-failed@%N.service` sends the
-  healthchecks.io fail ping (fleet-ops#9033), and the unit shows in
-  `systemctl --user list-units --state=failed`. Logs:
-  `journalctl --user -u cloudflare-tokens-apply.service`.
+- Failure is loud: a system unit with `User=nish` (fleet-ops#11643), so
+  Prometheus `SystemUnitFailed` reports a failed run. Logs:
+  `journalctl -u cloudflare-tokens-apply.service`.
 - `tofu` is installed to `~/.local/bin/tofu` by `ansible/host.yml` (root, on the
   `fleet-host-config` run after merge). Until then the unit fails on a missing
   binary.
 
-The deploy copies both units (`ansible/tasks/user-files.yml`). Enable once:
+The deploy installs both units and enables the timer (`ansible/tasks/user-files.yml`).
+First run now, then read the journal:
 
-    systemctl --user enable --now cloudflare-tokens-apply.timer
-    systemctl --user start cloudflare-tokens-apply.service   # first run now, then read the journal
+    sudo systemctl start cloudflare-tokens-apply.service
 
-The user units live in `systemd/`, not in `ansible/host.yml`: that playbook is
-the root-owned half (it installs `tofu` and the restic list).
-
-Switch the renewal off: `systemctl --user disable --now cloudflare-tokens-apply.timer`.
-To retire it for good, also `systemctl --user unlink` both unit names and delete
-`systemd/cloudflare-tokens-apply.service` and `.timer` from the repo. The tokens
+Switch the renewal off: `sudo systemctl disable --now cloudflare-tokens-apply.timer`.
+To retire it for good, also delete
+`rootfs/etc/systemd/system/cloudflare-tokens-apply.service` and `.timer` from the repo
+and drop the timer from `ansible/tasks/user-files.yml`. The tokens
 then keep working until their expiry date (at most 45 days after the last apply).
 
 ## Switch it off and delete it
