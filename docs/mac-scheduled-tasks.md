@@ -93,8 +93,8 @@ gate. Both end retired, but for different reasons, and the difference matters.
 
 ## The digest prompts' canonical home (fleet-ops#9706)
 
-The `digest-morning` and `digest-evening` jobs' prompt text lives in this repo:
-`config/hermes/digest-morning.md` and `config/hermes/digest-evening.md`. The
+The `digest-morning`, `digest-evening` and `audit-file` jobs' prompt text lives in
+this repo: `config/hermes/<job name>.md`. The
 live copies under `~/.hermes/cron/jobs.json` on this box are applied from these
 files by `ansible/host.yml`, never edited by hand:
 
