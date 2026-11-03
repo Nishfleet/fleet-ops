@@ -144,7 +144,7 @@ Run one by hand, on the host:
     sudo systemctl start fleet-d1-restore-drill.service
 
 Switch it off: `sudo systemctl disable --now fleet-d1-restore-drill.timer`,
-then drop its enable line from `ansible/tasks/user-files.yml` and delete both
+then drop its enable line from `ansible/tasks/retired-and-drift.yml` and delete both
 unit files.
 
 ## Deploy and wiring

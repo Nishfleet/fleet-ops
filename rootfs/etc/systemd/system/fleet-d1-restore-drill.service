@@ -32,7 +32,7 @@
 # Nish has ruled out (fleet-ops#10594).
 #
 # The dumps are real customer data (payment rows, email signups). They are
-# decrypted only inside the unit's private /tmp (PrivateTmp=yes), and
+# decrypted only inside the unit's own RAM-only /tmp, and
 # systemd removes it when the unit stops, so nothing decrypted
 # outlives the drill. The report carries counts and integrity results, never a
 # row, a name or an email address.
@@ -60,16 +60,17 @@
 # found through /usr/bin/env, so the unit names no home path.
 #
 # Switch off: systemctl disable --now fleet-d1-restore-drill.timer, then
-# drop its enable line from ansible/tasks/user-files.yml and delete both files.
+# drop its enable line from ansible/tasks/retired-and-drift.yml and delete both files.
 
 # A system unit with User=nish (fleet-ops#11643), so node_exporter's systemd
 # collector sees it and SystemUnitFailed reports a failed run; nish's user
 # manager is invisible to it. In the system manager %h is /root and %t is /run
 # whatever User= says (systemd.unit(5), "Specifiers"), so paths are literal.
-# PrivateTmp=yes (systemd.exec(5)) gives the run its own /tmp, which systemd
-# removes when the unit stops; a system unit can build that namespace, so the
-# decrypted dumps are never visible to another nish process (CI runners run as
-# nish). DRILL_OUT names it so the tests can point it elsewhere.
+# TemporaryFileSystem=/tmp (systemd.exec(5)) gives the run its own RAM-only
+# /tmp, which goes away when the unit stops; a system unit can build that
+# namespace, so the decrypted dumps never touch disk and no other nish process
+# sees them (CI runners run as nish). DRILL_OUT names it so the tests can point
+# it elsewhere.
 [Unit]
 Description=Monthly restore drill over the newest D1 backups (fleet-ops#10594)
 Requires=fleet-worker-github-token@actions:drive.service
@@ -79,7 +80,7 @@ After=fleet-worker-github-token@actions:drive.service
 Type=oneshot
 User=nish
 Group=nish
-PrivateTmp=yes
+TemporaryFileSystem=/tmp:mode=1777
 Environment=DRILL_OUT=/tmp
 Environment=GH_REPO=Nishfleet/drive
 Environment=GH_WORKFLOW=d1-export.yml

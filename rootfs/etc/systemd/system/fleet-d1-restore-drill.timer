@@ -7,7 +7,7 @@ Description=Restore-drill the newest D1 backups, monthly (fleet-ops#10594)
 # key is here and on no runner. See fleet-d1-restore-drill.service for what it
 # proves and what it refuses to do.
 # Switch off: systemctl disable --now fleet-d1-restore-drill.timer, then
-# drop its enable line from ansible/tasks/user-files.yml and delete both files.
+# drop its enable line from ansible/tasks/retired-and-drift.yml and delete both files.
 
 [Timer]
 OnCalendar=*-*-01 05:30:00 Asia/Kolkata

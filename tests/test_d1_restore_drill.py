@@ -141,7 +141,7 @@ def test_unit_env_defaults_match_the_test():
     assert "Environment=TZ=Asia/Kolkata" in text
     assert "Requires=fleet-worker-github-token@actions:drive.service" in text
     assert "User=nish" in text
-    assert "PrivateTmp=yes" in text
+    assert "TemporaryFileSystem=/tmp:mode=1777" in text
     assert "Environment=DRILL_OUT=/tmp" in text
 
 

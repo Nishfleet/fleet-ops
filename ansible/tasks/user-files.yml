@@ -87,18 +87,3 @@
   loop:
     - syncthing.service
   changed_when: false
-
-# System units with User=nish (fleet-ops#11643), installed from rootfs/. Enabled
-# here, after tasks/retired-and-drift.yml stopped their old user copies.
-- name: Enable the system units that run as nish
-  ansible.builtin.systemd_service:
-    name: "{{ item }}"
-    enabled: true
-    state: started
-    daemon_reload: true
-  loop:
-    - cloudflare-tokens-apply.timer
-    - fleet-d1-restore-drill.timer
-    - fleet-grafana-github-token.timer
-    - tincan-relay.service
-  ignore_errors: "{{ ansible_check_mode }}"

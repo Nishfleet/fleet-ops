@@ -313,7 +313,7 @@ for three weeks, then replaces them, and two missed weeks still leave slack.
   `fleet-host-config` run after merge). Until then the unit fails on a missing
   binary.
 
-The deploy installs both units and enables the timer (`ansible/tasks/user-files.yml`).
+The deploy installs both units and enables the timer (`ansible/tasks/retired-and-drift.yml`).
 First run now, then read the journal:
 
     sudo systemctl start cloudflare-tokens-apply.service
@@ -321,7 +321,7 @@ First run now, then read the journal:
 Switch the renewal off: `sudo systemctl disable --now cloudflare-tokens-apply.timer`.
 To retire it for good, also delete
 `rootfs/etc/systemd/system/cloudflare-tokens-apply.service` and `.timer` from the repo
-and drop the timer from `ansible/tasks/user-files.yml`. The tokens
+and drop the timer from `ansible/tasks/retired-and-drift.yml`. The tokens
 then keep working until their expiry date (at most 45 days after the last apply).
 
 ## Switch it off and delete it

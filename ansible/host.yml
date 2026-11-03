@@ -110,7 +110,7 @@
       # The VNC desktop; the box has no graphical desktop (fleet-ops#10935).
       - tigervnc.service
       # Now system units with User=nish, so SystemUnitFailed sees them (fleet-ops#11643).
-      # Stopped here before tasks/user-files.yml starts the system copies, so two
+      # Stopped before tasks/retired-and-drift.yml starts the system copies, so two
       # relays never share one tsnet state dir.
       - cloudflare-tokens-apply.timer
       - cloudflare-tokens-apply.service

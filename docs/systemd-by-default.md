@@ -16,7 +16,7 @@ sudo systemd-run --uid=nish --gid=nish --unit <name> \
   -p 'ExecStartPre=/bin/sh -c '"'"'test -n "$GH_TOKEN"'"'"'' \
   -E DELIVERABLE=<absolute artifact path> \
   -p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"'' \
-  -- sh -c 'cat /path/to/packet.md | pi --print --provider <provider> --model <model>'
+  -- sh -c 'cat /path/to/packet.md | /home/nish/.local/bin/pi --print --provider <provider> --model <model>'
 ```
 
 `<repo>` is the Nishfleet repo the worker targets. `Requires=` pulls in
@@ -36,12 +36,12 @@ this host on 2026-09-18 (RED: no artifact -> `Result=exit-code`; GREEN: artifact
 written -> `Result=success`; `RuntimeMaxSec=5` against `sleep 60` ->
 `Result=timeout`).
 
-Drop `--collect` when you want the dead unit to stay listed in
-`systemctl --user list-units --state=failed`. With `--collect` systemd unloads
-the unit as soon as it dies, so the failure survives only in the journal
-(`journalctl --user -u <name>`).
+The unit is a system unit, so a failed run stays listed in
+`systemctl list-units --state=failed` and `SystemUnitFailed` sees it (no
+`--collect`, which would unload it as soon as it dies). Logs:
+`journalctl -u <name>`.
 
-Watch a live run with `systemctl --user status <name>.service`.
+Watch a live run with `systemctl status <name>.service`.
 
 Not a dispatcher: no retry ladder, no seat rotation, no queue. `RuntimeMaxSec=`
 and the deliverable check together are the whole of what the retired wrapper's

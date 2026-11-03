@@ -17,7 +17,7 @@
 # First start needs a one-time login: the journal prints "go to: https://login.tailscale.com/a/..."
 # Open it signed in as Nish and approve. State then lives in ~/.local/state/tincan-relay/tsnet.
 #
-# Install: ansible/host.yml installs this file and ansible/tasks/user-files.yml enables it.
+# Install: ansible/host.yml installs this file and ansible/tasks/retired-and-drift.yml enables it.
 # A system unit with User=nish (fleet-ops#11643), so node_exporter's systemd collector sees
 # it fail (StartLimitBurst below); nish's user manager is invisible to it. Same user, same
 # --state-dir as the user unit it replaced, so the tsnet node and the gate carry over. %S
