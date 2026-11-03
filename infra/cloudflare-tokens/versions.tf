@@ -29,6 +29,29 @@ terraform {
   backend "local" {
     path = "/home/nish/.local/state/fleet-ops/cloudflare-tokens/terraform.tfstate"
   }
+
+  # The state holds every token value, so it is written encrypted: OpenTofu
+  # state encryption, AES-GCM with a key derived from a passphrase
+  # (https://opentofu.org/docs/language/state/encryption/). The passphrase is
+  # the sensitive variable state_passphrase, read from TF_VAR_state_passphrase
+  # in a private env file the apply unit requires (README.md, "State
+  # encryption"). The fallback reads the old plain state once; delete it after
+  # the first encrypted apply, so a plain state is refused from then on.
+  encryption {
+    key_provider "pbkdf2" "state" {
+      passphrase = var.state_passphrase
+    }
+    method "aes_gcm" "state" {
+      keys = key_provider.pbkdf2.state
+    }
+    method "unencrypted" "migrate" {}
+    state {
+      method = method.aes_gcm.state
+      fallback {
+        method = method.unencrypted.migrate
+      }
+    }
+  }
 }
 
 # The key-making key (the minter token) is read from the environment variable
