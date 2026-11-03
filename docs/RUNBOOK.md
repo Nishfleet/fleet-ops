@@ -580,9 +580,8 @@ on the .path (README "Install").
 `/jev` is a pass-through with `auth: true`, so any valid virtual key reaches it
 and each call books `cost_per_request` against the calling key. Its cap is a
 `fleet-jev` virtual key (`POST /key/generate` with `max_budget`,
-`budget_duration` `1d` and `rpm_limit`). Today worker.md step 4 still reads
-`LITELLM_JEV_KEY` from `seats/typesafe-jev.env`, which is not that key; the cap
-takes effect when the key is minted and that seat file holds it. LiteLLM v1.98
+`budget_duration` `1d` and `rpm_limit`). The cap takes effect when the key is
+minted and `seats/typesafe-jev.env` holds it. LiteLLM v1.98
 has no declarative key list, so minting is one admin-API call, not a config edit.
 
 Backup: the restic backup unit runs `pg_dump -Fc` of the `litellm` database

@@ -51,7 +51,6 @@
     mode: '0644'
   loop:
     - {src: AGENTS.md, dest: .pi/agent/AGENTS.md}
-    - {src: prompts/worker.md, dest: .pi/agent/prompts/worker.md}
     - {src: config/pi-models.json, dest: .pi/agent/models.json}
     - {src: config/claude-agents/helper.md, dest: .claude/agents/helper.md}
     - {src: config/claude-agents/scout.md, dest: .claude/agents/scout.md}
