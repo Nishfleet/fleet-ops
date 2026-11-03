@@ -1,6 +1,6 @@
 # Symptom alerts only (owner reset 2026-11-01, fleet-ops#10935): a public
 # site that stops answering, a deploy that failed, an off-site backup or restore
-# drill that stopped, the owner's Hermes gateway down, and a failed system
+# drill that stopped, the owner's Hermes gateway or Remote Control down, and a failed system
 # unit, which files the issue the self-repair loop fixes. The dead-man
 # heartbeat stays, because only an outside service can say the box itself is
 # down. Every rule about the fleet's own internals (router rows, spend lines,
@@ -69,6 +69,33 @@ groups:
           summary: "hermes-gateway.service has not been active for 5 minutes"
           description: "node_systemd_unit_state{name=\"hermes-gateway.service\",state=\"active\"} has no active sample in the last 5 minutes, or the series is missing."
 
+  - name: fleet_remote_control
+    rules:
+      # Nish's Remote Control server (claude-remote-control.service) has not been
+      # active for 15 minutes, or its series is gone (fleet-ops#11643). The unit
+      # restarts forever (Restart=always, StartLimitIntervalSec=0), so it never
+      # reaches the failed state SystemUnitFailed reads; a stop was the
+      # 2026-10-09 "nothing told anyone" gap. Same shape as HermesGatewayDown,
+      # but a 15 minute window: RestartSec=300 keeps the unit out of "active" for
+      # 5 minutes after every crash it heals itself, so only three failed
+      # restarts in a row, or a stop, page. node_exporter here has no restart
+      # counter (--collector.systemd.enable-restarts-metrics is off), so the
+      # rule reads the active state, as the issue allows. Paged, because a stop
+      # cuts Nish's own coding line to the box.
+      - alert: RemoteControlDown
+        expr: |
+          (
+            max_over_time(node_systemd_unit_state{name="claude-remote-control.service",state="active"}[15m]) == 0
+            or
+            absent_over_time(node_systemd_unit_state{name="claude-remote-control.service",state="active"}[15m])
+          )
+          and on() (up{job="node"} == 1)
+        labels:
+          severity: nish
+        annotations:
+          summary: "claude-remote-control.service has not been active for 15 minutes"
+          description: "node_systemd_unit_state{name=\"claude-remote-control.service\",state=\"active\"} has no active sample in the last 15 minutes, or the series is missing."
+
   - name: fleet_backup
     rules:
       # The nightly off-site backup has not started for 30 hours (one missed
@@ -114,24 +141,25 @@ groups:
   - name: fleet_sites
     rules:
       # A public product site probed by the blackbox exporter (jobs named
-      # site-*) has failed every probe for 10 minutes. If the box itself is
-      # down the outside dead-man fires instead.
+      # site-*) has failed every probe for 3 minutes. The rule's own `for:`
+      # absorbs a flap: one good probe resets it, so a single failed probe, or a
+      # newly added target's first one, never pages. Alertmanager then waits
+      # only seconds (group_wait), so an outage reaches Nish in about 5 minutes:
+      # one probe interval (60s) + one evaluation (30s) + for (3m) + group_wait
+      # (30s). Alerting rules and `for`:
+      # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
+      # The up branch covers a dead blackbox exporter: its scrape fails, so
+      # probe_success goes missing instead of reading 0. Both branches carry the
+      # same job and instance labels, so a switch between them keeps one alert.
+      # If the box itself is down the outside dead-man fires instead.
       - alert: SiteDown
-        # The up branch covers a dead blackbox exporter: its scrape fails, so
-        # probe_success goes missing instead of reading 0. The count gate needs
-        # 8 samples in the window (8 minutes at the slowest site job), so a
-        # newly added target cannot page on its first failed probe.
-        expr: |
-          (max_over_time(probe_success{job=~"site-.*"}[10m]) == 0
-            and count_over_time(probe_success{job=~"site-.*"}[10m]) >= 8)
-          or
-          (max_over_time(up{job=~"site-.*"}[10m]) == 0
-            and count_over_time(up{job=~"site-.*"}[10m]) >= 8)
+        expr: probe_success{job=~"site-.*"} == 0 or up{job=~"site-.*"} == 0
+        for: 3m
         labels:
           severity: nish
         annotations:
-          summary: "{{ $labels.instance }} has not answered for 10 minutes"
-          description: "Every blackbox probe of {{ $labels.instance }} (job {{ $labels.job }}) failed, or could not run, for 10 minutes."
+          summary: "{{ $labels.instance }} has not answered for 3 minutes"
+          description: "Every blackbox probe of {{ $labels.instance }} (job {{ $labels.job }}) failed, or could not run, for 3 minutes."
 
   - name: fleet_router_downgrade
     interval: 5m

@@ -85,7 +85,7 @@ scrape_configs:
 
   # 0509 homepage up/down for the fleet view (fleet-grafana, Nish 2026-10-03).
   # The stock http_2xx module, via the blackbox exporter already running on
-  # :9115. SiteDown (fleet_rules.yml) pages on any site-* job down for 10m.
+  # :9115. SiteDown (fleet_rules.yml) pages on any site-* job down for 3m.
   - job_name: site-0509
     metrics_path: /probe
     params:
@@ -105,7 +105,7 @@ scrape_configs:
   # counts as up when it lands on a 2xx. storagebun.com is left out until it
   # is public: it answers with the Access login while it is private.
   - job_name: site-products
-    # Once a minute is enough for the 10-minute SiteDown window and halves the
+    # Once a minute is enough for SiteDown's 3-minute `for:` and halves the
     # requests each site's free-plan quota and analytics see.
     scrape_interval: 60s
     metrics_path: /probe
@@ -119,7 +119,12 @@ scrape_configs:
           # TinyStudio is offline on purpose while it is rebuilt (Nish, 2026-10-25):
           # put https://tinystudio.io/ and https://tinystudio.in/ back at relaunch.
           - https://aiconverter.app/
+          # inish.in is retired and answers a 301 to the daily page, which is
+          # the inish-site Worker's live route; probe both.
           - https://inish.in/
+          - https://nish.sh/daily
+          # rera-report-card's production URL, from its deploy workflow.
+          - https://rera-report-card.nishant345.workers.dev/
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
