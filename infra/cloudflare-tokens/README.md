@@ -1,7 +1,8 @@
 # Cloudflare tokens for GitHub Actions
 
-OpenTofu config that makes one narrow Cloudflare API token per repo, writes it
-into that repo's existing GitHub Actions secret, and replaces it every 30 days.
+OpenTofu config that makes two narrow Cloudflare API tokens per repo, writes
+each into a GitHub Environment secret of that repo (the deploy token into
+`production`, the preview token into `preview`), and replaces them every 30 days.
 The one token whose consumer is not a GitHub Actions job is written to a 0600
 file on the VPS instead (`vps-grafana`, the Grafana Cloudflare data source).
 
@@ -24,19 +25,21 @@ now in `main.tf`, so the weekly apply no longer destroys it; `seo-fix-kit` is ne
 
 ## What it creates
 
-| Token key | Repo | Secret written | Account permissions | Zone permissions (all zones in the account) | Runs on | IP lock |
+| Token key | Repo | Secret written | Account permissions | Zone permissions (only the zones named) | Runs on | IP lock |
 |---|---|---|---|---|---|---|
-| `drive` | drive | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
-| `0509-deploy` | 0509 | `CLOUDFLARE_API_TOKEN` (environment `production`) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
-| `0509-reports` | 0509 | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write | none | GitHub-hosted (`ci.yml` preview upload; the key keeps its old name so the secret is rewritten in place) | none |
-| `0509-support-inbox` | mailbox | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
-| `siterep-public` | siterep-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
-| `TinyStudio.io-public` | TinyStudio.io-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Workers R2 Storage Write, D1 Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
-| `inish-site` | inish-site | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`ci.yml` deploy job) | none |
-| `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, D1 Write, Account Settings Read | none | GitHub-hosted (`deploy.yml`, `d1-export.yml`) | none |
-| `rera-report-card` | rera-report-card | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Account Settings Read | none | GitHub-hosted (`ci.yml` preview, `deploy.yml`) | none |
-| `seo-fix-kit` | seo-fix-kit | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`: D1 migrations apply, `wrangler deploy` with custom domains and a queue consumer) | none |
-| `fleet_console` | fleet-console-worker | `CLOUDFLARE_API_TOKEN` (repo), plus a repo `CLOUDFLARE_ACCOUNT_ID` | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
+| `drive` | drive | `CLOUDFLARE_API_TOKEN` (environment `production`) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
+| `0509-deploy` | 0509 | `CLOUDFLARE_API_TOKEN` (environment `production`) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write (0509.io) | GitHub-hosted (`deploy-production.yml`) | none |
+| `0509-reports` | 0509 | `CLOUDFLARE_API_TOKEN` (environment `preview`) | Workers Scripts Write | none | GitHub-hosted (`ci.yml` preview upload; the key keeps its old name so the token is not replaced) | none |
+| `0509-support-inbox` | mailbox | `CLOUDFLARE_API_TOKEN` (environment `production`) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
+| `siterep-public` | siterep-public | `CLOUDFLARE_API_TOKEN` (environment `production`) | Workers Scripts Write, D1 Write, Account Settings Read | Zone Read, Workers Routes Write (siterep.net) | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
+| `TinyStudio.io-public` | TinyStudio.io-public | `CLOUDFLARE_API_TOKEN` (environment `production`) | Workers Scripts Write, Workers R2 Storage Write, D1 Write, Account Settings Read | Zone Read, Workers Routes Write (tinystudio.io) | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
+| `inish-site` | inish-site | `CLOUDFLARE_API_TOKEN` (environment `production`) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write (nish.sh, inish.in) | GitHub-hosted (`ci.yml` deploy job) | none |
+| `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (environment `production`) | Pages Write, D1 Write, Account Settings Read | none | GitHub-hosted (`deploy.yml`, `d1-export.yml`) | none |
+| `rera-report-card` | rera-report-card | `CLOUDFLARE_API_TOKEN` (environment `production`) | Workers Scripts Write, D1 Write, Account Settings Read | none | GitHub-hosted (`ci.yml` preview, `deploy.yml`) | none |
+| `seo-fix-kit` | seo-fix-kit | `CLOUDFLARE_API_TOKEN` (environment `production`) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write (seofixkit.com) | GitHub-hosted (`deploy-production.yml`: D1 migrations apply, `wrangler deploy` with custom domains and a queue consumer) | none |
+| `fleet_console` | fleet-console-worker | `CLOUDFLARE_API_TOKEN` (environment `production`), plus a repo `CLOUDFLARE_ACCOUNT_ID` | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write (nish.sh) | GitHub-hosted (`deploy-production.yml`) | none |
+| `<repo>-preview` for drive, mailbox, siterep-public, TinyStudio.io-public, inish-site, rera-report-card, seo-fix-kit | that repo | `CLOUDFLARE_API_TOKEN` (environment `preview`) | Workers Scripts Write | none | GitHub-hosted (`ci.yml` preview job: `wrangler preview` or `cf previews deploy`) | none |
+| `aiconverter-app-preview` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (environment `preview`) | Pages Write | none | GitHub-hosted (`ci.yml` preview job: Pages branch deploy) | none |
 | `vps-grafana` | the VPS (no repo) | `CLOUDFLARE_API_TOKEN` in `~/.config/cloudflare/deploy-ci.env`, a 0600 file (no GitHub secret) | Account Analytics Read | none | the VPS host: Grafana's `fleet-cloudflare` data source, the Cloudflare cost alarm (fleet-ops#9355) | VPS addresses (`vps_only`) |
 
 The `0509-support-inbox` entry writes to `mailbox`, the same repo under its new
@@ -86,6 +89,24 @@ the cost alarm still evaluates. The repos that still pass the org secret in a
 workflow (`codex-workspace`, `tiny-studio-vps-infra`, `vps-control-tower`,
 `memory-compound`, `agent-governor`, `egress-probe`) are all archived, so no
 workflow runs there and nothing reads it.
+
+## Environments
+
+GitHub releases an environment secret only to a job that declares that
+environment, and a deployment-branch policy keeps every other branch out
+(https://docs.github.com/en/actions/deployment/targeting-different-environments/managing-environments-for-deployment).
+So a pull request job can read the preview token and never the deploy token.
+The environments and their policies are repo settings, not part of this config,
+because the nishfleet-secrets App writes secrets only. Each repo in the table
+needs, before the apply that writes into them:
+
+- `production`: Deployment branches and tags = "Selected branches and tags",
+  one rule, branch `main`.
+- `preview` (repos with a preview token): no branch rule, because PR branches
+  deploy there. It holds only the preview token.
+
+Each workflow job that reads `CLOUDFLARE_API_TOKEN` declares `environment:
+production` (deploys, D1 exports) or `environment: preview` (PR previews).
 
 ## Retirement of the hand-made keys
 
@@ -158,34 +179,30 @@ to mint fresh ones.
 
 ### State encryption
 
-The state file holds the token values as OpenTofu wrote them, so the state is
-encrypted with OpenTofu's own state encryption (AES-GCM, key derived from a
-passphrase). The passphrase and the method settings are not in this repo: they
-are one `TF_ENCRYPTION` line in a private env file that
-`cloudflare-tokens-apply.service` loads when it exists
-(`EnvironmentFile=-`). `state-encryption.env.example` is the template. The file
-lives next to the other Cloudflare env files under `~/.config/cloudflare/`, so
-the nightly backup carries it with the state; without the passphrase the state
-cannot be read, so keep that backup.
+The state file holds the token values, so it is encrypted with OpenTofu's own
+state encryption (https://opentofu.org/docs/language/state/encryption/):
+AES-GCM with a key derived (PBKDF2) from a passphrase. The `encryption` block is
+in `versions.tf`. The passphrase is the sensitive variable `state_passphrase`,
+set as `TF_VAR_state_passphrase` from `~/.config/cloudflare/tofu-state-encryption.env`
+(0600). `cloudflare-tokens-apply.service` requires that file, so without it the
+apply fails before tofu runs instead of writing a plain state. The file sits
+next to the other Cloudflare env files, so the nightly backup carries it with
+the state. Without the passphrase the state cannot be read: treat that like a
+lost state (see above).
 
-Turn it on once, by hand, with no one else applying at the same time:
+Place the key once, by hand, before the first apply of this config:
 
-    umask 077
-    cp infra/cloudflare-tokens/state-encryption.env.example ~/.config/cloudflare/tofu-state-encryption.env
-    # replace the placeholder with the output of: openssl rand -base64 32
-    systemctl --user start cloudflare-tokens-apply.service
+    (umask 077; printf 'TF_VAR_state_passphrase=%s\n' "$(openssl rand -base64 32)" > ~/.config/cloudflare/tofu-state-encryption.env)
 
-The first apply reads the plain state through the `fallback` member and writes
-it encrypted. OpenTofu writes `.backup` only when the state changes, so the old
-`.backup` stays a plain copy: after checking that
+The first apply reads the plain state through the `fallback` block and writes it
+encrypted. Check that
 `grep -c '"resources"' ~/.local/state/fleet-ops/cloudflare-tokens/terraform.tfstate`
-prints 0 and `tofu plan` (run as below) shows no changes, delete that one
-`terraform.tfstate.backup`; the next state change writes an encrypted one. Then
-delete the `fallback` member from the env file so a plain state is refused from
-then on. With the passphrase lost, treat it like a lost state (see above).
+prints 0. OpenTofu writes `.backup` only when the state changes, so the old
+`.backup` stays a plain copy: delete that one `terraform.tfstate.backup`. Then
+delete the `fallback` block and the `unencrypted` method from `versions.tf` in a
+PR, so a plain state is refused from then on.
 
-A hand run of `tofu` needs the same variable. Do not `source` the file (a shell
-strips the quotes in the JSON); use the unit, or
+A hand run of `tofu` needs the same variable:
 `systemd-run --user --wait --pipe -p EnvironmentFile=$HOME/.config/cloudflare/tofu-state-encryption.env -p WorkingDirectory=/var/lib/fleet-ops/repo ~/.local/bin/tofu -chdir=infra/cloudflare-tokens plan`.
 
 ## Apply
