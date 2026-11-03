@@ -167,11 +167,10 @@ regexes = ['''^100\.64\.0\.0$''']
 condition = "AND"
 
 [[allowlists]]
-description = "The two Claude Code plugin drop-ins name the directory each marketplace is read from: a marketplace registration is a path, and a JSON file has no comment line to carry gitleaks:allow. Only these two directories are allowed, so a new home path in any drop-in still fails the scan; fleet-ops#10518"
+description = "The Claude Code plugin drop-in names the directory its marketplace is read from: a marketplace registration is a path, and a JSON file has no comment line to carry gitleaks:allow. Only this directory is allowed, so a new home path in any drop-in still fails the scan; fleet-ops#10518"
 targetRules = ["private-home-path"]
-paths = ['''(^|/)rootfs/etc/claude-code/managed-settings\.d/(60-nish-mods|80-inbox)\.json$''']
+paths = ['''(^|/)rootfs/etc/claude-code/managed-settings\.d/80-inbox\.json$''']
 regexes = [
-  '''^home/nish/workspaces/tooling/claude-mods$''',
   '''^home/nish/workspaces/tooling/claude-code-mods-petekp-inbox$''',
 ]
 condition = "AND"
