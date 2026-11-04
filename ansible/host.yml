@@ -181,6 +181,8 @@
       - /etc/systemd/system/tincan-listen-issue-desk.service
       # Read only by the hand-install drift check, deleted 2026-11-01.
       - /etc/fleet-ops/box-only
+      # Unused Pi prompt; its source and install line left the repo (fleet-ops#10935).
+      - "{{ nish_home }}/.pi/agent/prompts/worker.md"
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"
