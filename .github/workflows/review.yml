@@ -12,6 +12,8 @@ on:
     workflows: [CI]
     types: [completed]
   workflow_call:
+    secrets:
+      APPROVER_TOKEN: {required: true}
 permissions: {}
 concurrency:
   group: review-${{ github.repository }}-${{ github.event.workflow_run.head_branch }}

@@ -38,3 +38,11 @@ def test_the_review_runs_only_in_runner_group_reviewer():
 
 def test_the_merge_bar_is_owner_reviewed():
     assert "/docs/review-bar.md @nish3451" in (ROOT / ".github/CODEOWNERS").read_text().splitlines()
+
+
+def test_callers_must_pass_the_bot_token():
+    # Without required, a caller that passes nothing gets an empty token and no error.
+    # https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#using-inputs-and-secrets-in-a-reusable-workflow
+    wf = yaml.safe_load((ROOT / ".github/workflows/review.yml").read_text())
+    on = wf.get("on", wf.get(True))
+    assert on["workflow_call"] == {"secrets": {"APPROVER_TOKEN": {"required": True}}}
