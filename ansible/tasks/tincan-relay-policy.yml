@@ -27,8 +27,7 @@
   check_mode: false
 
 # The relay re-reads the policy when the file changes, so this needs no
-# restart. 0600 in the relay's own state directory, which its unit creates
-# (StateDirectory=tincan-relay). `validate:` runs the shape check on the
+# restart. 0600 in the relay's own state directory (the unit's --state-dir). `validate:` runs the shape check on the
 # temp copy before it replaces the live file, so a bad render fails the run
 # and never reaches the relay (a missing or empty gate turns the gate off, a
 # malformed file makes the relay refuse new sends). jq exit: 5 = not JSON, 1 =

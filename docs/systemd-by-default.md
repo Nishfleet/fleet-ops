@@ -7,21 +7,22 @@ lines) and `bin/pi-detached-deadman` (410 lines) were deleted on 2026-09-18 and
 replaced by two stock `systemd-run` properties.
 
 ```
-systemd-run --user --collect --unit <name> \
+sudo systemd-run --uid=nish --gid=nish --unit <name> \
   -p RuntimeMaxSec=<seconds> \
   -p Requires=fleet-worker-github-token@<repo>.service \
   -p After=fleet-worker-github-token@<repo>.service \
-  -p "EnvironmentFile=$XDG_RUNTIME_DIR/fleet-worker-github-token/<repo>.env" \
+  -p "EnvironmentFile=/run/user/1000/fleet-worker-github-token/<repo>.env" \
   -p "TemporaryFileSystem=$HOME/.config/gh" \
   -p 'ExecStartPre=/bin/sh -c '"'"'test -n "$GH_TOKEN"'"'"'' \
   -E DELIVERABLE=<absolute artifact path> \
   -p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"'' \
-  -- sh -c 'cat /path/to/packet.md | pi --print --provider <provider> --model <model>'
+  -- sh -c 'cat /path/to/packet.md | /home/nish/.local/bin/pi --print --provider <provider> --model <model>'
 ```
 
 `<repo>` is the Nishfleet repo the worker targets. `Requires=` pulls in
 `fleet-worker-github-token@<repo>.service`, which mints a one-hour nishfleet-worker
-App token limited to that repo into `$XDG_RUNTIME_DIR/fleet-worker-github-token/<repo>.env`;
+App token limited to that repo into `/run/user/1000/fleet-worker-github-token/<repo>.env`
+(a system unit with `User=nish`, so the launch is a system unit too);
 the `EnvironmentFile=` is required (no `-`), so a failed mint means the worker never
 starts, and `ExecStartPre=` fails an empty `GH_TOKEN` before any work. `TemporaryFileSystem=`
 blanks the human gh login for the run, as agent.yml's jail does, so a worker cannot fall
@@ -35,12 +36,12 @@ this host on 2026-09-18 (RED: no artifact -> `Result=exit-code`; GREEN: artifact
 written -> `Result=success`; `RuntimeMaxSec=5` against `sleep 60` ->
 `Result=timeout`).
 
-Drop `--collect` when you want the dead unit to stay listed in
-`systemctl --user list-units --state=failed`. With `--collect` systemd unloads
-the unit as soon as it dies, so the failure survives only in the journal
-(`journalctl --user -u <name>`).
+The unit is a system unit, so a failed run stays listed in
+`systemctl list-units --state=failed` and `SystemUnitFailed` sees it (no
+`--collect`, which would unload it as soon as it dies). Logs:
+`journalctl -u <name>`.
 
-Watch a live run with `systemctl --user status <name>.service`.
+Watch a live run with `systemctl status <name>.service`.
 
 Not a dispatcher: no retry ladder, no seat rotation, no queue. `RuntimeMaxSec=`
 and the deliverable check together are the whole of what the retired wrapper's

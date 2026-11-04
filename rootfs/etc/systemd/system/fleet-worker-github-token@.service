@@ -11,22 +11,30 @@ Description=Mint a one-hour nishfleet-worker App token for Nishfleet/%i (fleet-o
 # a fooled worker could dispatch an unjailed orchestrate run. That is the
 # launch lines' convention, not a wall: any process with this uid can start the
 # instance or read the App key itself, and the drill deletes and
-# revokes its token as soon as its calls end. It lives in the user runtime dir
-# (tmpfs, mode 0700), never on disk and never in argv: the App JWT goes to curl
+# revokes its token as soon as its calls end. It lives in nish's runtime dir
+# (tmpfs, mode 0700, hidden from every sandbox that hides /run/user/1000), never on disk and never in argv: the App JWT goes to curl
 # as a config fd. Nothing secret reaches the journal.
 #
-# Switch off: `systemctl --user mask 'fleet-worker-github-token@*.service'`;
+# Switch off: `systemctl mask 'fleet-worker-github-token@*.service'`;
 # every detached launch then refuses to start.
+
+# A system unit with User=nish (fleet-ops#11643), so node_exporter's systemd
+# collector sees it and SystemUnitFailed reports a failed run; nish's user
+# manager is invisible to it. In the system manager %h is /root and %t is /run
+# whatever User= says (systemd.unit(5), "Specifiers"), so paths are literal.
+[Unit]
+Wants=user@1000.service
+After=user@1000.service
 
 [Service]
 Type=oneshot
-RuntimeDirectory=fleet-worker-github-token
-RuntimeDirectoryMode=0700
-RuntimeDirectoryPreserve=yes
+User=nish
+Group=nish
 Environment=GITHUB_API_URL=https://api.github.com
 Environment=APP_ID=4728578
-Environment=APP_KEY=%h/.config/fleet-worker/nishfleet-worker.private-key.pem
-ExecStartPre=/bin/rm -f %t/fleet-worker-github-token/%i.env %t/fleet-worker-github-token/%i.env.new
+Environment=APP_KEY=/home/nish/.config/fleet-worker/nishfleet-worker.private-key.pem
+ExecStartPre=/usr/bin/mkdir -p -m 0700 /run/user/1000/fleet-worker-github-token
+ExecStartPre=/bin/rm -f /run/user/1000/fleet-worker-github-token/%i.env /run/user/1000/fleet-worker-github-token/%i.env.new
 ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
   inst=%i; repo=$${inst#actions:}; perms="{\\"contents\\":\\"write\\",\\"issues\\":\\"write\\",\\"pull_requests\\":\\"write\\"}"; \
   [ "$$repo" = "$$inst" ] || perms="{\\"actions\\":\\"write\\"}"; \
@@ -38,7 +46,7 @@ ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
   auth() { printf "header = \\"Authorization: Bearer %%s.%%s.%%s\\"\\nheader = \\"Accept: application/vnd.github+json\\"\\n" "$$h" "$$p" "$$s"; }; \
   id=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --config <(auth) "$$GITHUB_API_URL/repos/Nishfleet/$$repo/installation" | jq -er .id); \
   tok=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 -X POST --config <(auth) -d "{\\"repositories\\":[\\"$$repo\\"],\\"permissions\\":$$perms}" "$$GITHUB_API_URL/app/installations/$$id/access_tokens" | jq -er .token); \
-  printf "GH_TOKEN=%%s\\n" "$$tok" > "$$RUNTIME_DIRECTORY/%i.env.new"; \
-  mv -f "$$RUNTIME_DIRECTORY/%i.env.new" "$$RUNTIME_DIRECTORY/%i.env"; \
+  printf "GH_TOKEN=%%s\\n" "$$tok" > "/run/user/1000/fleet-worker-github-token/%i.env.new"; \
+  mv -f "/run/user/1000/fleet-worker-github-token/%i.env.new" "/run/user/1000/fleet-worker-github-token/%i.env"; \
   echo "minted a GitHub App token for Nishfleet/$$repo with $$perms, valid one hour"'
 TimeoutStartSec=120

@@ -15,10 +15,11 @@
 
 # stop, not disable --now: disable gives up once the unit file is gone, and a
 # loaded unit keeps running. Enable links go in retired with the unit files.
+# reset-failed drops a failed state the user manager would keep listing.
 - name: Stop and disable retired units in nish's user manager
   ansible.builtin.command:
     argv: [systemctl, --user, --machine=nish@.host, "{{ item.0 }}", "{{ item.1 }}"]
-  loop: "{{ ['stop', 'disable'] | product(retired_user_units) | list }}"
+  loop: "{{ ['stop', 'disable', 'reset-failed'] | product(retired_user_units) | list }}"
   register: retired_user_unit_off
   changed_when: retired_user_unit_off.rc == 0
   failed_when: >-
@@ -38,3 +39,18 @@
 
 - name: Apply pending handlers before the credential check
   ansible.builtin.meta: flush_handlers
+
+# System units with User=nish (fleet-ops#11643), installed from rootfs/. Enabled
+# right after the old user copies stopped above, so the relay is down for seconds.
+- name: Enable the system units that run as nish
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - cloudflare-tokens-apply.timer
+    - fleet-d1-restore-drill.timer
+    - fleet-grafana-github-token.timer
+    - tincan-relay.service
+  ignore_errors: "{{ ansible_check_mode }}"

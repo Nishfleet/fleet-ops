@@ -1,5 +1,5 @@
-"""Stub of the two GitHub REST calls systemd/fleet-grafana-github-token.service,
-systemd/fleet-worker-github-token@.service and
+"""Stub of the two GitHub REST calls rootfs/etc/systemd/system/fleet-grafana-github-token.service,
+rootfs/etc/systemd/system/fleet-worker-github-token@.service and
 rootfs/etc/systemd/system/fleet-hermes-github-token.service make.
 
 fleet-ops#9445, fleet-ops#9738. CI runs each unit's real ExecStart under systemd

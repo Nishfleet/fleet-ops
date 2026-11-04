@@ -15,33 +15,42 @@ Description=Mint the short-lived GitHub App token Grafana's alert webhook sends 
 #
 # The token is minted from the nishfleet-worker App key that fleet-grafana
 # already mounts, scoped by the request body to issues:write on this one repo
-# (the contact points only POST issues). It lives in the user runtime dir
-# (tmpfs, mode 0700), never on disk and never in argv: the App JWT goes to curl
-# as a config fd. A failed mint keeps the previous token file, pages through
-# OnFailure=, and Grafana's own delivery rule
+# (the contact points only POST issues). It lives in nish's runtime dir
+# (tmpfs, mode 0700, hidden from every sandbox that hides /run/user/1000),
+# never on disk and never in argv: the App JWT goes to curl as a config fd. A
+# failed mint keeps the previous token file, shows in SystemUnitFailed, and Grafana's own delivery rule
 # (cloudflare-spend-delivery.yaml) pages hermes-urgent if a webhook still fails.
 #
-# Switch off: `systemctl --user disable --now fleet-grafana-github-token.timer`
-# and `systemctl --user mask fleet-grafana-github-token.service` (fleet-grafana
-# Wants= it, so without the mask it still mints once per Grafana start).
+# Switch off: `systemctl disable --now fleet-grafana-github-token.timer`.
 # The contact points then send an empty token and the webhook answers 401; the
 # delivery rule pages hermes-urgent and spend and dead-row alerts still reach
 # Telegram.
 
+# A system unit with User=nish (fleet-ops#11643), so node_exporter's systemd
+# collector sees it and SystemUnitFailed reports a failed run; nish's user
+# manager is invisible to it. In the system manager %h is /root and %t is /run
+# whatever User= says (systemd.unit(5), "Specifiers"), so paths are literal.
+# XDG_RUNTIME_DIR and the bus let the reload step ask nish's user manager
+# whether Grafana runs (same lines as claude-remote-control.service).
+[Unit]
+Wants=user@1000.service
+After=user@1000.service
+
 [Service]
 Type=oneshot
-RuntimeDirectory=fleet-grafana-github-token
-RuntimeDirectoryMode=0700
-RuntimeDirectoryPreserve=yes
+User=nish
+Group=nish
+Environment=XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 # GITHUB_API_URL exists so CI can run this very ExecStart against a local stub
 # (.github/workflows/ci.yml, step "GitHub App token unit"); the host never
 # overrides it.
 Environment=GITHUB_API_URL=https://api.github.com
 Environment=APP_ID=4728578
-Environment=APP_KEY=%h/.config/fleet-worker/nishfleet-worker.private-key.pem
+Environment=APP_KEY=/home/nish/.config/fleet-worker/nishfleet-worker.private-key.pem
 # Grafana expands $__file{} at load and a missing file fails the whole
 # alerting provisioning, so the file must exist before anything can fail.
-ExecStartPre=/bin/sh -c 'rm -f "$$RUNTIME_DIRECTORY/token.new"; test -e "$$RUNTIME_DIRECTORY/token" || { umask 077; : > "$$RUNTIME_DIRECTORY/token"; }'
+ExecStartPre=/usr/bin/mkdir -p -m 0700 /run/user/1000/fleet-grafana-github-token
+ExecStartPre=/bin/sh -c 'rm -f "/run/user/1000/fleet-grafana-github-token/token.new"; test -e "/run/user/1000/fleet-grafana-github-token/token" || { umask 077; : > "/run/user/1000/fleet-grafana-github-token/token"; }'
 # RS256 App JWT (docs: "Generating a JSON Web Token (JWT) for a GitHub App";
 # iat 60 s back for clock drift, exp inside the 10 min cap), then the
 # installation id of this repo, then a token limited to this repo and
@@ -55,8 +64,8 @@ ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
   auth() { printf "header = \\"Authorization: Bearer %%s.%%s.%%s\\"\\nheader = \\"Accept: application/vnd.github+json\\"\\n" "$$h" "$$p" "$$s"; }; \
   id=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --config <(auth) "$$GITHUB_API_URL/repos/Nishfleet/fleet-ops/installation" | jq -er .id); \
   tok=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 -X POST --config <(auth) -d "{\\"repositories\\":[\\"fleet-ops\\"],\\"permissions\\":{\\"issues\\":\\"write\\"}}" "$$GITHUB_API_URL/app/installations/$$id/access_tokens" | jq -er .token); \
-  printf "%%s" "$$tok" > "$$RUNTIME_DIRECTORY/token.new"; \
-  mv -f "$$RUNTIME_DIRECTORY/token.new" "$$RUNTIME_DIRECTORY/token"; \
+  printf "%%s" "$$tok" > "/run/user/1000/fleet-grafana-github-token/token.new"; \
+  mv -f "/run/user/1000/fleet-grafana-github-token/token.new" "/run/user/1000/fleet-grafana-github-token/token"; \
   echo "minted a GitHub App token for Nishfleet/fleet-ops issues:write, valid one hour"'
 # Grafana picks the new file up on a provisioning reload. The service skips
 # itself when Grafana is stopped (a starting Grafana reads the file anyway).
@@ -82,5 +91,5 @@ ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
 #
 # No `-` prefix: the reload unit is gone, so a reload that cannot get through
 # fails this unit and shows in systemctl --failed.
-ExecStartPost=/bin/bash -c 'set -euo pipefail; l="$$RUNTIME_DIRECTORY/provisioned-token-mint"; m="$$(stat -c %%Y "$$RUNTIME_DIRECTORY/token" 2>/dev/null || echo 0)"; loaded="$$(cat "$$l" 2>/dev/null || echo 0)"; case "$$loaded" in ""|*[!0-9]*) loaded=0;; esac; now=$$(date +%%s); if test "$$loaded" -le "$$(($$now - 2400))"; then if /usr/bin/systemctl --user is-active --quiet fleet-grafana.service; then curl -fsS --connect-timeout 5 --max-time 30 --retry 3 --retry-all-errors -o /dev/null -X POST --config <(printf "user = \\"admin:%%s\\"\\n" "$$(cat %h/.config/fleet-ops/grafana-admin-password)") http://127.0.0.1:3001/api/admin/provisioning/alerting/reload; echo "$$m" > "$$l"; fi; fi'
+ExecStartPost=/bin/bash -c 'set -euo pipefail; l="/run/user/1000/fleet-grafana-github-token/provisioned-token-mint"; m="$$(stat -c %%Y "/run/user/1000/fleet-grafana-github-token/token" 2>/dev/null || echo 0)"; loaded="$$(cat "$$l" 2>/dev/null || echo 0)"; case "$$loaded" in ""|*[!0-9]*) loaded=0;; esac; now=$$(date +%%s); if test "$$loaded" -le "$$(($$now - 2400))"; then if /usr/bin/systemctl --user is-active --quiet fleet-grafana.service; then curl -fsS --connect-timeout 5 --max-time 30 --retry 3 --retry-all-errors -o /dev/null -X POST --config <(printf "user = \\"admin:%%s\\"\\n" "$$(cat /home/nish/.config/fleet-ops/grafana-admin-password)") http://127.0.0.1:3001/api/admin/provisioning/alerting/reload; echo "$$m" > "$$l"; fi; fi'
 TimeoutStartSec=300

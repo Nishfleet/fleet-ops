@@ -137,15 +137,15 @@ only, never a row, a name or an email address.
 Read the last drill:
 
     ls -t ~/workspaces/agent-state/d1-restore-drill/report-*.md | head -1 | xargs cat
-    journalctl --user -u fleet-d1-restore-drill.service -b
+    journalctl -u fleet-d1-restore-drill.service -b
 
 Run one by hand, on the host:
 
-    systemctl --user start fleet-d1-restore-drill.service
+    sudo systemctl start fleet-d1-restore-drill.service
 
-Switch it off: `systemctl --user disable --now fleet-d1-restore-drill.timer`,
-then drop step 2l and its enable line from `systemd/fleet-sync.service` and
-delete both unit files.
+Switch it off: `sudo systemctl disable --now fleet-d1-restore-drill.timer`,
+then drop its enable line from `ansible/tasks/retired-and-drift.yml` and delete both
+unit files.
 
 ## Deploy and wiring
 
@@ -350,13 +350,11 @@ token. Wire once after merge (README "Wiring a NEW unit"):
 enable --now fleet-grafana-github-token.timer`, then restart `fleet-grafana.service` once so
 the quadlet's new mount takes effect. Do it right after the merge deploys: until Grafana restarts, the
 provisioning reload the merge triggers cannot find the new mount and
-`fleet-grafana-provisioning.service` pages once per provisioning change. Read it: `systemctl --user show
+`fleet-grafana-provisioning.service` pages once per provisioning change. Read it: `systemctl show
 fleet-grafana-github-token.service -p Result -p ExecMainStartTimestamp` and the journal line
-`minted a GitHub App token`. A failed mint pages through `OnFailure=`
-(`fleet-unit-failed@`), keeps the previous token, and the delivery rule pages hermes-urgent
-if a webhook still fails. Switch off: `systemctl --user disable --now
-fleet-grafana-github-token.timer` and `systemctl --user mask fleet-grafana-github-token.service`
-(the quadlet's `Wants=` also mints once per Grafana start); the webhook then sends an empty token (401), the delivery
+`minted a GitHub App token`. A failed mint shows in `SystemUnitFailed`, keeps the previous token, and the delivery rule pages hermes-urgent
+if a webhook still fails. Switch off: `sudo systemctl disable --now
+fleet-grafana-github-token.timer`; the webhook then sends an empty token (401), the delivery
 rule pages hermes-urgent, and spend alerts still reach Telegram. CI proof:
 `tests/github_app_stub.py` plus the "GitHub App token unit mints and refreshes" step run the
 unit's real ExecStart under systemd against a stub that checks the JWT the way GitHub does.

@@ -32,8 +32,8 @@
 # Nish has ruled out (fleet-ops#10594).
 #
 # The dumps are real customer data (payment rows, email signups). They are
-# decrypted only inside a 0700 runtime directory under /run/user (tmpfs), and
-# systemd removes that directory when the unit stops, so nothing decrypted
+# decrypted only inside the unit's own RAM-only /tmp, and
+# systemd removes it when the unit stops, so nothing decrypted
 # outlives the drill. The report carries counts and integrity results, never a
 # row, a name or an email address.
 #
@@ -45,7 +45,7 @@
 # API refuses FTS5 virtual tables (drive#1027); both stay visible in the run's
 # own job list instead of being hidden here.
 #
-# Gates, each a failed unit someone can list (OnFailure= pages): a completed run
+# Gates, each a failed unit someone can list (SystemUnitFailed reports it): a completed run
 # with a dump exists, each download succeeds, each decrypt succeeds, each load
 # succeeds, each integrity_check answers ok, at least one database was restored,
 # and the report exists. A dump that decrypts but does not load fails the unit,
@@ -59,9 +59,18 @@
 # written \\" the way fleet-grafana-github-token.service writes them. gh is
 # found through /usr/bin/env, so the unit names no home path.
 #
-# Switch off: systemctl --user disable --now fleet-d1-restore-drill.timer, then
-# drop step 2l and its enable line from fleet-sync.service and delete both files.
+# Switch off: systemctl disable --now fleet-d1-restore-drill.timer, then
+# drop its enable line from ansible/tasks/retired-and-drift.yml and delete both files.
 
+# A system unit with User=nish (fleet-ops#11643), so node_exporter's systemd
+# collector sees it and SystemUnitFailed reports a failed run; nish's user
+# manager is invisible to it. In the system manager %h is /root and %t is /run
+# whatever User= says (systemd.unit(5), "Specifiers"), so paths are literal.
+# TemporaryFileSystem=/tmp (systemd.exec(5)) gives the run its own RAM-only
+# /tmp, which goes away when the unit stops; a system unit can build that
+# namespace, so the decrypted dumps never touch disk and no other nish process
+# sees them (CI runners run as nish). DRILL_OUT names it so the tests can point
+# it elsewhere.
 [Unit]
 Description=Monthly restore drill over the newest D1 backups (fleet-ops#10594)
 Requires=fleet-worker-github-token@actions:drive.service
@@ -69,15 +78,17 @@ After=fleet-worker-github-token@actions:drive.service
 
 [Service]
 Type=oneshot
-RuntimeDirectory=fleet-d1-restore-drill
-RuntimeDirectoryMode=0700
+User=nish
+Group=nish
+TemporaryFileSystem=/tmp:mode=1777
+Environment=DRILL_OUT=/tmp
 Environment=GH_REPO=Nishfleet/drive
 Environment=GH_WORKFLOW=d1-export.yml
-Environment=DRILL_KEY=%h/.config/drive/d1-backup-key.txt
-Environment=DRILL_STATE=%h/workspaces/agent-state/d1-restore-drill
+Environment=DRILL_KEY=/home/nish/.config/drive/d1-backup-key.txt
+Environment=DRILL_STATE=/home/nish/workspaces/agent-state/d1-restore-drill
 Environment=TZ=Asia/Kolkata
 Environment=LC_ALL=C.UTF-8
-EnvironmentFile=%t/fleet-worker-github-token/actions:drive.env
+EnvironmentFile=/run/user/1000/fleet-worker-github-token/actions:drive.env
 # The required EnvironmentFile above is loaded for every command below, so an
 # empty token means a failed mint and the run must not fall back to the owner's
 # gh login. $$ keeps systemd from expanding the token into the shell's argv.
@@ -97,7 +108,7 @@ ExecStartPre=/bin/sh -c 'test -n "$$GH_TOKEN" || { echo "drill: no GitHub App to
 #    an expired token or a rate limit fails the unit instead of looking like a
 #    run with no artifact. Eight runs is two months of the weekly schedule, which
 #    is how far back a broken weekly export can be before the drill fails loud.
-ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; \
+ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$DRILL_OUT"; \
   d=$$(date +%%F); echo "$$d" > "$$out/date"; \
   test -s "$$DRILL_KEY" || { echo "drill: the private key file is missing or empty" >&2; exit 1; }; \
   runs=$$(gh run list -R $$GH_REPO -w $$GH_WORKFLOW -s completed -L 8 --json databaseId -q ".[].databaseId"); \
@@ -115,7 +126,7 @@ ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; \
 #    dumps/<artifact name>/, which is the layout step 3 reads, and it fails loud
 #    when the pattern matches nothing: a run whose artifacts were pruned is a
 #    failed drill and not an empty report.
-ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; run=$$(cat "$$out/run"); \
+ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$DRILL_OUT"; run=$$(cat "$$out/run"); \
   /usr/bin/env gh run download "$$run" -R $$GH_REPO -p "d1-backup-*" -D "$$out/dumps" \
   && echo "drill: downloaded the d1-backup-* artifacts of run $$run"'
 # 3. Decrypt, load into a fresh local SQLite file, integrity-check, count rows.
@@ -135,7 +146,7 @@ ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; run=$$(cat 
 #    quote can appear in it. sqlite_sequence is SQLite's own AUTOINCREMENT
 #    bookkeeping, not application data, so it is not counted among the tables
 #    the dump made.
-ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; : > "$$out/rows"; n=0; \
+ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$DRILL_OUT"; : > "$$out/rows"; n=0; \
   for f in "$$out"/dumps/*/*.sql.age; do \
     test -e "$$f" || { echo "drill: no dump found under $$out/dumps" >&2; exit 1; }; \
     a=$$(basename "$$(dirname "$$f")"); b=$$(basename "$$f" .sql.age); db="$$out/$$b.db"; \
@@ -158,13 +169,13 @@ ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; : > "$$out/
 #    public repo. Counts and integrity results only: no row, no name, no email
 #    address. The report is named from the date file and not a fresh `date`, so a
 #    run that crosses midnight still reads its own report.
-ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; d=$$(cat "$$out/date"); run=$$(cat "$$out/run"); \
+ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$DRILL_OUT"; d=$$(cat "$$out/date"); run=$$(cat "$$out/run"); \
   mkdir -p "$$DRILL_STATE"; rep="$$DRILL_STATE/report-$$d.md"; \
   { echo "# D1 restore drill, $$d (Asia/Kolkata)"; echo; \
     echo "Backup run: https://github.com/$$GH_REPO/actions/runs/$$run"; \
     echo "Source: the weekly $$GH_WORKFLOW matrix in $$GH_REPO (fleet-ops#10594)."; \
     echo "Key: the host-held private key (path in this unit)"; \
-    echo "Where: this host, into a 0700 runtime directory that systemd removes when the unit ends. No Cloudflare database was created and no Cloudflare API call was made."; echo; \
+    echo "Where: this host, into a private /tmp that systemd removes when the unit ends. No Cloudflare database was created and no Cloudflare API call was made."; echo; \
     echo "| database | artifact | dump bytes | integrity | rows |"; echo "|---|---|---|---|---|"; \
     cat "$$out/rows"; echo; echo "Per table:"; cat "$$out/tables"; echo; \
     echo "$$(wc -l < "$$out/rows") database(s) restored."; \
@@ -178,5 +189,5 @@ ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; d=$$(cat "$
 # already fails with its own message, so there is nothing left to diagnose here.
 # The revoke runs only with the App token loaded (an empty GH_TOKEN would fall
 # back to the owner's login), and a failed revoke still fails the unit.
-ExecStopPost=/bin/sh -c 'rc=0; [ -z "$$GH_TOKEN" ] || /usr/bin/env gh api -X DELETE installation/token || rc=$$?; rm -f %t/fleet-worker-github-token/actions:drive.env; exit $$rc'
+ExecStopPost=/bin/sh -c 'rc=0; [ -z "$$GH_TOKEN" ] || /usr/bin/env gh api -X DELETE installation/token || rc=$$?; rm -f /run/user/1000/fleet-worker-github-token/actions:drive.env; exit $$rc'
 TimeoutStartSec=1800

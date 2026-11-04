@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MAIN = ROOT / "infra/cloudflare-tokens/main.tf"
 HOST = ROOT / "ansible/host.yml"
-UNIT = ROOT / "systemd/cloudflare-tokens-apply.service"
+UNIT = ROOT / "rootfs/etc/systemd/system/cloudflare-tokens-apply.service"
 
 
 def _entry(key: str) -> str:
@@ -81,24 +81,6 @@ def test_the_apply_fails_when_the_address_file_does_not_match_the_host():
         "no documented one-command refresh to fix the file when the check fails"
     )
     assert "ExecStartPre=" in UNIT.read_text().split("[Service]")[1], "the check runs inside the apply unit"
-
-
-def test_the_apply_hands_the_rotation_to_the_existing_writer():
-    """Grafana mounts a copy, so a rotation that only rewrites the file blinds it.
-
-    The Cloudflare spend watch reads through that secret. One writer already
-    refreshes it from this file, so the apply starts that writer instead of
-    writing the secret a second time and drifting from it.
-    """
-    text = UNIT.read_text()
-    post = next(line for line in text.splitlines() if line.startswith("ExecStartPost="))
-    assert post == "ExecStartPost=/usr/bin/systemctl start --no-block fleet-host-config.service"
-    assert "polkit" in text, "the unit must say why a user unit may start a system unit"
-    assert "grafana-cloudflare-api-token" in HOST.read_text()
-    assert "--no-block" in post, "a long playbook must not hold the apply"
-    assert not [line for line in text.splitlines() if line.startswith(("ExecStart=", "ExecStartPost=")) and "/bin/sh" in line and "TF_VAR_github_app_pem" not in line], (
-        "no second writer in shell: ansible/tasks/secrets.yml already does this"
-    )
 
 
 def test_only_the_github_secret_tokens_take_the_gha_prefix():
