@@ -410,8 +410,8 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 # The review job's Claude (decisions ledger 2026-11-04): it reviews lane PRs, whose builders are
-# GLM, DeepSeek or MiniMax. No fallback, so a failure ends the review instead of answering from
-# a builder's family. Only the review runner's virtual key lists this group.
+# GLM, DeepSeek or MiniMax. No router fallback: on a failure or the 20 USD/day wall, review.yml
+# moves on to Grok, then review-qwen. Only the review runner's virtual key lists this group.
 - model_name: review-claude
   litellm_params:
     model: anthropic/claude-sonnet-5-5
@@ -429,6 +429,27 @@ model_list:
     supports_prompt_caching: false
     cache_proof: "Nothing repeats: each call is a new diff, and the shared system prompt (docs/review-bar.md) is under the 1024-token minimum cacheable prompt (docs.claude.com/en/docs/build-with-claude/prompt-caching)."
     id: anthropic-sonnet55-review
+# The review job's last reviewer (owner 2026-11-04: any family but the builder's, never MiniMax).
+# Qwen builds nothing, so it may review every PR. Its own group, no fallback either way, so a
+# review never reaches a builder's row. Alibaba Token Plan is prepaid, so no max_budget.
+- model_name: review-qwen
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    tags:
+    - prepaid
+    - alibaba
+    extra_body:
+      enable_thinking: true
+      thinking_budget: 2048
+    additional_drop_params:
+    - reasoning_effort
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Same model and endpoint as alibaba-qwen38max-assistant: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%)."
+    id: alibaba-qwen38max-review
 router_settings:
   routing_strategy: simple-shuffle
   # One task = one model: Pi sends x-litellm-session-id and session_affinity pins it to a row (fleet-ops#9015).

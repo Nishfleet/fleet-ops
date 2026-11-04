@@ -40,11 +40,11 @@ jobs:
     # this workflow on main may use, so the worker lane can neither run here nor change the
     # pi that writes the verdict. https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access
     runs-on: {group: reviewer, labels: [self-hosted, reviewer]}
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions: {contents: read, pull-requests: read}
     outputs:
       review: ${{ steps.ai.outputs.review }}
-      reviewer: ${{ steps.pick.outputs.name }}
+      reviewer: ${{ steps.ai.outputs.reviewer }}
     steps:
       - name: Read the pull request, the bot's last review and the author's answers
         env:
@@ -71,14 +71,15 @@ jobs:
             [ -z "$pushed" ] || gh api --paginate --jq '.workflow_runs[]' \
               "repos/$REPO/actions/workflows/agent.yml/runs?branch=main&per_page=100&created=$(date -u -d "$pushed -35 days" +%FT%TZ)..$pushed" | jq -s . > "$RUNNER_TEMP/runs.json" ;;
           esac
-      # The reviewer may be any AI but the builder's family (decisions ledger 2026-11-04). The
-      # builder comes from GitHub's records, never the editable body: lead/* branches are the
+      # The reviewer may be any AI but the builder's family, and never MiniMax (owner 2026-11-04).
+      # The builder comes from GitHub's records, never the editable body: lead/* branches are the
       # Claude lead. An agent/issue-* head is the lane's when the branch's newest push came from
       # the lane App and landed this SHA; its builder is the one engine that every agent run named
       # for the issue carries (agent.yml run-name). pi runs worker-capable, whose rows are GLM,
-      # DeepSeek and MiniMax (tests/test_review_family.py holds that). Grok builds nothing, so it
-      # reviews Claude builds and any PR whose builder is unknown.
-      - name: Pick a reviewer from another family than the builder's
+      # DeepSeek and MiniMax (tests/test_review_family.py holds that). Grok and Qwen build nothing,
+      # so they review every PR. The order is who tries first; each later reviewer runs only when
+      # every earlier one failed or hit its budget.
+      - name: Pick the reviewers, in order, from other families than the builder's
         id: pick
         run: |
           set -euo pipefail
@@ -91,27 +92,70 @@ jobs:
               [ "$lane" != yes ] || case "$engines" in pi|claude) builder=$engines ;; esac ;;
           esac
           case "$builder" in
-            pi) echo 'provider=litellm'; echo 'model=review-claude'; echo 'name=Claude Sonnet 5.5' ;;
-            claude) echo 'provider=xai-oauth'; echo 'model=grok-4.7'; echo 'name=Grok 4.7' ;;
-            *) echo 'provider=xai-oauth'; echo 'model=grok-4.7'; echo 'name=Grok 4.7'
-               echo 'note=The builder could not be determined from this pull request, so Grok reviewed it.' ;;
+            pi) echo 'order=claude grok qwen' ;;
+            claude) echo 'order=grok qwen' ;;
+            *) echo 'order=grok qwen'
+               echo 'note=The builder could not be determined from this pull request, so Claude did not review it.' ;;
           esac >> "$GITHUB_OUTPUT"
-      - name: Review
-        id: ai
+      # One step per reviewer: a failed step lets the job go on, and the next step reads its
+      # outcome. https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepscontinue-on-error
+      # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#steps-context
+      # The merge bar is docs/review-bar.md on fleet-ops main, the only ref the reviewer runner
+      # group lets this workflow run from; CODEOWNERS keeps it for the owner. pi's errors go to a
+      # file, never the log, and only the word budget or error reaches the review.
+      - name: Fetch the merge bar
         env:
           GH_TOKEN: ${{ github.token }}
-          PROVIDER: ${{ steps.pick.outputs.provider }}
-          MODEL: ${{ steps.pick.outputs.model }}
-          NOTE: ${{ steps.pick.outputs.note }}
         run: |
           set -euo pipefail
-          # The merge bar is docs/review-bar.md on fleet-ops main, the only ref the reviewer
-          # runner group lets this workflow run from; CODEOWNERS keeps it for the owner.
           gh api -H 'Accept: application/vnd.github.raw' 'repos/Nishfleet/fleet-ops/contents/docs/review-bar.md?ref=main' > "$RUNNER_TEMP/bar.md"
-          { cat "$RUNNER_TEMP/pr.md"; echo; echo '# Diff'; echo '```diff'; cat "$RUNNER_TEMP/pr.diff"; echo '```'; } |
-            pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
-              --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider "$PROVIDER" --model "$MODEL" > "$RUNNER_TEMP/review.md"
-          { echo 'review<<REVIEW_END'; [ -z "$NOTE" ] || printf '%s\n\n' "$NOTE"; cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
+          { cat "$RUNNER_TEMP/pr.md"; echo; echo '# Diff'; echo '```diff'; cat "$RUNNER_TEMP/pr.diff"; echo '```'; } > "$RUNNER_TEMP/prompt.md"
+      - name: Review with Claude Sonnet 5.5 (router review-claude)
+        id: claude
+        if: contains(steps.pick.outputs.order, 'claude')
+        continue-on-error: true
+        timeout-minutes: 8
+        env: {PROVIDER: litellm, MODEL: review-claude}
+        run: &review |
+          set -euo pipefail
+          pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
+            --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider "$PROVIDER" --model "$MODEL" \
+            < "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/review.md" 2> "$RUNNER_TEMP/$GITHUB_ACTION.err"
+          grep -q '^VERDICT: ' "$RUNNER_TEMP/review.md" || { echo 'no verdict line' >> "$RUNNER_TEMP/$GITHUB_ACTION.err"; exit 1; }
+      - name: Review with Grok 4.7 (pi provider xai-oauth)
+        id: grok
+        if: steps.claude.outcome != 'success'
+        continue-on-error: true
+        timeout-minutes: 8
+        env: {PROVIDER: xai-oauth, MODEL: grok-4.7}
+        run: *review
+      - name: Review with Qwen 3.8 Max (router review-qwen)
+        id: qwen
+        if: steps.claude.outcome != 'success' && steps.grok.outcome != 'success'
+        timeout-minutes: 8
+        env: {PROVIDER: litellm, MODEL: review-qwen}
+        run: *review
+      - name: Name the AI that answered and any that failed before it
+        id: ai
+        env:
+          NOTE: ${{ steps.pick.outputs.note }}
+          OUTCOMES: claude=${{ steps.claude.outcome }} grok=${{ steps.grok.outcome }} qwen=${{ steps.qwen.outcome }}
+        run: |
+          set -euo pipefail
+          declare -A name=([claude]='Claude Sonnet 5.5' [grok]='Grok 4.7' [qwen]='Qwen 3.8 Max')
+          notes=()
+          for pair in $OUTCOMES; do
+            id=${pair%%=*}
+            case "${pair#*=}" in
+              success) echo "reviewer=${name[$id]}" >> "$GITHUB_OUTPUT"; break ;;
+              failure) reason=error
+                       ! grep -qi budget "$RUNNER_TEMP/$id.err" 2>/dev/null || reason=budget
+                       notes+=("${name[$id]} did not answer ($reason).") ;;
+            esac
+          done
+          { echo 'review<<REVIEW_END'; [ -z "$NOTE" ] || printf '%s\n\n' "$NOTE"
+            [ ${#notes[@]} -eq 0 ] || printf '%s\n\n' "${notes[*]}"
+            cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
   verdict:
     # On a hosted runner, so the bot's token never sits on the box. The token is a secret of
     # environment `approver`, which only main may deploy to; called from a product repo, the
