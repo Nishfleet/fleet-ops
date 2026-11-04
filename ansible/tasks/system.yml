@@ -1,3 +1,10 @@
+# nish's user units run with nobody logged in only while lingering is on
+# (loginctl(1), enable-linger). It was set by hand, so a fresh box had no user manager.
+- name: Keep nish's user manager running without a login
+  ansible.builtin.command: loginctl enable-linger nish
+  args:
+    creates: /var/lib/systemd/linger/nish
+
 - name: Install systemd user-manager drop-ins
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/systemd/user/"
