@@ -9,6 +9,13 @@ The product is the box. A change is proven when the host play applies it on a
 fresh Ubuntu 24.04 host, and the feature it touches behaves as its file in
 `features/` says. CI only parses the play, so this is the only real run before merge.
 
+The container is rootless Podman with `--systemd=always`
+(https://docs.podman.io/en/latest/markdown/podman-run.1.html#systemd-true-false-always).
+Never run it `--privileged`: a privileged container writes `/proc/sys` and `/sys`, so the play's
+sysctl and tmpfiles tasks would set the kernel values of the machine that runs the test. `NET_ADMIN` in a
+rootless container covers only the container's own network namespace, which the nft
+tasks need.
+
 Run every command from the repo root. `RUN` names one run. Two runs with
 different `RUN` values share nothing.
 
@@ -16,13 +23,13 @@ different `RUN` values share nothing.
 
 ```sh
 RUN=verify-$(date +%s); EV="out/verify/$RUN"; mkdir -p "$EV"
-docker run -d --name "$RUN" --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-  geerlingguy/docker-ubuntu2404-ansible@sha256:29e6f9d736c3401815d98f626a41c55a54a4ef1edb9d1d1223018746d3acba14 \
+podman run -d --name "$RUN" --systemd=always --cap-add=NET_ADMIN \
+  docker.io/geerlingguy/docker-ubuntu2404-ansible@sha256:29e6f9d736c3401815d98f626a41c55a54a4ef1edb9d1d1223018746d3acba14 \
   /usr/lib/systemd/systemd
-docker exec "$RUN" sh -c 'until systemctl is-system-running | grep -qE "running|degraded"; do sleep 1; done'
-docker exec "$RUN" sh -c 'usermod -l nish -d /home/nish -m ubuntu && groupmod -n nish ubuntu && mkdir -p /srv'
-docker cp . "$RUN":/srv/fleet-ops
-docker exec -i "$RUN" sh -e <<'STANDINS'
+podman exec "$RUN" sh -c 'until systemctl is-system-running | grep -qE "running|degraded"; do sleep 1; done'
+podman exec "$RUN" sh -c 'usermod -l nish -d /home/nish -m ubuntu && groupmod -n nish ubuntu && mkdir -p /srv'
+podman cp . "$RUN":/srv/fleet-ops
+podman exec -i "$RUN" sh -e <<'STANDINS'
 H=$(getent passwd nish | cut -d: -f6)
 for i in $(seq 1 15); do mkdir -p $H/.local/share/agent-runner/$i; printf '#!/bin/sh\nexec sleep infinity\n' > $H/.local/share/agent-runner/$i/runsvc.sh; chmod 755 $H/.local/share/agent-runner/$i/runsvc.sh; done
 mkdir -p /etc/fleet-ops && touch /etc/fleet-ops/tether-off
@@ -34,7 +41,7 @@ printf 'CLOUDFLARE_API_TOKEN=dummy\n' > $H/.config/cloudflare/deploy-ci.env
 printf 'GRAFANA_POSTGRES_PASSWORD=dummy\n' > $H/.config/fleet-ops/grafana-postgres-password.env
 chown -R nish:nish $H
 STANDINS
-docker exec -e ANSIBLE_PIPELINING=1 "$RUN" sh -c 'cd /srv/fleet-ops && ansible-playbook -i localhost, -c local ansible/host.yml' > "$EV/converge.log" 2>&1; echo "converge rc=$?" >> "$EV/converge.log"
+podman exec -e ANSIBLE_PIPELINING=1 "$RUN" sh -c 'cd /srv/fleet-ops && ansible-playbook -i localhost, -c local ansible/host.yml' > "$EV/converge.log" 2>&1; echo "converge rc=$?" >> "$EV/converge.log"
 ```
 
 The play makes its own packages and folders on a fresh host only from #11712 on. Before
@@ -52,7 +59,7 @@ proves nothing about those steps. List them in the PR body.
 ## Doctor
 
 ```sh
-docker exec "$RUN" sh -c 'systemctl is-system-running; ansible --version | head -1; id nish; test -d /srv/fleet-ops/ansible && echo repo-ok'
+podman exec "$RUN" sh -c 'systemctl is-system-running; ansible --version | head -1; id nish; test -d /srv/fleet-ops/ansible && echo repo-ok'
 ```
 
 Drive only a container this run started. The image has ansible-core 2.21 and the box
@@ -60,7 +67,7 @@ has 2.16, so a module that behaves differently between them is not proven here.
 
 ## Drive
 
-Open the feature file that matches the change. Run its steps with `docker exec "$RUN" ...`.
+Open the feature file that matches the change. Run its steps with `podman exec "$RUN" ...`.
 
 - A unit: `systemctl start <unit>`, then `systemctl show -p Result,ExecMainStatus <unit>`.
 - A timer: start its service the same way.
@@ -77,7 +84,7 @@ side effect (the file, the unit state), not only the play's `ok`.
 ## Cleanup
 
 ```sh
-docker rm -f "$RUN"
+podman rm -f "$RUN"
 ls "$EV"
 ```
 

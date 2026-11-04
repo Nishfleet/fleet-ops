@@ -12,12 +12,12 @@ Every unit under `rootfs/etc/systemd/system/` and `systemd/` loads on the box, a
 
 - Add or change a unit file, merge, and the deploy installs it and reloads systemd.
 
-## Driving it with docker exec
+## Driving it with podman exec
 
-- **Load.** `docker exec "$RUN" systemctl show -p LoadState,ActiveState fleet-runner@1.service` prints `LoadState=loaded`.
-- **Start.** `docker exec "$RUN" systemctl start <unit>`, then `docker exec "$RUN" systemctl show -p Result,ExecMainStatus <unit>` prints `Result=success`.
-- **Logs.** `docker exec "$RUN" journalctl -u <unit> -o short-iso --no-pager > $EV/<unit>.journal`.
-- **Hardening.** `docker exec "$RUN" systemd-analyze security --offline=yes /etc/systemd/system/<unit>` prints the exposure score.
+- **Load.** `podman exec "$RUN" systemctl show -p LoadState,ActiveState fleet-runner@1.service` prints `LoadState=loaded`.
+- **Start.** `podman exec "$RUN" systemctl start <unit>`, then `podman exec "$RUN" systemctl show -p Result,ExecMainStatus <unit>` prints `Result=success`.
+- **Logs.** `podman exec "$RUN" journalctl -u <unit> -o short-iso --no-pager > $EV/<unit>.journal`.
+- **Hardening.** `podman exec "$RUN" systemd-analyze security --offline=yes /etc/systemd/system/<unit>` prints the exposure score.
 
 ## Gotchas
 

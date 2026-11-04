@@ -11,7 +11,7 @@ Read this index, then use the matching feature file as the recipe.
 
 ## Driving conventions
 
-- Run box commands with `docker exec "$RUN" sh -c '<command>'`.
+- Run box commands with `podman exec "$RUN" sh -c '<command>'`.
 - Treat every command as literal.
 - Save each command's output under `$EV/<feature>/`.
 
@@ -24,7 +24,7 @@ Read this index, then use the matching feature file as the recipe.
 ## Feature entry contract
 
 Each file has an H1, one paragraph, and four H2s in this order: `Sub-features`,
-`How to get to it (user POV)`, `Driving it with docker exec`, `Gotchas`.
+`How to get to it (user POV)`, `Driving it with podman exec`, `Gotchas`.
 
 ## Features
 
