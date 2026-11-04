@@ -36,6 +36,7 @@ mkdir -p /etc/fleet-ops && touch /etc/fleet-ops/tether-off
 groupadd -f gha0509-lock
 install -d -o nish -g nish -m 700 $H/.config $H/.config/fleet-ops $H/.config/fleet-ops/seats $H/.config/cloudflare $H/.hermes
 printf 'LITELLM_API_KEY=dummy\n' > $H/.config/fleet-ops/seats/litellm-agent.env
+printf 'LITELLM_API_KEY=dummy\n' > $H/.config/fleet-ops/seats/litellm-reviewer.env
 printf 'TELEGRAM_BOT_TOKEN=dummy\nTELEGRAM_HOME_CHANNEL=1\n' > $H/.hermes/.env
 printf 'CLOUDFLARE_API_TOKEN=dummy\n' > $H/.config/cloudflare/deploy-ci.env
 printf 'GRAFANA_POSTGRES_PASSWORD=dummy\n' > $H/.config/fleet-ops/grafana-postgres-password.env
