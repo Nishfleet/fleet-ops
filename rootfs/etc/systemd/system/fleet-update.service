@@ -11,7 +11,10 @@ After=network-online.target
 # https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#Restart=).
 # The start limit ends the retries after 3 starts, so a run that keeps failing
 # reaches `failed`, which SystemUnitFailed reads; without it the unit would sit in
-# auto-restart forever. The interval is longer than 3 starts plus 2 waits.
+# auto-restart forever. systemd counts starts from the first one, so the 4th
+# start comes burst * (run + RestartSec) later; the interval must be longer than
+# 3 * (TimeoutStartSec + RestartSec) or a slow failure resets the count and retries
+# forever (tests/test_oneshot_restart.py checks this).
 StartLimitIntervalSec=20h
 StartLimitBurst=3
 
