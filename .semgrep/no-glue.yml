@@ -35,7 +35,9 @@ rules:
       No glue: no interpreter program inline in a workflow, unit or prompt
       (python -c, node -e, a heredoc fed to an interpreter). Use a stock tool's
       flag or the product's own code.
-    pattern-regex: '(?m)^[ \t]*(?:-[ \t]+run:[ \t]*|run:[ \t]*|Exec\w*=[ \t]*|\$[ \t]+)?(?:python3?|node|perl|ruby|deno|bun)[ \t]+(?:-c|-e|-p|-)(?:[ \t]|$)|(?:python3?|node|perl|ruby|bash|sh)[ \t]+-?[ \t]*<<-?[ \t]*[''"]?\w+'
+    # An interpreter by bare name or by path (/bin/sh, /usr/bin/python3), anywhere
+    # on the line (ExecStart=, validate:, run:), then -c / -e / -p / - or a heredoc.
+    pattern-regex: '(?m)(?<![\w./])(?:(?:/[\w.+-]+)*/)?(?:(?:python[\d.]*|node|perl|ruby|deno|bun)[ \t]+(?:-[cep]|-)(?=[ \t''\x22]|$)|(?:bash|sh|zsh|dash)[ \t]+-[a-z]*c(?=[ \t''\x22]|$)|(?:python[\d.]*|node|perl|ruby|deno|bun|bash|sh|zsh|dash)[ \t]+(?:-[ \t]*)?<<-?[ \t]*[''\x22]?\w+)'
     paths:
       include:
         - "/.github/workflows/"
