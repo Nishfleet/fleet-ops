@@ -14,7 +14,7 @@ The deploy: `ansible/host.yml` applies on a fresh Ubuntu 24.04 host, and a secon
 
 ## Driving it with podman exec
 
-- **Converge.** The Launch command in `SKILL.md`. In the rootless container `converge.log` holds a `PLAY RECAP` line with `failed=` above 0, and the first failed task is `Apply tmpfiles on every run` (see Gotchas). Every task before it is proven, and that task and every task after it are not run. `converge rc=0` happens only on a host with a writable `/sys`.
+- **Converge.** The Launch command in `SKILL.md`. In the rootless container `converge.log` holds a `PLAY RECAP` line with `failed=2`. The first failure is the task `Apply tmpfiles on every run` (see Gotchas). The second is the handler `Restart systemd-oomd`, because `force_handlers` runs the notified handlers after the stop and the image has no `systemd-oomd.service`. Every task before the tmpfiles task is proven. That task and every task after it are not run.
 - **Idempotence.** Run the converge command again, into `$EV/converge2.log`. The recap line reads `changed=0`.
 - **Proof.** `grep -E '^localhost ' $EV/converge.log $EV/converge2.log`.
 
