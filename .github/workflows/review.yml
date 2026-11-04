@@ -1,0 +1,96 @@
+name: review
+# The one AI review and the approver bot (decisions ledger 2026-11-04). When CI goes green
+# on a pull request, Grok reads its text and diff against the merge bar, and the bot
+# account posts the result as its review: an approval only when Grok approves, CI is green
+# on that head and the body carries a run-proof line. Paths CODEOWNERS keeps for the owner
+# still need his click, because the bot is not their code owner. Nothing from the pull
+# request runs: no checkout, no tools, the diff as text only.
+# https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run
+# https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers] nothing from the pull request is checked out or run
+    workflows: [CI]
+    types: [completed]
+  workflow_call:
+    secrets:
+      APPROVER_TOKEN: {required: true}
+permissions: {}
+concurrency:
+  group: review-${{ github.repository }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+env:
+  REPO: ${{ github.repository }}
+  PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+  SHA: ${{ github.event.workflow_run.head_sha }}
+jobs:
+  review:
+    # A green CI run on a same-repo pull request. Fork text never reaches the reviewer, and
+    # Dependabot keeps its own auto-merge recipe.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.actor.login != 'dependabot[bot]'
+    # The reviewer's own runner: OS user fleet-reviewer, runner group `reviewer` that only
+    # this workflow on main may use, so the worker lane can neither run here nor change the
+    # pi that writes the verdict. https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access
+    runs-on: {group: reviewer, labels: [self-hosted, reviewer]}
+    timeout-minutes: 20
+    permissions: {contents: read, pull-requests: read}
+    outputs:
+      review: ${{ steps.grok.outputs.review }}
+    steps:
+      - name: Read the pull request, the bot's last review and the author's answers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Only the author's comments: anyone can comment on a public pull request.
+          PR_TEXT: >-
+            .author.login as $a | "# \(.title)\n\n\(.body)\n\n# Your last review\n\([.reviews[] | select(.author.login == "nishfleet-approver")] | last | .body // "none")\n\n# The author's answers\n\([.comments[] | select(.author.login == $a) | .body] | join("\n---\n"))"
+        run: |
+          set -euo pipefail
+          gh pr view "$PR" -R "$REPO" --json title,body,author,reviews,comments --jq "$PR_TEXT" > "$RUNNER_TEMP/pr.md"
+          gh api "repos/$REPO/pulls/$PR" -H 'Accept: application/vnd.github.diff' > "$RUNNER_TEMP/pr.diff"
+          [ "$(wc -c < "$RUNNER_TEMP/pr.diff")" -le 400000 ] || { echo "::error::diff over 400000 bytes, split the pull request"; exit 1; }
+      - name: Review on the Grok seat
+        id: grok
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The merge bar is docs/review-bar.md on fleet-ops main, the only ref the reviewer
+          # runner group lets this workflow run from; CODEOWNERS keeps it for the owner.
+          gh api -H 'Accept: application/vnd.github.raw' 'repos/Nishfleet/fleet-ops/contents/docs/review-bar.md?ref=main' > "$RUNNER_TEMP/bar.md"
+          { cat "$RUNNER_TEMP/pr.md"; echo; echo '# Diff'; echo '```diff'; cat "$RUNNER_TEMP/pr.diff"; echo '```'; } |
+            pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
+              --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider xai-oauth --model grok-4.7 > "$RUNNER_TEMP/review.md"
+          { echo 'review<<REVIEW_END'; cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
+  verdict:
+    # On a hosted runner, so the bot's token never sits on the box. The token is a secret of
+    # environment `approver`, which only main may deploy to; called from a product repo, the
+    # caller's own `approver` environment answers.
+    # https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
+    # https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments
+    # https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#using-inputs-and-secrets-in-a-reusable-workflow
+    needs: review
+    runs-on: ubuntu-latest
+    environment: approver
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Post the review as the approver bot
+        env:
+          GH_TOKEN: ${{ secrets.APPROVER_TOKEN }}
+          REVIEW: ${{ needs.review.outputs.review }}
+        run: |
+          set -euo pipefail
+          read -r head body_proof < <(gh pr view "$PR" -R "$REPO" --json headRefOid,body --jq '[.headRefOid, (.body | test("(?im)^run-proof:"))] | @tsv')
+          [ "$head" = "$SHA" ] || { echo "head moved past $SHA; its own CI run starts the next review"; exit 0; }
+          verdict=$(grep -oE '^VERDICT: (APPROVE|CHANGES|HOLD-OWNER)' <<<"$REVIEW" | tail -1 | cut -d' ' -f2 || true)
+          case "$verdict/$body_proof" in
+            APPROVE/true) event=APPROVE ;;
+            CHANGES/*) event=REQUEST_CHANGES ;;
+            APPROVE/false) event=COMMENT; REVIEW+=$'\n\nNot approved: the body has no run-proof line.' ;;
+            HOLD-OWNER/*) event=COMMENT; REVIEW+=$'\n\nHeld for the owner.' ;;
+            *) echo "::error::the reviewer gave no verdict line"; exit 1 ;;
+          esac
+          gh api "repos/$REPO/pulls/$PR/reviews" -f commit_id="$SHA" -f event="$event" -f body="Review (Grok 4.7, fleet-ops review.yml):"$'\n\n'"$REVIEW"

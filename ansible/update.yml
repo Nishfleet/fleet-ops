@@ -9,7 +9,7 @@
   connection: local
   gather_facts: false
   tasks:
-    - name: Update each tool through its own updater
+    - name: Update each tool through its own updater  # noqa: no-changed-when
       become: true
       become_user: nish
       environment:

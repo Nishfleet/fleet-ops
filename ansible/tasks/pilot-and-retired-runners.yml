@@ -23,8 +23,3 @@
     path: "{{ agent_runner_root }}/{{ item }}"
     state: absent
   loop: "{{ agent_runner_retired_ids }}"
-
-- name: Remove the review runner user
-  ansible.builtin.user:
-    name: fleet-reviewer
-    state: absent

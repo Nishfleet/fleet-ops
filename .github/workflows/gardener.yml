@@ -1,0 +1,49 @@
+name: gardener
+# Weekly, one gardener issue per code repo (trust-ladder rows 3 and 10, owner
+# 2026-11-04). The issue is labelled agent-ready, so the lane in agent.yml works
+# it, also while dispatch is paused. The App token files it, because an issue the
+# GITHUB_TOKEN files starts no workflow run:
+# https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs
+on:
+  schedule:
+    - cron: '17 3 * * 1' # Monday 03:17 UTC
+  workflow_dispatch:
+permissions: {}
+concurrency: {group: gardener, cancel-in-progress: false}
+jobs:
+  file:
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 10
+    steps:
+      - name: Read App private key
+        id: app-key
+        run: |
+          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          grep . "$keyfile" | sed 's/^/::add-mask::/'
+          { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
+      - name: App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          owner: Nishfleet
+          repositories: 0509,drive,mailbox,aiconverter-app,seo-fix-kit,TinyStudio.io-public,siterep-public,inish-site,fleet-console-worker,tether,rera-report-card,fleet-ops
+          permission-issues: write
+      - name: One gardener issue per repo, unless one is still open
+        env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
+        run: |
+          set -euo pipefail
+          since=$(date -u -d '7 days ago' +%F)
+          for repo in 0509 drive mailbox aiconverter-app seo-fix-kit TinyStudio.io-public siterep-public inish-site fleet-console-worker tether rera-report-card fleet-ops; do
+            open=$(gh issue list -R "Nishfleet/$repo" --label gardener --state open --json number --jq 'map(.number) | join(" ")')
+            if [ -n "$open" ]; then echo "$repo: gardener issue still open: $open"; continue; fi
+            body="Weekly gardener pass for the PRs merged since $since (gh pr list --state merged --search 'merged:>=$since'). Read their diffs and titles, not their comments.
+
+          1. Run the correct skill (/correct) on those merges: find each mistake that repeats and make it impossible at the strongest layer (types, then a lint, then a test, prose last).
+          2. Run the maintain-verification-skill skill (/maintain-verification-skill) on this repo's verification skill and feature map. If the repo has no verification skill, skip this step.
+
+          Keep it to one PR."
+            gh api "repos/Nishfleet/$repo/issues" -f title="gardener: week of $since" -f body="$body" -f 'labels[]=agent-ready' -f 'labels[]=gardener' --jq '.html_url'
+          done

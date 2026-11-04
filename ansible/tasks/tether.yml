@@ -62,47 +62,6 @@
     mode: "0755"
   when: not tether_off.stat.exists
 
-# Node for the unit: the official linux-x64 tarball, pinned by version and
-# sha256, unpacked into a root-owned versioned directory. The unit's
-# ExecStart names that binary by absolute path. The distro nodejs package
-# is not used and is not touched.
-- name: Download the pinned Node tarball for tether
-  tags: [tether]
-  ansible.builtin.get_url:
-    url: "https://nodejs.org/dist/v{{ tether_node_version }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
-    dest: "{{ tether_node_cache }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
-    checksum: "sha256:{{ tether_node_sha256 }}"
-    owner: root
-    group: root
-    mode: "0644"
-  when: not tether_off.stat.exists
-  # A --check run by a user that cannot write /var/cache (the test) fails here.
-  ignore_errors: "{{ ansible_check_mode }}"
-
-- name: Create the versioned Node directory, root-owned
-  tags: [tether]
-  ansible.builtin.file:
-    path: "{{ tether_node_dir }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-  when: not tether_off.stat.exists
-
-- name: Unpack the pinned Node for tether
-  tags: [tether]
-  ansible.builtin.unarchive:
-    src: "{{ tether_node_cache }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
-    dest: "{{ tether_node_dir }}"
-    remote_src: true
-    extra_opts: [--strip-components=1]
-    owner: root
-    group: root
-    creates: "{{ tether_node_dir }}/bin/node"
-  when: not tether_off.stat.exists
-  # Under --check the download above did not really happen.
-  ignore_errors: "{{ ansible_check_mode }}"
-
 # The tether release. Download, verify, unpack and link share one block, so a
 # GitHub or download failure cannot abort the host-config tasks after it: the
 # rescue leaves `current` where it was and records the failure, and the last
@@ -206,7 +165,7 @@
       when: tether_rel_fetch | bool
       ignore_errors: "{{ ansible_check_mode }}"
 
-    - name: Download the pinned tether release as nish
+    - name: Download the pinned tether release as nish  # noqa: no-changed-when
       become: true
       become_user: nish
       environment: "{{ nish_env }}"
@@ -321,7 +280,7 @@
         state: absent
       when: tether_rel_dir.stat.exists and not tether_rel_ok
 
-    - name: Move the staged tether release into place
+    - name: Move the staged tether release into place  # noqa: no-changed-when
       ansible.builtin.command:
         argv: [/usr/bin/mv, -T, "{{ tether_release_stage }}", "{{ tether_release_dir }}"]
       when: not tether_rel_ok
@@ -493,12 +452,12 @@
       delay: 10
       changed_when: false
 
-    - name: Create tether's Cua Space when it does not exist
+    - name: Create tether's Cua Space when it does not exist  # noqa: no-changed-when
       ansible.builtin.command:
         argv: ["{{ cua_cli }}", spaces, create, linux, --name, "{{ tether_space_name }}", --on, local]
       when: tether_space_ref not in (tether_space_ls.stdout | from_json | map(attribute='id') | list)
 
-    - name: Start tether's Cua Space when it exists and is not running
+    - name: Start tether's Cua Space when it exists and is not running  # noqa: no-changed-when
       ansible.builtin.command:
         argv: ["{{ cua_cli }}", spaces, start, "{{ tether_space_ref }}"]
       when:
@@ -563,7 +522,7 @@
     # veth pair on docker0. NET_RAW cannot be dropped through Cua (it sets no
     # CapDrop), but a runsc container's root has no NET_RAW or NET_ADMIN, and
     # the interface match holds either way.
-    - name: Read the peer interface index of tether's Cua Space container
+    - name: Read the peer interface index of tether's Cua Space container  # noqa: partial-become
       become_user: root
       ansible.builtin.command:
         argv: ["{{ nsenter_cli }}", -t, "{{ (tether_space_net.stdout | trim | from_json).pid | int }}", -n, "{{ ip_cli }}", -j, link, show, eth0]
@@ -598,7 +557,7 @@
     # the token read and the env file, so a new address is fenced within
     # seconds. A step above that fails never reaches this: the last rendered
     # file stays. Not tagged tether and not tied to the tether marker.
-    - name: Render the fence around tether's Cua Space
+    - name: Render the fence around tether's Cua Space  # noqa: partial-become
       become_user: root
       ansible.builtin.template:
         src: "{{ tether_space_nft_src }}"
@@ -608,7 +567,7 @@
         mode: "0644"
         validate: "{{ nft_cli }} -c -f %s"
 
-    - name: Load the fence around tether's Cua Space
+    - name: Load the fence around tether's Cua Space  # noqa: partial-become
       become_user: root
       ansible.builtin.command:
         argv: ["{{ nft_cli }}", -f, "{{ tether_space_nft }}"]
@@ -650,14 +609,14 @@
   # failed step never leaves it running open. A failure after the fence was
   # loaded leaves it running and fenced.
   rescue:
-    - name: Stop tether's Cua Space, which this run did not fence
+    - name: Stop tether's Cua Space, which this run did not fence  # noqa: no-changed-when
       ansible.builtin.command:
         argv: ["{{ cua_cli }}", spaces, stop, "{{ tether_space_ref }}"]
       register: tether_space_stop_cua
       ignore_errors: true
       when: tether_space_fenced is not defined
 
-    - name: Stop tether's Cua Space container through Docker when Cua could not
+    - name: Stop tether's Cua Space container through Docker when Cua could not  # noqa: no-changed-when
       ansible.builtin.command:
         argv: ["{{ docker_cli }}", stop, "{{ tether_space_name }}"]
       register: tether_space_stop_docker
@@ -687,7 +646,7 @@
   failed_when: false
   when: tether_off.stat.exists
 
-- name: Stop tether's Cua Space while the tether marker exists
+- name: Stop tether's Cua Space while the tether marker exists  # noqa: no-changed-when
   become: true
   become_user: nish
   environment: "{{ nish_env }}"
