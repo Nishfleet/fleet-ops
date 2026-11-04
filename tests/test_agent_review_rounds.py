@@ -38,11 +38,12 @@ def step(job, step_id):
     return next(s for s in WF["jobs"][job]["steps"] if s.get("id") == step_id)["run"]
 
 
-def run_step(tmp_path, script, data, **env):
+def run_step(tmp_path, script, data, stubs=(), **env):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / "gh").write_text(FAKE_GH)
-    (bin_dir / "gh").chmod(0o755)
+    for name in ("gh", *stubs):
+        (bin_dir / name).write_text(FAKE_GH)
+        (bin_dir / name).chmod(0o755)
     (tmp_path / "data.json").write_text(json.dumps(data))
     out, log = tmp_path / "out", tmp_path / "gh.log"
     out.touch()
@@ -124,6 +125,40 @@ def test_a_pr_off_the_issues_branch_is_refused(tmp_path):
 
 def test_only_a_go_starts_the_worker():
     assert WF["jobs"]["work"]["if"] == "needs.claim.outputs.go == 'true'"
+
+
+# The claim job's `go` is one step output from a step that always runs, so an issue run gets
+# go=true without reading any review. Contexts allowed in jobs.<id>.outputs:
+# https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability
+def test_an_issue_run_is_a_go_from_the_always_run_round_step(tmp_path):
+    claim = WF["jobs"]["claim"]
+    assert claim["outputs"]["go"] == "${{ steps.round.outputs.go }}"
+    assert "if" not in next(s for s in claim["steps"] if s.get("id") == "round")
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), {}, ISSUE="7", PR="")
+    assert proc.returncode == 0, proc.stderr
+    assert out == "go=true\n" and calls == []
+
+
+def push_step():
+    return next(s for s in WF["jobs"]["push"]["steps"] if s.get("name", "").startswith("Push the branch"))["run"]
+
+
+# The push starts the re-review, and review.yml reads the PR body live, so this run's proof
+# is in the body before the push. https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request
+@pytest.mark.parametrize(("proof", "tail"), [
+    ("run-proof: pytest -q -> 9 passed", "run-proof: pytest -q -> 9 passed"),
+    ("", "The worker wrote no run-proof line, so the reviewer bot will not approve."),
+])
+def test_a_review_answer_appends_its_proof_to_the_body_before_the_push(tmp_path, proof, tail):
+    data = {"repos/o/r/pulls/12": {"body": "Closes #7\n\nrun-proof: old -> 1 passed"}}
+    (tmp_path / "push").mkdir()  # the stub git does not create it
+    proc, _, calls = run_step(tmp_path, push_step(), data, stubs=("git",), ISSUE="7", PR="12", BASE=SHA, PROOF=proof)
+    assert proc.returncode == 0, proc.stderr
+    edit = calls.index(["api", "-X", "PATCH", "repos/o/r/pulls/12", "-f",
+                        f"body=Closes #7\n\nrun-proof: old -> 1 passed\n\nReview answer by the agent lane: https://github.com/o/r/actions/runs/1\n\n{tail}"])
+    push = next(i for i, c in enumerate(calls) if c[:1] == ["push"])
+    assert edit < push
+    assert not any(c[:2] == ["pr", "create"] for c in calls)
 
 
 def test_the_hop_fires_only_on_the_bots_change_request_and_holds_no_secret():
