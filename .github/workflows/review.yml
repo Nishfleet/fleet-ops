@@ -16,7 +16,10 @@ on:
       APPROVER_TOKEN: {required: true}
 permissions: {}
 concurrency:
-  group: review-${{ github.repository }}-${{ github.event.workflow_run.head_branch }}
+  # One group per pull request: its newer head cancels its older review, and other pull
+  # requests never do. A CI run with no pull request falls back to its own run id.
+  # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
+  group: review-${{ github.repository }}-${{ github.event.workflow_run.pull_requests[0].number || github.run_id }}
   cancel-in-progress: true
 env:
   REPO: ${{ github.repository }}

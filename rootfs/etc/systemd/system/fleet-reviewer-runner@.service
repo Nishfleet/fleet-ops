@@ -1,4 +1,4 @@
-# The review runner (label `reviewer`, runner group `reviewer`) as the unprivileged user
+# One review runner (instance = runner number; label `reviewer`, runner group `reviewer`) as the unprivileged user
 # fleet-reviewer, per GitHub's "Hardening for self-hosted runners" and the runner's own
 # service template (actions/runner src/Misc/layoutbin/actions.runner.service.template).
 # It runs only fleet-ops review.yml@main. fleet-reviewer shares no user or group with
@@ -6,20 +6,20 @@
 # and the worker lane's home from the runner's jobs (systemd.exec(5)).
 # Installed by ansible/tasks/runners.yml.
 [Unit]
-Description=GitHub Actions runner netcup-reviewer-1 (fleet-reviewer)
+Description=GitHub Actions runner netcup-reviewer-%i (fleet-reviewer)
 After=network-online.target
 Wants=network-online.target
 # Starts once `config.sh` has registered it; until then the start is skipped, not failed.
-ConditionPathExists=/var/lib/fleet-reviewer/runner/.runner
+ConditionPathExists=/var/lib/fleet-reviewer/%i/.runner
 StartLimitIntervalSec=10min
 StartLimitBurst=5
 
 [Service]
 User=fleet-reviewer
 Group=fleet-reviewer
-WorkingDirectory=/var/lib/fleet-reviewer/runner
+WorkingDirectory=/var/lib/fleet-reviewer/%i
 Environment=HOME=/var/lib/fleet-reviewer
-ExecStart=/var/lib/fleet-reviewer/runner/bin/runsvc.sh
+ExecStart=/var/lib/fleet-reviewer/%i/bin/runsvc.sh
 KillMode=process
 KillSignal=SIGTERM
 TimeoutStopSec=5min

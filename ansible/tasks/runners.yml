@@ -186,7 +186,7 @@
 # https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
 # https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access
 # Registration is one `config.sh` as fleet-reviewer with an org registration token; the
-# unit waits for its .runner file (rootfs/etc/systemd/system/fleet-reviewer-runner.service).
+# unit waits for its .runner file (rootfs/etc/systemd/system/fleet-reviewer-runner@.service).
 - name: Create the review runner user
   ansible.builtin.user:
     name: fleet-reviewer
@@ -194,6 +194,23 @@
     shell: /usr/sbin/nologin
     home: /var/lib/fleet-reviewer
     create_home: true
+
+# fleet_reviewer_runner_ids run as fleet-reviewer-runner@N in /var/lib/fleet-reviewer/N, as the
+# agent pool does, so reviews of different pull requests run side by side. The first runner was
+# a plain unit in /var/lib/fleet-reviewer/runner; its registration moves once to directory 1.
+# Its files keep only relative paths (bin/runsvc.sh, .runner), so the move keeps it registered.
+- name: Stop the review runner's plain unit before its directory moves
+  ansible.builtin.systemd_service:
+    name: fleet-reviewer-runner.service
+    enabled: false
+    state: stopped
+  when: ('/etc/systemd/system/fleet-reviewer-runner.service') is exists
+
+- name: Move the first review runner to directory 1
+  ansible.builtin.command:
+    argv: [mv, /var/lib/fleet-reviewer/runner, /var/lib/fleet-reviewer/1]
+    removes: /var/lib/fleet-reviewer/runner
+    creates: /var/lib/fleet-reviewer/1
 
 - name: Download the pinned actions runner
   ansible.builtin.get_url:
@@ -205,37 +222,44 @@
     mode: "0644"
   ignore_errors: "{{ ansible_check_mode }}"
 
-- name: Make the review runner directory
+- name: Make the review runner directories
   ansible.builtin.file:
-    path: /var/lib/fleet-reviewer/runner
+    path: "/var/lib/fleet-reviewer/{{ item }}"
     state: directory
     owner: fleet-reviewer
     group: fleet-reviewer
     mode: '0750'
+  loop: "{{ fleet_reviewer_runner_ids }}"
 
 # Once only: the runner updates itself in place after that (GitHub docs: "About self-hosted runners").
 - name: Unpack the actions runner for fleet-reviewer
   ansible.builtin.unarchive:
     src: "/var/cache/actions-runner-linux-x64-{{ fleet_reviewer_runner_version }}.tar.gz"
-    dest: /var/lib/fleet-reviewer/runner
+    dest: "/var/lib/fleet-reviewer/{{ item }}"
     remote_src: true
     owner: fleet-reviewer
     group: fleet-reviewer
-    creates: /var/lib/fleet-reviewer/runner/config.sh
+    creates: "/var/lib/fleet-reviewer/{{ item }}/config.sh"
+  loop: "{{ fleet_reviewer_runner_ids }}"
   ignore_errors: "{{ ansible_check_mode }}"
 
-- name: Give the review runner its environment and PATH
+- name: Give each review runner fleet-reviewer's environment
   ansible.builtin.copy:
-    content: "{{ item.content }}"
-    dest: "/var/lib/fleet-reviewer/runner/{{ item.dest }}"
+    content: "HOME=/var/lib/fleet-reviewer\nLANG=C.UTF-8\n"
+    dest: "/var/lib/fleet-reviewer/{{ item }}/.env"
     owner: fleet-reviewer
     group: fleet-reviewer
     mode: '0644'
-  loop:
-    - {content: "HOME=/var/lib/fleet-reviewer\nLANG=C.UTF-8\n", dest: .env}
-    - {content: "/var/lib/fleet-reviewer/.local/bin:{{ tether_node_dir }}/bin:/usr/bin:/bin\n", dest: .path}
-  loop_control:
-    label: "{{ item.dest }}"
+  loop: "{{ fleet_reviewer_runner_ids }}"
+
+- name: Give each review runner fleet-reviewer's PATH
+  ansible.builtin.copy:
+    content: "/var/lib/fleet-reviewer/.local/bin:{{ tether_node_dir }}/bin:/usr/bin:/bin\n"
+    dest: "/var/lib/fleet-reviewer/{{ item }}/.path"
+    owner: fleet-reviewer
+    group: fleet-reviewer
+    mode: '0644'
+  loop: "{{ fleet_reviewer_runner_ids }}"
 
 - name: Install pi for fleet-reviewer
   become: true
@@ -278,12 +302,13 @@
     HOME: /var/lib/fleet-reviewer
     PATH: "{{ tether_node_dir }}/bin:/usr/bin:/bin"
 
-- name: Start the review runner
+- name: Start the review runners
   ansible.builtin.systemd_service:
-    name: fleet-reviewer-runner.service
+    name: "fleet-reviewer-runner@{{ item }}.service"
     enabled: true
     state: started
     daemon_reload: true
+  loop: "{{ fleet_reviewer_runner_ids }}"
 
 # A runner takes a changed unit, .env or .path only on restart (fleet-ops#11715 left 15 runners
 # on the old unit), and a restart cancels the job it runs: the service sends the listener SIGINT,
@@ -297,6 +322,7 @@
 # https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_handlers.html
 # rc 0 restarts, rc 1 leaves the runner, and any other rc fails the task. Only pgrep's 1 means no
 # match; 2 and 3 are errors (pgrep(1) EXIT STATUS: https://man7.org/linux/man-pages/man1/pgrep.1.html).
+# A runner that never started (a review runner before its `config.sh`) has no start time: rc 1.
 - name: Find the idle runners that started before their unit, .env or .path changed
   ansible.builtin.shell:
     executable: /bin/bash
@@ -307,10 +333,11 @@
       unit=$(systemctl show -P FragmentPath {{ item }}) || exit 2;
       cgroup=$(systemctl show -P ControlGroup {{ item }}) || exit 2;
       newest=$(stat -c %Y "$unit" "$dir/.env" "$dir/.path" | sort -n | tail -n 1) || exit 2;
+      test -n "${started#@}" || exit 1;
       test "${started#@}" -lt "$newest" || exit;
       pgrep --cgroup "$cgroup" -x Runner.Worker;
       case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac
-  loop: "{{ fleet_runner_ids | map('regex_replace', '^(.*)$', 'fleet-runner@\\1.service') | list + ['fleet-reviewer-runner.service'] }}"
+  loop: "{{ fleet_runner_ids | map('regex_replace', '^(.*)$', 'fleet-runner@\\1.service') | list + fleet_reviewer_runner_ids | map('regex_replace', '^(.*)$', 'fleet-reviewer-runner@\\1.service') | list }}"
   register: runner_stale
   changed_when: runner_stale.rc == 0
   failed_when: runner_stale.rc not in [0, 1]
