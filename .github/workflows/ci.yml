@@ -42,5 +42,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/w:ro" -w /w --entrypoint sh prom/prometheus:v2.45.3@sha256:1534519c0a215a47840bfa09991b6262fb302989b734fc1073b2844445b04313 -c 'promtool check rules rootfs/etc/prometheus/*_rules.yml && promtool test rules config/prometheus-tests/*.test.yml'
           docker run --rm -v "$PWD:/w:ro" -w /w --entrypoint amtool prom/alertmanager:v0.26.0@sha256:361db356b33041437517f1cd298462055580585f26555c317df1a3caf2868552 check-config rootfs/etc/alertmanager/alertmanager.yml
+      - uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1, workflow security (#8457, #11686)
+        with: {advanced-security: false, version: 1.32.0}
       - name: Workflow files lint
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
