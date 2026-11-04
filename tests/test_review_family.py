@@ -41,7 +41,7 @@ print(subprocess.run(["jq", "-r", jq], input=out, capture_output=True, text=True
 FAKE_PI = r'''
 import os, sys
 sys.stdin.read()
-open(os.path.join(os.environ["RUNNER_TEMP"], "model"), "w").write(sys.argv[sys.argv.index("--model") + 1])
+open(os.path.join(os.environ["RUNNER_TEMP"], "model"), "w").write(sys.argv[sys.argv.index("--provider") + 1] + " " + sys.argv[sys.argv.index("--model") + 1])
 print("Looks fine.\nVERDICT: APPROVE")
 '''
 
@@ -64,7 +64,7 @@ def reviewer(tmp_path, branch, pushes=(), runs=()):
 
 
 def test_a_lane_head_from_a_pi_run_goes_to_claude(tmp_path):
-    assert reviewer(tmp_path, "agent/issue-7", [push()], [(7, "pi"), (77, "claude")]) == "review-claude"
+    assert reviewer(tmp_path, "agent/issue-7", [push()], [(7, "pi"), (77, "claude")]) == "litellm review-claude"
 
 
 @pytest.mark.parametrize("branch, pushes, runs", [
@@ -76,8 +76,10 @@ def test_a_lane_head_from_a_pi_run_goes_to_claude(tmp_path):
     ("agent/issue-7", [push()], []),
     ("agent/issue-7", [push()], [(7, "pi"), (7, "claude")]),
 ], ids=["lead", "claude-run", "no-push", "human-push", "head-moved", "no-run", "mixed-engines"])
-def test_anything_but_a_proven_pi_build_goes_to_qwen(tmp_path, branch, pushes, runs):
-    assert reviewer(tmp_path, branch, pushes, runs) == "review-qwen"
+def test_anything_but_a_proven_pi_build_goes_to_grok(tmp_path, branch, pushes, runs):
+    # Grok, not review-qwen: Qwen's monthly token plan ran out on 2026-11-02, and Grok wrote
+    # every bot review on 2026-11-04 until #11755 dropped it.
+    assert reviewer(tmp_path, branch, pushes, runs) == "xai-oauth grok-4.7"
 
 
 def test_agent_run_names_carry_the_issue_and_engine_the_review_reads():
