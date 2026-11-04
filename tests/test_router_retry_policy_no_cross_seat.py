@@ -110,23 +110,29 @@ import json
 import random
 import socketserver
 import threading
-from typing import List
 
 from router_litellm_pin import require_pinned_litellm
 
 require_pinned_litellm(__file__)
 
-import litellm  # noqa: E402
-from litellm import Router  # noqa: E402
-from litellm.exceptions import (APIError, AuthenticationError, BadRequestError,  # noqa: E402
-                                InternalServerError, NotFoundError, RateLimitError)
-from litellm.router_utils.get_retry_from_policy import get_num_retries_from_retry_policy  # noqa: E402
-from litellm.router_utils.pre_call_checks.deployment_affinity_check import DeploymentAffinityCheck  # noqa: E402
-from litellm.types.router import RetryPolicy  # noqa: E402
-
-import jsonschema  # noqa: E402
-import httpx  # noqa: E402
-import yaml  # noqa: E402
+import httpx
+import jsonschema
+import litellm
+import yaml
+from litellm import Router
+from litellm.exceptions import (
+    APIError,
+    AuthenticationError,
+    BadRequestError,
+    InternalServerError,
+    NotFoundError,
+    RateLimitError,
+)
+from litellm.router_utils.get_retry_from_policy import get_num_retries_from_retry_policy
+from litellm.router_utils.pre_call_checks.deployment_affinity_check import (
+    DeploymentAffinityCheck,
+)
+from litellm.types.router import RetryPolicy
 
 CONFIG_PATH = "config/litellm-proxy.yaml"
 SCHEMA_PATH = "config/litellm-proxy.schema.json"
@@ -174,7 +180,7 @@ def _pin_key(session_id: str) -> str:
         model_group="worker-capable", session_id=session_id, user_key=None)
 
 
-def _counts(paths: List[str]) -> dict:
+def _counts(paths: list[str]) -> dict:
     counts: dict = {}
     for path in paths:
         counts[path] = counts.get(path, 0) + 1
@@ -313,7 +319,7 @@ class _Server:
         srv.daemon_threads = True
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.port = srv.server_address[1]
-        self.hits: List[str] = []
+        self.hits: list[str] = []
         self.fail_first_only = False
         self._srv = srv
 
@@ -322,7 +328,7 @@ class _Server:
         self._srv.server_close()
 
 
-_CURRENT_SERVER: List[_Server] = []
+_CURRENT_SERVER: list[_Server] = []
 
 
 def _rows(port, park_on_first_429=False, seat_a_lane="/fail", peer_lane="/failcapable",
@@ -388,8 +394,8 @@ async def _run(server, retry_policy, sid, park_on_first_429=False, rows=None, ca
         # claim, which is out of scope for these tests.
         await router.cache.async_set_cache(
             key=_pin_key(sid), value={"model_id": "seat-a"}, ttl=3600)
-        pick_batches: List[List[str]] = []
-        outcomes: List[str] = []
+        pick_batches: list[list[str]] = []
+        outcomes: list[str] = []
         for _ in range(calls):
             outcome = "ok"
             try:
@@ -724,8 +730,8 @@ def test_the_migration_pre_start_names_the_same_image_as_the_proxy():
     import re
     from pathlib import Path
     text = (Path(__file__).resolve().parents[1] / "containers/quadlet/fleet-litellm-proxy.container").read_text()
-    image = re.findall(r"^Image=(\S+)$", text, re.M)
-    migrate = [m for m in re.findall(r"^ExecStartPre=.*podman run .*--skip_server_startup.*$", text, re.M)]
+    image = re.findall(r"^Image=(\S+)$", text, re.MULTILINE)
+    migrate = [m for m in re.findall(r"^ExecStartPre=.*podman run .*--skip_server_startup.*$", text, re.MULTILINE)]
     assert len(image) == 1 and len(migrate) == 1, (image, migrate)
     assert re.search(r"@sha256:[0-9a-f]{64}$", image[0]), image[0]
     # The line is a sh -c wrapper (skip when nothing changed): the image is assigned to i=.

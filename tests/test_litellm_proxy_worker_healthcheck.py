@@ -18,7 +18,7 @@ QUADLET = ROOT / "containers/quadlet/fleet-litellm-proxy.container"
 
 
 def values(key: str) -> list[str]:
-    return re.findall(rf"^{key}=(.*)$", QUADLET.read_text(), re.M)
+    return re.findall(rf"^{key}=(.*)$", QUADLET.read_text(), re.MULTILINE)
 
 
 def test_120_s_worker_healthcheck_window_present_exactly_once() -> None:

@@ -9,7 +9,6 @@ project settings source is ~/.claude/settings.json (the user file) and
 """
 import json
 import pathlib
-import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 UNIT = ROOT / "rootfs/etc/systemd/system/tincan-listen-claude-vps.service"

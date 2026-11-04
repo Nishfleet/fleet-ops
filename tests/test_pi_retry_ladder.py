@@ -49,9 +49,9 @@ requires_settings = pytest.mark.skipif(
 def worker_cooldown_ms() -> int:
     text = ROUTER_CONFIG.read_text()
     model_list, router_settings = text.split("\nrouter_settings:\n", 1)
-    router_default = re.search(r"^  cooldown_time: (\d+)", router_settings, re.M)
+    router_default = re.search(r"^  cooldown_time: (\d+)", router_settings, re.MULTILINE)
     assert router_default, "router_settings has no numeric cooldown_time"
-    blocks = re.findall(r"- model_name: (\S+)\n(.*?)(?=- model_name:|\Z)", model_list, re.S)
+    blocks = re.findall(r"- model_name: (\S+)\n(.*?)(?=- model_name:|\Z)", model_list, re.DOTALL)
     cooldowns = []
     for name, body in blocks:
         if name != "worker-capable":

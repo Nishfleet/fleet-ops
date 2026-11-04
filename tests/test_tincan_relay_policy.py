@@ -21,7 +21,7 @@ HOST_PLAYBOOK = (ROOT / "ansible/tasks/tincan-relay-policy.yml").read_text()
 NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 yq = pytest.mark.skipif(
-    subprocess.run(["which", "yq"], capture_output=True).returncode != 0,
+    subprocess.run(["which", "yq"], capture_output=True, check=False).returncode != 0,
     reason="yq is not installed",
 )
 
@@ -226,6 +226,7 @@ def test_the_host_playbook_installs_the_render_byte_for_byte(tmp_path):
     )
     result = subprocess.run(
         ["ansible-playbook", "-i", "localhost,", str(book)],
+        check=False,
         capture_output=True,
         text=True,
         cwd=tmp_path,

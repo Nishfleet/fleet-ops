@@ -24,9 +24,9 @@ require_pinned_litellm(__file__)
 
 pytest.importorskip("litellm")
 
-import litellm  # noqa: E402
-import yaml  # noqa: E402
-from litellm import Router  # noqa: E402
+import litellm
+import yaml
+from litellm import Router
 
 CONFIG_PATH = "config/litellm-proxy.yaml"
 HITS: list = []

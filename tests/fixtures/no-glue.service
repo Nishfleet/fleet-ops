@@ -1,0 +1,27 @@
+# Fixture for tests/test_no_glue_rule.py: semgrep test annotations, the line after
+# "ruleid: no-inline-program" must match the rule, the line after "ok:" must not.
+[Service]
+# ruleid: no-inline-program
+ExecStartPre=/bin/sh -c 'test -n "$$TOKEN"'
+# ruleid: no-inline-program
+ExecStart=-/usr/bin/bash -euc 'echo hi'
+# ruleid: no-inline-program
+    validate: /usr/bin/python3 -c 'import json' %s
+# ruleid: no-inline-program
+      - run: python3 -c 'print(1)'
+# ruleid: no-inline-program
+ExecStart=/usr/bin/env python3 - <<'PY'
+# ruleid: no-inline-program
+  bash <<EOF
+# ruleid: no-inline-program
+    argv: [/bin/sh, -c, "echo hi"]
+# ruleid: no-inline-program
+    argv: ["/usr/bin/python3", "-c", "print(1)"]
+# ok: no-inline-program
+    argv: [/bin/sh, /usr/lib/x/run, -c]
+# ok: no-inline-program
+ExecStart=/usr/bin/restic check
+# ok: no-inline-program
+ExecStart=/usr/bin/flock -c /run/x.lock true
+# ok: no-inline-program
+ExecStart=/usr/bin/bash /usr/lib/x/run

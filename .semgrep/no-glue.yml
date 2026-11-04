@@ -1,0 +1,48 @@
+# No glue (global-standing-rules.md "No glue"; Nish 2026-09-29: non-negotiable,
+# enforced by a machine, not by review). Stock semgrep config from fleet-ops#8980,
+# restored by #11693; ci.yml runs this file with `semgrep scan --error`.
+rules:
+  - id: no-script-files
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      No glue: no scripts, wrappers or script directories. Use a stock tool's own
+      config, a unit line, a prompt line, or the product's own code. A new organ
+      needs Nish's explicit yes.
+    pattern-regex: '(?s)\A.'
+    paths:
+      include:
+        - "*.sh"
+        - "*.bash"
+        - "*.zsh"
+        - "*.py"
+        - "*.pl"
+        - "*.rb"
+        - "/bin/"
+        - "/scripts/"
+        - "/libexec/"
+        - "/lib/"
+        - "/ops/"
+        - "/hooks/"
+        - "/.github/scripts/"
+        - "/tools/"
+        - "/.fleet/"
+        - "/template/extensions/"
+  - id: no-inline-program
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      No glue: no interpreter program inline in a workflow, unit or prompt
+      (python -c, node -e, a heredoc fed to an interpreter). Use a stock tool's
+      flag or the product's own code.
+    # An interpreter by bare name or by path (/bin/sh, /usr/bin/python3), anywhere
+    # on the line (ExecStart=, validate:, run:, argv: [...]), then -c / -e / -p / - or a
+    # heredoc. The flag may follow a space or a list comma (argv: [/bin/sh, -c, ...]).
+    pattern-regex: '(?m)(?<![\w./])(?:(?:/[\w.+-]+)*/)?(?:(?:python[\d.]*|node|perl|ruby|deno|bun)(?:[ \t]+|[''\x22]?[ \t]*,[ \t]*[''\x22]?)(?:-[cep]|-)(?=[ \t''\x22,\]]|$)|(?:bash|sh|zsh|dash)(?:[ \t]+|[''\x22]?[ \t]*,[ \t]*[''\x22]?)-[a-z]*c(?=[ \t''\x22,\]]|$)|(?:python[\d.]*|node|perl|ruby|deno|bun|bash|sh|zsh|dash)[ \t]+(?:-[ \t]*)?<<-?[ \t]*[''\x22]?\w+)'
+    paths:
+      include:
+        - "/.github/workflows/"
+        - "/systemd/"
+        - "/prompts/"
+        - "/rootfs/"
+        - "/ansible/"

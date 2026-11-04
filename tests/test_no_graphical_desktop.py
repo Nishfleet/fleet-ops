@@ -1,10 +1,10 @@
 """The box has no graphical desktop: the play purges it and installs none of it (fleet-ops#10935)."""
 import json
-import subprocess
 import shutil
+import subprocess
 
-import pytest
 import ansible_host
+import pytest
 
 if not shutil.which("yq"):
     pytest.skip("yq missing", allow_module_level=True)
