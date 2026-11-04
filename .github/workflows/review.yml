@@ -3,9 +3,9 @@ name: review
 # on a pull request, a reviewer from another AI family than the builder's reads its text and
 # diff against the merge bar, and the bot account posts the result as its review: an approval
 # only when the reviewer approves, CI is green
-# on that head and the body carries a run-proof line. Paths CODEOWNERS keeps for the owner
-# still need his click, because the bot is not their code owner. Nothing from the pull
-# request runs: no checkout, no tools, the diff as text only.
+# on that head and the body carries a run-proof line. A pull request that touches a path
+# CODEOWNERS lists is held for the owner, never approved (fleet-ops#11741). Nothing from the
+# pull request runs: no checkout, no tools, the diff as text only.
 # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run
 # https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request
 on:
@@ -183,7 +183,7 @@ jobs:
             and (.status == "removed" or .status == "renamed" or .deletions > 0)) | .filename
         run: |
           set -euo pipefail
-          read -r head body_proof < <(gh pr view "$PR" -R "$REPO" --json headRefOid,body --jq '[.headRefOid, (.body | test("(?im)^run-proof:"))] | @tsv')
+          read -r head base body_proof < <(gh pr view "$PR" -R "$REPO" --json headRefOid,baseRefName,body --jq '[.headRefOid, .baseRefName, (.body | test("(?im)^run-proof:"))] | @tsv')
           [ "$head" = "$SHA" ] || { echo "head moved past $SHA; its own CI run starts the next review"; exit 0; }
           verdict=$(grep -oE '^VERDICT: (APPROVE|CHANGES|HOLD-OWNER)' <<<"$REVIEW" | tail -1 | cut -d' ' -f2 || true)
           case "$verdict/$body_proof" in
@@ -197,5 +197,25 @@ jobs:
             # An assignment, so a failed call stops the job instead of approving.
             edits=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq "$TEST_EDITS")
             [ -z "$edits" ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: this PR deletes or changes existing test lines.'; }
+            # The base branch's CODEOWNERS, the first of the three places GitHub looks. Its
+            # patterns follow gitignore rules, so git's own gitignore matcher (on the runner, no
+            # install in the job that holds the bot token) decides. It holds more than GitHub, never
+            # less: a pattern with no owners still holds, and docs/* also holds docs/a/b.md.
+            # Owners are dropped, and a leading ! stays literal because CODEOWNERS has no negation.
+            # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners#codeowners-file-location
+            # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners#codeowners-syntax
+            # https://git-scm.com/docs/git-check-ignore
+            git init -q "$RUNNER_TEMP/owners"
+            for path in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
+              if gh api -X GET -H 'Accept: application/vnd.github.raw' "repos/$REPO/contents/$path" -f ref="$base" \
+                   > "$RUNNER_TEMP/CODEOWNERS" 2> "$RUNNER_TEMP/codeowners.err"; then
+                sed -E 's/^[[:space:]]+//; /^(#|$)/d; s/[[:space:]].*//; s/^!/\\!/' "$RUNNER_TEMP/CODEOWNERS" > "$RUNNER_TEMP/owners/.git/info/exclude"
+                break
+              fi
+              grep -q 'HTTP 404' "$RUNNER_TEMP/codeowners.err" || { cat "$RUNNER_TEMP/codeowners.err" >&2; exit 1; }
+            done
+            names=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
+            owned=$(git -C "$RUNNER_TEMP/owners" check-ignore --no-index --stdin <<<"$names") || [ $? -eq 1 ]
+            [ -z "$owned" ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: CODEOWNERS lists '"$(paste -sd' ' <<<"$owned")."; }
           fi
           gh api "repos/$REPO/pulls/$PR/reviews" -f commit_id="$SHA" -f event="$event" -f body="Review ($REVIEWER, fleet-ops review.yml):"$'\n\n'"$REVIEW"
