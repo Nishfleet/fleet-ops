@@ -76,9 +76,9 @@ def test_live_config_tether_is_one_claude_row_falling_to_assistant_only():
     assert len(rows) == 1
     assert rows[0]["litellm_params"]["model"] == "anthropic/claude-sonnet-5-5"
     assert rows[0]["litellm_params"]["api_key"] == "os.environ/ANTHROPIC_API_KEY"
-    # the Claude key serves no other group, and `assistant` (shared with the Hermes chat agent) has no Claude row
+    # the Claude key serves only tether and the review job's group, and `assistant` (shared with the Hermes chat agent) has no Claude row
     assert [r["model_name"] for r in cfg["model_list"]
-            if r["litellm_params"].get("api_key") == "os.environ/ANTHROPIC_API_KEY"] == ["tether"]
+            if r["litellm_params"].get("api_key") == "os.environ/ANTHROPIC_API_KEY"] == ["tether", "review-claude"]
     fallbacks = {k: v for entry in cfg["router_settings"]["fallbacks"] for k, v in entry.items()}
     assert fallbacks["tether"] == ["assistant"]
     assert not any("tether" in v for v in fallbacks.values())

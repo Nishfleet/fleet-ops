@@ -1,7 +1,8 @@
 name: review
 # The one AI review and the approver bot (decisions ledger 2026-11-04). When CI goes green
-# on a pull request, Grok reads its text and diff against the merge bar, and the bot
-# account posts the result as its review: an approval only when Grok approves, CI is green
+# on a pull request, a reviewer from another AI family than the builder's reads its text and
+# diff against the merge bar, and the bot account posts the result as its review: an approval
+# only when the reviewer approves, CI is green
 # on that head and the body carries a run-proof line. Paths CODEOWNERS keeps for the owner
 # still need his click, because the bot is not their code owner. Nothing from the pull
 # request runs: no checkout, no tools, the diff as text only.
@@ -38,7 +39,8 @@ jobs:
     timeout-minutes: 20
     permissions: {contents: read, pull-requests: read}
     outputs:
-      review: ${{ steps.grok.outputs.review }}
+      review: ${{ steps.ai.outputs.review }}
+      reviewer: ${{ steps.pick.outputs.name }}
     steps:
       - name: Read the pull request, the bot's last review and the author's answers
         env:
@@ -49,12 +51,38 @@ jobs:
         run: |
           set -euo pipefail
           gh pr view "$PR" -R "$REPO" --json title,body,author,reviews,comments --jq "$PR_TEXT" > "$RUNNER_TEMP/pr.md"
+          gh pr view "$PR" -R "$REPO" --json body --jq .body > "$RUNNER_TEMP/body.md"
           gh api "repos/$REPO/pulls/$PR" -H 'Accept: application/vnd.github.diff' > "$RUNNER_TEMP/pr.diff"
           [ "$(wc -c < "$RUNNER_TEMP/pr.diff")" -le 400000 ] || { echo "::error::diff over 400000 bytes, split the pull request"; exit 1; }
-      - name: Review on the Grok seat
-        id: grok
+      # The reviewer may be any AI but the builder's family (decisions ledger 2026-11-04).
+      # Builders come from facts the pull request carries: lead/* branches are the Claude lead;
+      # agent/issue-* bodies carry agent.yml's `builder:` line, and pi there runs worker-capable,
+      # whose rows are GLM, DeepSeek and MiniMax (tests/test_review_family.py holds that). Grok
+      # builds nothing, so it reviews Claude builds and any PR whose builder is unknown.
+      - name: Pick a reviewer from another family than the builder's
+        id: pick
+        env:
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          builder=
+          case "$BRANCH" in
+            lead/*) builder=claude ;;
+            agent/issue-*) builder=$(tr -d '\r' < "$RUNNER_TEMP/body.md" | awk '$1 == "builder:" { print $2; exit }') ;;
+          esac
+          case "$builder" in
+            pi) echo 'provider=litellm'; echo 'model=review-claude'; echo 'name=Claude Sonnet 5.5' ;;
+            claude) echo 'provider=xai-oauth'; echo 'model=grok-4.7'; echo 'name=Grok 4.7' ;;
+            *) echo 'provider=xai-oauth'; echo 'model=grok-4.7'; echo 'name=Grok 4.7'
+               echo 'note=The builder could not be determined from this pull request, so Grok reviewed it.' ;;
+          esac >> "$GITHUB_OUTPUT"
+      - name: Review
+        id: ai
         env:
           GH_TOKEN: ${{ github.token }}
+          PROVIDER: ${{ steps.pick.outputs.provider }}
+          MODEL: ${{ steps.pick.outputs.model }}
+          NOTE: ${{ steps.pick.outputs.note }}
         run: |
           set -euo pipefail
           # The merge bar is docs/review-bar.md on fleet-ops main, the only ref the reviewer
@@ -62,8 +90,8 @@ jobs:
           gh api -H 'Accept: application/vnd.github.raw' 'repos/Nishfleet/fleet-ops/contents/docs/review-bar.md?ref=main' > "$RUNNER_TEMP/bar.md"
           { cat "$RUNNER_TEMP/pr.md"; echo; echo '# Diff'; echo '```diff'; cat "$RUNNER_TEMP/pr.diff"; echo '```'; } |
             pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
-              --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider xai-oauth --model grok-4.7 > "$RUNNER_TEMP/review.md"
-          { echo 'review<<REVIEW_END'; cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
+              --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider "$PROVIDER" --model "$MODEL" > "$RUNNER_TEMP/review.md"
+          { echo 'review<<REVIEW_END'; [ -z "$NOTE" ] || printf '%s\n\n' "$NOTE"; cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
   verdict:
     # On a hosted runner, so the bot's token never sits on the box. The token is a secret of
     # environment `approver`, which only main may deploy to; called from a product repo, the
@@ -81,6 +109,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.APPROVER_TOKEN }}
           REVIEW: ${{ needs.review.outputs.review }}
+          REVIEWER: ${{ needs.review.outputs.reviewer }}
         run: |
           set -euo pipefail
           read -r head body_proof < <(gh pr view "$PR" -R "$REPO" --json headRefOid,body --jq '[.headRefOid, (.body | test("(?im)^run-proof:"))] | @tsv')
@@ -93,4 +122,4 @@ jobs:
             HOLD-OWNER/*) event=COMMENT; REVIEW+=$'\n\nHeld for the owner.' ;;
             *) echo "::error::the reviewer gave no verdict line"; exit 1 ;;
           esac
-          gh api "repos/$REPO/pulls/$PR/reviews" -f commit_id="$SHA" -f event="$event" -f body="Review (Grok 4.7, fleet-ops review.yml):"$'\n\n'"$REVIEW"
+          gh api "repos/$REPO/pulls/$PR/reviews" -f commit_id="$SHA" -f event="$event" -f body="Review ($REVIEWER, fleet-ops review.yml):"$'\n\n'"$REVIEW"
