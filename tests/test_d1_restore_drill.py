@@ -2,8 +2,6 @@ import pathlib
 import shlex
 import subprocess
 
-import pytest
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 UNIT = ROOT / "systemd/fleet-d1-restore-drill.service"
 TIMER = ROOT / "systemd/fleet-d1-restore-drill.timer"
@@ -118,7 +116,7 @@ def _run(tmp_path: pathlib.Path, bindir: pathlib.Path, steps: list[list[str]] | 
     }
     env.update(extra or {})
     for argv in _exec(UNIT) if steps is None else steps:
-        done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120)
+        done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120, check=False)
         if done.returncode:
             return done
     return done
@@ -255,7 +253,7 @@ def test_a_missing_private_key_fails_before_anything_is_downloaded(tmp_path):
 def test_an_empty_github_token_fails_the_pre_check(tmp_path):
     bindir = _stub_dir(tmp_path)
     pre = _exec(UNIT, "ExecStartPre")[0]
-    done = subprocess.run(pre, env={"PATH": f"{bindir}:/usr/bin:/bin", "GH_TOKEN": ""}, capture_output=True, text=True, timeout=30)
+    done = subprocess.run(pre, env={"PATH": f"{bindir}:/usr/bin:/bin", "GH_TOKEN": ""}, capture_output=True, text=True, timeout=30, check=False)
     assert done.returncode != 0
     assert "no GitHub App token, refusing to run" in done.stderr
 
@@ -281,7 +279,7 @@ def test_the_revoke_step_revokes_the_token_and_removes_its_env_file(tmp_path):
         "GH_TOKEN": "ghs_probe",
         "RUNTIME_DIRECTORY": str(tmp_path / "run"),
     }
-    done = subprocess.run(_exec_stop_post(specifiers)[0], env=env, capture_output=True, text=True, timeout=30)
+    done = subprocess.run(_exec_stop_post(specifiers)[0], env=env, capture_output=True, text=True, timeout=30, check=False)
     assert done.returncode == 0
     assert "revoked" in (tmp_path / "log").read_text()
     assert not (runtime / "fleet-worker-github-token" / "actions:drive.env").exists()

@@ -2,6 +2,7 @@
 
 import re
 from pathlib import Path
+
 import ansible_host
 
 ROOT = Path(__file__).resolve().parents[1]

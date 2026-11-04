@@ -32,7 +32,7 @@ def test_every_live_paid_plan_keeps_a_router_row():
     gone = [
         p["name"] for p in _plans()
         if not p.get("rows_pending")
-        and not any(b.startswith(p["api_base"]) for b in (bases if not p.get("via") == "pi-provider" else pi_bases))
+        and not any(b.startswith(p["api_base"]) for b in (bases if p.get("via") != "pi-provider" else pi_bases))
     ]
     assert not gone, f"paid plans with no router row: {gone}. Changing config/paid-plans.json needs Nish (CODEOWNERS)"
 
