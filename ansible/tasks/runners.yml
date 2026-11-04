@@ -183,8 +183,8 @@
 # fleet-ops review.yml@main may use, as its own user fleet-reviewer. It shares no user or
 # group with fleet-runner or nish, so a worker job cannot read or change the pi that writes
 # the verdict, and fleet-reviewer cannot read the worker's home or the App key. Its home holds
-# the runner, pi, pi-grok and pi-grok's own login, and a router key that reaches review-claude
-# and review-qwen only (below): no git credential, no App key.
+# the runner, pi, pi-grok and pi-grok's own login, and a router key that reaches the review
+# groups only (below): no git credential, no App key.
 # GitHub's "Hardening for self-hosted runners" and "Managing access to self-hosted runners":
 # https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
 # https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access
@@ -286,9 +286,9 @@
   loop: [.pi, .pi/agent, .config, .config/fleet-ops, .config/fleet-ops/seats]
 
 # The reviewer is any family but the builder's, never MiniMax (owner 2026-11-04), so reviews
-# reach Claude and Qwen through the router. Its own virtual key lists the review-claude and
-# review-qwen groups only; the lead set them with POST /key/update
-# {"key": "<the fleet-reviewer key>", "models": ["review-claude", "review-qwen"]} and stores the
+# reach Claude, Qwen, GLM and DeepSeek through the router. Its own virtual key lists the review
+# groups only; the lead set them with POST /key/update
+# {"key": "<the fleet-reviewer key>", "models": ["review-claude", "review-qwen", "review-any"]} and stores the
 # key in the seats directory, as fleet-runner's key is.
 # https://docs.litellm.ai/docs/proxy/virtual_keys
 - name: Give fleet-reviewer its review-only router key
@@ -304,7 +304,7 @@
 # cannot shadow pi-grok's models (pi docs/models.md: a models entry replaces the same ID).
 - name: Install pi's router model for fleet-reviewer
   ansible.builtin.copy:
-    content: "{{ {'providers': {'litellm': {'baseUrl': 'http://127.0.0.1:4000', 'api': 'openai-completions', 'apiKey': '!cut -d= -f2- $HOME/.config/fleet-ops/seats/litellm-reviewer.env', 'models': [{'id': 'review-claude', 'name': 'Claude Sonnet 5.5 (router review-claude)'}, {'id': 'review-qwen', 'name': 'Qwen 3.8 Max (router review-qwen)'}]}}} | to_nice_json }}"
+    content: "{{ {'providers': {'litellm': {'baseUrl': 'http://127.0.0.1:4000', 'api': 'openai-completions', 'apiKey': '!cut -d= -f2- $HOME/.config/fleet-ops/seats/litellm-reviewer.env', 'models': [{'id': 'review-claude', 'name': 'Claude Sonnet 5.5 (router review-claude)'}, {'id': 'review-qwen', 'name': 'Qwen 3.8 Max (router review-qwen)'}, {'id': 'review-any', 'name': 'Qwen, GLM or DeepSeek (router review-any)'}]}}} | to_nice_json }}"
     dest: /var/lib/fleet-reviewer/.pi/agent/models.json
     owner: fleet-reviewer
     group: fleet-reviewer
