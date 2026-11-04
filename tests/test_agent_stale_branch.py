@@ -25,13 +25,13 @@ PATH="$REAL_PATH" exec git "$@"
 
 
 def git(*args, cwd=None):
-    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
 def commit(repo, name):
     (repo / name).write_text(name)
     git("add", name, cwd=repo)
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", name, cwd=repo)
+    git("commit", "-qm", name, cwd=repo)
     return git("rev-parse", "HEAD", cwd=repo)
 
 
