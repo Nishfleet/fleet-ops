@@ -1,9 +1,9 @@
 # The agent runner pool (fleet-ops#10935): fleet_runner_ids run as the unprivileged
 # user fleet-runner through rootfs/etc/systemd/system/fleet-runner@.service, per
 # GitHub's "Security hardening for self-hosted runners". Its home holds only the
-# runner installs, pi, pi's model file, the scoped router key and a git credential
-# helper: no Claude, gh or Cloudflare login, and no App key (that comes in as a
-# systemd credential).
+# runner installs, pi, pi's model file and the scoped router key: no Claude, gh or
+# Cloudflare login, no git credential and no App key. agent.yml mints the App token
+# only on GitHub-hosted runners, which the worker cannot reach (fleet-ops#11715).
 #
 # Runners 1 and 15 reuse registrations copied once from nish's runner directory:
 # only while the copy has no runsvc.sh, so a re-run never overwrites a live
@@ -165,14 +165,11 @@
     group: fleet-runner
     mode: '0600'
 
-# What `gh auth setup-git` writes: git asks gh, and gh answers with the job's GH_TOKEN.
-- name: Let git push with the job's GitHub token
-  ansible.builtin.copy:
-    content: "[credential \"https://github.com\"]\n\thelper =\n\thelper = !/usr/bin/gh auth git-credential\n"  # noqa: no-tabs
-    dest: /var/lib/fleet-runner/.gitconfig
-    owner: fleet-runner
-    group: fleet-runner
-    mode: '0644'
+# No job on this runner pushes any more (fleet-ops#11715), so the git credential helper goes.
+- name: Remove the git credential helper
+  ansible.builtin.file:
+    path: /var/lib/fleet-runner/.gitconfig
+    state: absent
 
 - name: Start the fleet runners
   ansible.builtin.systemd_service:
