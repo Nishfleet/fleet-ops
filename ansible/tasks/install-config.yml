@@ -129,6 +129,30 @@
     - Reload systemd
     - Restart ssh.socket
 
+# The runner units get their own copy, before the tree copy, so only a change to them
+# notifies the runner restart below (handlers: ansible/host.yml).
+- name: Install the agent runner unit
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/system/fleet-runner@.service"
+    dest: /etc/systemd/system/fleet-runner@.service
+    owner: root
+    group: root
+    mode: preserve
+  notify:
+    - Reload systemd
+    - Restart the agent runners
+
+- name: Install the review runner unit
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/system/fleet-reviewer-runner@.service"
+    dest: /etc/systemd/system/fleet-reviewer-runner@.service
+    owner: root
+    group: root
+    mode: preserve
+  notify:
+    - Reload systemd
+    - Restart the review runners
+
 - name: Install systemd units, slices and drop-ins
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/systemd/system/"
