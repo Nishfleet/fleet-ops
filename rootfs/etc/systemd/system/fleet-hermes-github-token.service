@@ -63,7 +63,7 @@ RuntimeDirectory=fleet-hermes-github-token
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 # GITHUB_API_URL exists so CI can run this very ExecStart against a local stub
-# (tests/test_worker_github_token.py, which ci.yml runs); the host never
+# (tests/test_hermes_github_token.py, which ci.yml runs); the host never
 # overrides it.
 Environment=GITHUB_API_URL=https://api.github.com
 Environment=APP_ID=4728578

@@ -118,6 +118,10 @@
       - fleet-grafana-provisioning.path
       # The VNC desktop; the box has no graphical desktop (fleet-ops#10935).
       - tigervnc.service
+      # The host D1 restore drill; D1 Time Travel is the restore
+      # (https://developers.cloudflare.com/d1/reference/time-travel/).
+      - fleet-d1-restore-drill.timer
+      - fleet-d1-restore-drill.service
     retired:
       - /etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service
       - /etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service.d
@@ -178,6 +182,12 @@
       # The VNC desktop unit and its enable link (fleet-ops#10935).
       - "{{ nish_home }}/.config/systemd/user/tigervnc.service"
       - "{{ nish_home }}/.config/systemd/user/default.target.wants/tigervnc.service"
+      # The host D1 restore drill and the App token unit only it used; D1 Time
+      # Travel is the restore.
+      - "{{ nish_home }}/.config/systemd/user/fleet-d1-restore-drill.service"
+      - "{{ nish_home }}/.config/systemd/user/fleet-d1-restore-drill.timer"
+      - "{{ nish_home }}/.config/systemd/user/timers.target.wants/fleet-d1-restore-drill.timer"
+      - "{{ nish_home }}/.config/systemd/user/fleet-worker-github-token@.service"
       # Replaced by "Install the router config" and the Grafana reload in
       # tasks/services.yml (fleet-ops#10935 E2).
       - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.path"
@@ -316,6 +326,23 @@
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
+
+    # A runner reads its unit, .env and .path only at start, so a change to one restarts it
+    # (fleet-ops#11715 left 15 runners on the old unit). The restart cancels the job the
+    # runner runs: GitHub documents no drain for a self-hosted runner. Handlers run in the
+    # order listed here, so systemd reloads first.
+    # https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_handlers.html
+    - name: Restart the agent runners
+      ansible.builtin.systemd_service:
+        name: "fleet-runner@{{ item }}.service"
+        state: restarted
+      loop: "{{ fleet_runner_ids }}"
+
+    - name: Restart the review runners
+      ansible.builtin.systemd_service:
+        name: "fleet-reviewer-runner@{{ item }}.service"
+        state: restarted
+      loop: "{{ fleet_reviewer_runner_ids }}"
 
     # The Hermes units restart from tasks/services.yml, not from a handler: the
     # restart waits there for the deploy to have a minted gh login and a proof

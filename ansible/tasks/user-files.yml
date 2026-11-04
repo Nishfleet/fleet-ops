@@ -16,11 +16,8 @@
     - app-litellm-redis.slice
     - cloudflare-tokens-apply.service
     - cloudflare-tokens-apply.timer
-    - fleet-d1-restore-drill.service
-    - fleet-d1-restore-drill.timer
     - fleet-grafana-github-token.service
     - fleet-grafana-github-token.timer
-    - fleet-worker-github-token@.service
     - syncthing.service
     - tincan-relay.service
     - tmux-spawn-.scope.d/50-interactive-cpu-priority.conf
@@ -92,7 +89,6 @@
     argv: [systemctl, --user, --machine=nish@.host, enable, --now, "{{ item }}"]
   loop:
     - cloudflare-tokens-apply.timer
-    - fleet-d1-restore-drill.timer
     - fleet-grafana-github-token.timer
     - syncthing.service
     - tincan-relay.service
