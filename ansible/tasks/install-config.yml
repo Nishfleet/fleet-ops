@@ -35,6 +35,8 @@
       - sudo
       - unattended-upgrades
     state: present
+    update_cache: true
+    cache_valid_time: 86400
 
 - name: Check the prometheus config before installing it
   ansible.builtin.command: /usr/bin/promtool check config {{ rootfs }}/etc/prometheus/prometheus.yml
