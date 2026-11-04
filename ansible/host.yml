@@ -162,6 +162,9 @@
       - /etc/apt/apt.conf.d/52-auto-reboot
       # Codex is retired here; its rules file left the repo (fleet-ops#10935 C5).
       - "{{ nish_home }}/.codex/rules/fleet-floor.rules"
+      # The dead Max login's agents link and the tmpfiles line that made it (fleet-ops#11674).
+      - "{{ nish_home }}/.config/user-tmpfiles.d/claude-max-agents.conf"
+      - "{{ nish_home }}/.claude-max"
       # The VNC desktop unit and its enable link (fleet-ops#10935).
       - "{{ nish_home }}/.config/systemd/user/tigervnc.service"
       - "{{ nish_home }}/.config/systemd/user/default.target.wants/tigervnc.service"
