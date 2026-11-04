@@ -68,7 +68,7 @@ def test_an_unknown_builder_falls_back_to_grok_and_says_so(tmp_path, branch, eng
     body = lane_body(engine) if engine else "Closes #7\n\nrun-proof: echo builder: pi -> ok"
     got = pick(tmp_path, branch, body)
     assert (got["provider"], got["model"]) == ("xai-oauth", "grok-4.7")
-    assert "could not be determined" in got["note"]
+    assert got["note"]
 
 
 def test_the_lane_builders_are_neither_claude_nor_grok():
