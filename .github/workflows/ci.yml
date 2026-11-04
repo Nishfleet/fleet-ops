@@ -35,5 +35,9 @@ jobs:
         run: |
           pip install -q pytest==8.3.5 pyyaml jsonschema httpx jinja2 litellm==1.105.0
           pytest -q -p no:cacheprovider tests
+      - name: Alert rules, routes and rule tests (nothing ran them, 2026-11-03; images = box versions)
+        run: |
+          docker run --rm -v "$PWD:/w:ro" -w /w --entrypoint sh prom/prometheus:v2.45.3@sha256:1534519c0a215a47840bfa09991b6262fb302989b734fc1073b2844445b04313 -c 'promtool check rules rootfs/etc/prometheus/*_rules.yml && promtool test rules config/prometheus-tests/*.test.yml'
+          docker run --rm -v "$PWD:/w:ro" -w /w --entrypoint amtool prom/alertmanager:v0.26.0@sha256:361db356b33041437517f1cd298462055580585f26555c317df1a3caf2868552 check-config rootfs/etc/alertmanager/alertmanager.yml
       - name: Workflow files lint
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
