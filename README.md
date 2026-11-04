@@ -20,7 +20,6 @@ file, not here.
 - [Browser tool](docs/browser-tool.md)
 - [Drive filesystem server](docs/drive-filesystem-server.md)
 - [Triage admission](docs/triage-admission.md)
-- [Private detail scan](docs/private-detail-scan.md)
 - [Router notes](docs/litellm-router-notes.md)
 - [Cloudflare credentials](docs/cloudflare-credentials.md)
 - [D1 migrations](docs/d1-migrations.md) and [D1 backup](docs/d1-backup-mechanism.md)
