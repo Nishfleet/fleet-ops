@@ -1,8 +1,7 @@
 # The runner jail's `.config` is nobody:nogroup, because systemd creates it as namespace root
 
-Paths under the runner user's home are written `<home>/…` below: the repo's
-private-detail scan (`docs/private-detail-scan.md`) keeps personal home paths out of
-docs, and the verbatim lines live in the linked runs and issues.
+Paths under the runner user's home are written `<home>/…` below. The verbatim lines
+live in the linked runs and issues.
 
 **Date:** 2026-10-30
 **Issues:** fleet-ops#11120, fleet-ops#11231
