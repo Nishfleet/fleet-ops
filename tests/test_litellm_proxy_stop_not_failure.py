@@ -31,15 +31,12 @@ def test_an_oom_kill_still_fails_the_unit() -> None:
 
 def test_a_sigkilled_pre_start_step_never_exits_137(tmp_path: Path) -> None:
     scripts = pre_start_scripts()
-    assert len(scripts) == 2, "dump step and migration step"
+    assert len(scripts) == 1, "the migration step"
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for tool in ("psql", "pg_dump", "pg_restore", "podman"):
-        (bin_dir / tool).write_text("#!/bin/sh\nkill -KILL $$\n" if tool != "psql" else "#!/bin/sh\necho 1\n")
-        (bin_dir / tool).chmod(0o755)
+    (bin_dir / "podman").write_text("#!/bin/sh\nkill -KILL $$\n")
+    (bin_dir / "podman").chmod(0o755)
     for script in scripts:
-        script = script.replace("$$", "$").replace("/usr/bin/", f"{bin_dir}/").replace("/bin/mv", "mv")
-        script = script.replace("%h", str(tmp_path)).replace("%S", str(tmp_path))
-        (tmp_path / "workspaces/agent-state/backups").mkdir(parents=True, exist_ok=True)
+        script = script.replace("/usr/bin/", f"{bin_dir}/")
         rc = subprocess.run(["/bin/sh", "-c", script], cwd=tmp_path, check=False).returncode
         assert rc == 1, f"a killed step must exit 1, got {rc}: {script[:60]}"

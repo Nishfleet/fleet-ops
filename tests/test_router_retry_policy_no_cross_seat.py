@@ -734,9 +734,8 @@ def test_the_migration_pre_start_names_the_same_image_as_the_proxy():
     migrate = [m for m in re.findall(r"^ExecStartPre=.*podman run .*--skip_server_startup.*$", text, re.MULTILINE)]
     assert len(image) == 1 and len(migrate) == 1, (image, migrate)
     assert re.search(r"@sha256:[0-9a-f]{64}$", image[0]), image[0]
-    # The line is a sh -c wrapper (skip when nothing changed): the image is assigned to i=.
-    assert f"i={image[0]} " in migrate[0], (image[0], migrate[0])
-    assert re.search(r"\$\$i --skip_server_startup ", migrate[0]) and "--config" not in migrate[0]
+    assert f" {image[0]} --skip_server_startup " in migrate[0], (image[0], migrate[0])
+    assert "--config" not in migrate[0]
     assert f":v{PINNED_LITELLM}@" in image[0], (image[0], PINNED_LITELLM)
 
 
