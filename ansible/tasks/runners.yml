@@ -150,9 +150,23 @@
     mode: '0600'
   loop:
     - {src: "{{ repo_root }}/config/pi-models.json", dest: models.json}
-    - {content: "{{ {'defaultProvider': 'litellm', 'defaultModel': 'worker-capable', 'defaultProjectTrust': 'always'} | to_nice_json }}", dest: settings.json}
+    - {content: "{{ {'defaultProvider': 'litellm', 'defaultModel': 'worker-capable', 'defaultProjectTrust': 'always', 'packages': fleet_runner_pi_packages} | to_nice_json }}", dest: settings.json}
   loop_control:
     label: "{{ item.dest }}"
+
+# pi-grok, at the pin nish's pi uses, is the review job's Grok seat (.github/workflows/review.yml).
+# `pi install` is pi's documented install; the owner's one device-code `/login` as fleet-runner
+# then writes its own auth.json, because pi-grok rotates refresh tokens and a copy of nish's would
+# log one of them out. https://github.com/stnly/pi-grok#quick-start
+- name: Install pi-grok for fleet-runner
+  become: true
+  become_user: fleet-runner
+  ansible.builtin.command:
+    argv: [/var/lib/fleet-runner/.local/bin/pi, install, "{{ fleet_runner_pi_packages[0] }}"]
+    creates: /var/lib/fleet-runner/.pi/agent/git/github.com/stnly/pi-grok/package.json
+  environment:
+    HOME: /var/lib/fleet-runner
+    PATH: "{{ tether_node_dir }}/bin:/usr/bin:/bin"
 
 # The router job's scoped worker key (fleet-ops#11573): it reaches the worker model
 # groups only, never the admin API.

@@ -35,6 +35,7 @@
     # raised only after measuring), run as fleet-runner by tasks/runners.yml.
     fleet_runner_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     fleet_runner_pi_version: 1.4.0
+    fleet_runner_pi_packages: "{{ (lookup('ansible.builtin.file', repo_root ~ '/config/pi-packages.json') | from_json).packages | select('search', 'pi-grok') | list }}"
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
     # release's SHASUMS256.txt (https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
