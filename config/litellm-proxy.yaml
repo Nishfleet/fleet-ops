@@ -434,10 +434,28 @@ router_settings:
     - tether: [assistant]
   cooldown_time: 60
   allowed_fails: 1
+  # A 429 parks its row at once; with allowed_fails set, a 429 would only count (fleet-ops#11723, docs.litellm.ai/docs/routing#cooldowns).
+  allowed_fails_policy:
+    RateLimitErrorAllowedFails: 0
   # a same-group retry re-hits the same wall; fallbacks fire on the first failure (fleet-ops#5792).
   num_retries: 0
   timeout: 1800
   enable_tag_filtering: false
+  # worker-capable has no fallback, so a 429 retries once per other row and walks past every parked row (fleet-ops#11723).
+  # Keyed by requested name, so each alias needs its own entry. Single-row groups keep retry_policy: 13 retries there sleep 92 s.
+  model_group_retry_policy:
+    worker-capable: &worker-capable-walk
+      AuthenticationErrorRetries: 1
+      RateLimitErrorRetries: 13
+      TimeoutErrorRetries: 1
+      InternalServerErrorRetries: 1
+      BadRequestErrorRetries: 1
+      ContentPolicyViolationErrorRetries: 0
+      NotFoundErrorRetries: 1
+      DefaultRetries: 1
+    worker-capable-desk: *worker-capable-walk
+    worker-public: *worker-capable-walk
+    worker-public-desk: *worker-capable-walk
   retry_policy:
     # Measured on the PINNED_LITELLM in tests/test_router_retry_policy_no_cross_seat.py: re-measure on a bump (fleet-ops#9427).
     AuthenticationErrorRetries: 1
