@@ -189,9 +189,11 @@
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: "{{ nish_home }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
     agent_runner_root: "{{ nish_env.HOME }}/.local/share/agent-runner"
+    # Hermes jobs whose prompt lives in config/hermes/<name>.md and is applied on every run.
     digest_prompts:
       - digest-morning
       - digest-evening
+      - audit-file
     # Jobs the vendor store must not carry (fleet-ops#10545). Hermes keeps every job
     # it is given, so a job whose work is done stays until something deletes it.
     # Listed by id and never searched for: a worker's fresh proof job is legitimate,
