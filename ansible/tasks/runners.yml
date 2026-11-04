@@ -70,7 +70,6 @@
     group: fleet-runner
     mode: '0644'
   loop: "{{ fleet_runner_ids }}"
-  notify: Restart the fleet runners
 
 - name: Give each runner fleet-runner's PATH
   ansible.builtin.copy:
@@ -80,7 +79,6 @@
     group: fleet-runner
     mode: '0644'
   loop: "{{ fleet_runner_ids }}"
-  notify: Restart the fleet runners
 
 # Node for tether and for the runners' pi: the official linux-x64 tarball, pinned by
 # version and sha256, unpacked into a root-owned versioned directory. tether's
@@ -238,7 +236,6 @@
     - {content: "/var/lib/fleet-reviewer/.local/bin:{{ tether_node_dir }}/bin:/usr/bin:/bin\n", dest: .path}
   loop_control:
     label: "{{ item.dest }}"
-  notify: Restart the review runner
 
 - name: Install pi for fleet-reviewer
   become: true
@@ -287,3 +284,40 @@
     enabled: true
     state: started
     daemon_reload: true
+
+# A runner takes a changed unit, .env or .path only on restart (fleet-ops#11715 left 15 runners
+# on the old unit), and a restart cancels the job it runs: the service sends the listener SIGINT,
+# then SIGKILL after 30 s (actions/runner v2.338.2 src/Misc/layoutbin/RunnerService.js), and
+# GitHub documents no drain, only to keep needrestart off the runner during a job:
+# https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/configure-the-application
+# So a runner restarts only when it started before its newest file and runs no job. A job is the
+# Runner.Worker process the listener starts in the unit's cgroup (v2.338.2
+# src/Runner.Listener/JobDispatcher.cs). A busy runner restarts on a later run, so these are tasks
+# every run, not a handler: a handler fires only on a change in the same run, at the play's end.
+# https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_handlers.html
+# rc 0 restarts, rc 1 leaves the runner, and any other rc fails the task. Only pgrep's 1 means no
+# match; 2 and 3 are errors (pgrep(1) EXIT STATUS: https://man7.org/linux/man-pages/man1/pgrep.1.html).
+- name: Find the idle runners that started before their unit, .env or .path changed
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: >-
+      set -o pipefail;
+      started=$(systemctl show -P ActiveEnterTimestamp --timestamp=unix {{ item }}) || exit 2;
+      dir=$(systemctl show -P WorkingDirectory {{ item }}) || exit 2;
+      unit=$(systemctl show -P FragmentPath {{ item }}) || exit 2;
+      cgroup=$(systemctl show -P ControlGroup {{ item }}) || exit 2;
+      newest=$(stat -c %Y "$unit" "$dir/.env" "$dir/.path" | sort -n | tail -n 1) || exit 2;
+      test "${started#@}" -lt "$newest" || exit;
+      pgrep --cgroup "$cgroup" -x Runner.Worker;
+      case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac
+  loop: "{{ fleet_runner_ids | map('regex_replace', '^(.*)$', 'fleet-runner@\\1.service') | list + ['fleet-reviewer-runner.service'] }}"
+  register: runner_stale
+  changed_when: runner_stale.rc == 0
+  failed_when: runner_stale.rc not in [0, 1]
+  check_mode: false
+
+- name: Restart those runners
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: restarted
+  loop: "{{ runner_stale.results | selectattr('changed') | map(attribute='item') | list }}"
