@@ -9,9 +9,24 @@ Wants=network-online.target
 After=network-online.target
 ConditionPathExists=/etc/restic/netcup-r2.env
 OnSuccess=restic-r2-locked-copy.service
+# A failed run retries itself (Restart=on-failure, allowed for Type=oneshot:
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#Restart=).
+# The start limit ends the retries after 3 starts, so a run that keeps failing
+# reaches `failed`, which SystemUnitFailed reads; without it the unit would sit in
+# auto-restart forever. systemd counts starts from the first one, so the 4th
+# start comes burst * (run + RestartSec) later; the interval must be longer than
+# 3 * (TimeoutStartSec + RestartSec) or a slow failure resets the count and retries
+# forever (tests/test_oneshot_restart.py checks this).
+StartLimitIntervalSec=7h
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
+Restart=on-failure
+RestartSec=15min
+# Type=oneshot has no start timeout by default (systemd.service(5) TimeoutStartSec=).
+# Runs took at most 5 min in Oct 2026; 2h also covers both 15-min flock waits.
+TimeoutStartSec=2h
 EnvironmentFile=/etc/restic/netcup-r2.env
 Environment=RESTIC_CACHE_DIR=/var/cache/restic-live
 EnvironmentFile=/etc/tiny-studio/heartbeats.env
