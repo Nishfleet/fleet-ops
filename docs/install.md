@@ -35,8 +35,8 @@ the next sync overwrites it. The rest are refreshed by hand.
 | `/etc/**` (system units and drop-ins, `sysctl.d`, `audit/rules.d`, `polkit-1/rules.d`, `prometheus/*.yml`, `nftables.conf`) | `rootfs/etc/**`         | cross a privilege boundary. **Handled automatically** by `fleet-host-config.service`: Ansible (`ansible/host.yml`) checks the prometheus and nftables files, installs every file under `rootfs/` as root, and reloads only the daemon whose file changed. A new root file is a new file under `rootfs/`; nothing is installed by hand.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 ```
-# a changed /etc file: merge it under rootfs/etc/. push to main; the deploy
-# mailbox (fleet-deploy.path) runs fleet-deploy.service, which deploys it
+# a changed /etc file: merge it under rootfs/etc/. push to main; deploy-box
+# starts fleet-host-config.service, which deploys it
 journalctl -u fleet-host-config.service -n 60 --no-pager   # PLAY RECAP failed=0
 ```
 
@@ -58,44 +58,28 @@ cat /sys/fs/cgroup/agent.slice/memory.swap.max   # same number
 `fleet-host-config.service` applies `rootfs/` as root and is the only deploy path
 for root-owned host config. It runs its own clone of reviewed main, so a request
 can at most redeploy main. Two things start it: `.github/workflows/deploy-box.yml`
-writes a request to `/var/lib/fleet-deploy/request` on every push to main and
-`fleet-deploy.path` starts `fleet-deploy.service`, which runs this unit, and
-`fleet-host-config-boot.timer` once after every boot
+on every push to main, with `systemctl start`, which blocks until the oneshot ends
+and fails the job if the unit failed, and `fleet-host-config-boot.timer` once after every boot
 (3 minutes in), which starts tether's Cua Space again when a reboot stopped it.
 
 - Run it now: `sudo systemctl start fleet-host-config.service`, then
   `journalctl -u fleet-host-config.service -n 60 --no-pager` for the PLAY RECAP.
-  No CI job can start it: the polkit rule that let user nish start it was retired
-  when the deploy moved to the mailbox (fleet-ops#10043).
+  `rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules` lets user nish start
+  it (start only), which is how deploy-box starts it without sudo.
 - Switch off the boot run: `systemctl disable --now fleet-host-config-boot.timer`.
   Merges keep deploying, because only the once-per-boot run stops.
 - Stop every automatic run: the timer line above plus
-  `systemctl mask fleet-host-config.service`. A push to main then writes a
-  request and waits for a verdict that reads `failed`, so this is a halfway
-  point on the delete path, not a steady state.
+  `systemctl mask fleet-host-config.service`. A push to main then fails its
+  deploy-box run at the start, so this is a halfway point on the delete path,
+  not a steady state.
 - Roll back one bad flag: the unit runs with `--verify-commit`, and a flag that
   stops it delivering a fix is reverted on main **and** undone by hand, because
   the next run puts it back from `rootfs/`:
   `sudo sed -i 's/ --verify-commit//' /etc/systemd/system/fleet-host-config.service`
   then `sudo systemctl daemon-reload`.
-
-`fleet-deploy.path` watches `/var/lib/fleet-deploy/request` (a file the runner uid
-owns in a root-owned directory, `rootfs/etc/tmpfiles.d/fleet-deploy.conf`) and
-starts `fleet-deploy.service`, which runs the same two steps deploy-box.yml starts
-one by one: the user-scope sync, then the root host config. It writes one verdict
-line to `/var/lib/fleet-deploy/result` and the last journal lines of the three
-units to `/var/lib/fleet-deploy/log`, because the runner cannot read the system
-journal.
-
-- Run one by hand: `sudo touch /var/lib/fleet-deploy/request`, then
-  `cat /var/lib/fleet-deploy/result`.
-- Switch it off: `systemctl disable --now fleet-deploy.path`. The deploy-box job
-  then starts the two units itself, as it did before.
-- Delete the root deploy units: six paths go, not four. Delete
-  `fleet-host-config.service`,
-  `fleet-host-config-boot.timer`, `fleet-deploy.path` and `fleet-deploy.service`
-  under `rootfs/etc/systemd/`, the `fleet-host-config.service.d` drop-in
-  directory and `rootfs/etc/tmpfiles.d/fleet-deploy.conf`, add those six paths
+- Delete the root deploy units: delete `fleet-host-config.service` and
+  `fleet-host-config-boot.timer` under `rootfs/etc/systemd/` and the
+  `fleet-host-config.service.d` drop-in directory, add those three paths
   to `retired` in `ansible/host.yml`, then `sudo systemctl daemon-reload`. The
   retired list, not the file deletion, is what removes the installed copies on
   the next config run.
