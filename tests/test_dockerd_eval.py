@@ -6,8 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import pytest
 import ansible_host
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM = ROOT / "rootfs/etc/systemd/system"
@@ -60,7 +60,7 @@ def test_ci3_orders_after_dockerd_eval_and_no_longer_names_podman() -> None:
     text = CI3.read_text()
     assert "After=dockerd-eval.service" in text
     assert "Wants=dockerd-eval.service" in text
-    assert not re.search(r"^(After|Wants|Environment)=.*podman", text, re.M)
+    assert not re.search(r"^(After|Wants|Environment)=.*podman", text, re.MULTILINE)
 
 
 def test_ci3_binds_promptfoo_writable_and_rclone_read_only() -> None:
@@ -192,8 +192,8 @@ def test_the_nft_table_matches_the_engine_cgroup_and_drops_host_local_destinatio
 
 def test_the_nft_file_is_idempotent_so_a_reload_keeps_the_set() -> None:
     text = NFT.read_text()
-    assert not re.search(r"^(destroy|flush ruleset)", text, re.M)
-    assert not re.search(r"^table ", text, re.M)
+    assert not re.search(r"^(destroy|flush ruleset)", text, re.MULTILINE)
+    assert not re.search(r"^table ", text, re.MULTILINE)
     assert "flush chain inet evalnet output" in text
     assert "flush chain inet evalnet engine_egress" in text
     conf = (ROOT / "rootfs/etc/nftables.conf").read_text()
@@ -224,7 +224,7 @@ def test_the_unit_feeds_the_set_and_keeps_an_address_only_layer() -> None:
 
 def test_the_nft_conf_loads_the_drop_in_without_flushing_the_ruleset() -> None:
     conf = (ROOT / "rootfs/etc/nftables.conf").read_text()
-    assert not re.search(r"^flush ruleset", conf, re.M)
+    assert not re.search(r"^flush ruleset", conf, re.MULTILINE)
     assert 'include "/etc/nftables.d/*.nft"' in conf
 
 
@@ -240,7 +240,7 @@ def test_no_vendor_launcher_runs_the_engine() -> None:
 
 def test_the_host_playbook_installs_the_nft_file_with_a_syntax_check() -> None:
     host = ansible_host.text()
-    task = re.search(r"- name: Install the eval engine's egress rule\n(.*?)\n\n", host, re.S)
+    task = re.search(r"- name: Install the eval engine's egress rule\n(.*?)\n\n", host, re.DOTALL)
     assert task, "no install task"
     assert "dest: /etc/nftables.d/evalnet.nft" in task.group(1)
     assert "validate: /usr/sbin/nft -c -f %s" in task.group(1)
@@ -250,7 +250,7 @@ def test_the_host_playbook_installs_the_nft_file_with_a_syntax_check() -> None:
 def test_podman_eval_is_retired() -> None:
     assert not (SYSTEM / "podman-eval.service").exists()
     host = ansible_host.text()
-    off = re.search(r"- name: Stop and disable the retired rootless podman socket\n(.*?)\n\n", host, re.S)
+    off = re.search(r"- name: Stop and disable the retired rootless podman socket\n(.*?)\n\n", host, re.DOTALL)
     assert off, "no stop-and-disable task"
     assert "enabled: false" in off.group(1)
     assert "state: stopped" in off.group(1)
@@ -277,7 +277,7 @@ def test_no_other_play_task_touches_the_root_podman_api_socket() -> None:
 def test_the_host_playbook_keeps_the_tasks_this_change_must_not_drop() -> None:
     host = ansible_host.text()
     assert host.count("alertmanager_credentials is defined and (") == 4
-    watcher = re.search(r"- name: Enable the deploy request watcher\n(.*?)\n\n", host, re.S)
+    watcher = re.search(r"- name: Enable the deploy request watcher\n(.*?)\n\n", host, re.DOTALL)
     assert watcher, "no deploy request watcher task"
     assert "name: fleet-deploy.path" in watcher.group(1)
     assert "enabled: true" in watcher.group(1)
@@ -286,10 +286,10 @@ def test_the_host_playbook_keeps_the_tasks_this_change_must_not_drop() -> None:
 
 def test_a_failed_engine_start_is_reported_in_the_run_output() -> None:
     host = ansible_host.text()
-    task = re.search(r"- name: Enable the rootless Docker engine for the drive eval\n(.*?)\n\n", host, re.S)
+    task = re.search(r"- name: Enable the rootless Docker engine for the drive eval\n(.*?)\n\n", host, re.DOTALL)
     assert task, "no engine enable task"
     assert "register: dockerd_eval_up" in task.group(1)
-    report = re.search(r"- name: Report a rootless Docker engine that did not start\n(.*?)\n\n", host, re.S)
+    report = re.search(r"- name: Report a rootless Docker engine that did not start\n(.*?)\n\n", host, re.DOTALL)
     assert report, "no report task"
     assert "ansible.builtin.debug" in report.group(1)
     assert "when: dockerd_eval_up is failed" in report.group(1)

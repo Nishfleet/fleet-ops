@@ -8,7 +8,6 @@ too, and this fixture covers a new test_router_*.py that forgets the call.
 from __future__ import annotations
 
 import pytest
-
 from router_litellm_pin import require_pinned_litellm
 
 

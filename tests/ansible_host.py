@@ -24,7 +24,7 @@ def text(rev: str = "", play_file: str = "ansible/host.yml") -> str:
         body = show(f"ansible/{m.group(1)}")
         return "".join("    " + line if line.strip() else line for line in body.splitlines(True))
 
-    return re.sub(r"^    - ansible\.builtin\.import_tasks: (\S+)\n", inline, show(play_file), flags=re.M)
+    return re.sub(r"^    - ansible\.builtin\.import_tasks: (\S+)\n", inline, show(play_file), flags=re.MULTILINE)
 
 
 def play(rev: str = "", play_file: str = "ansible/host.yml") -> dict:

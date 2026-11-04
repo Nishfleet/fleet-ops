@@ -34,8 +34,8 @@ def own_dir(text):
     return text
 
 
-def sh(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+def sh(cmd, check=False, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, check=check, **kw)
 
 
 def ctl(*args):
@@ -61,8 +61,8 @@ def mint(tmp_path_factory):
         time.sleep(0.25)
     text = own_dir(UNIT.read_text())
     text = text.replace("%h/.config/fleet-worker/nishfleet-worker.private-key.pem", str(d / "app.pem"))
-    text = re.sub(r"^OnFailure=.*\n", "", text, flags=re.M)
-    text = re.sub(r"^Environment=GITHUB_API_URL=.*$", f"Environment=GITHUB_API_URL=http://127.0.0.1:{port}", text, flags=re.M)
+    text = re.sub(r"^OnFailure=.*\n", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^Environment=GITHUB_API_URL=.*$", f"Environment=GITHUB_API_URL=http://127.0.0.1:{port}", text, flags=re.MULTILINE)
     if IN_CI:
         text = text.replace("[Service]\n", f"[Service]\nUser={os.environ['USER']}\n")
     unit = d / f"{NAME}.service"
@@ -164,13 +164,13 @@ def test_hermes_login_unit_writes_the_hosts_yml_gh_reads(mint):
     mint.mode.write_text("ok\n")
     name = "fleet-hermes-token-pytest"
     text = (ROOT / "rootfs/etc/systemd/system/fleet-hermes-github-token.service").read_text()
-    text = re.sub(r"^Environment=APP_KEY=.*$", f"Environment=APP_KEY={mint.dir / 'app.pem'}", text, flags=re.M)
-    text = re.sub(r"^OnFailure=.*\n", "", text, flags=re.M)
-    text = re.sub(r"^Environment=GITHUB_API_URL=.*$", f"Environment=GITHUB_API_URL=http://127.0.0.1:{mint.port}", text, flags=re.M)
-    text = re.sub(r"^RuntimeDirectory=.*$", f"RuntimeDirectory={name}", text, flags=re.M)
+    text = re.sub(r"^Environment=APP_KEY=.*$", f"Environment=APP_KEY={mint.dir / 'app.pem'}", text, flags=re.MULTILINE)
+    text = re.sub(r"^OnFailure=.*\n", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^Environment=GITHUB_API_URL=.*$", f"Environment=GITHUB_API_URL=http://127.0.0.1:{mint.port}", text, flags=re.MULTILINE)
+    text = re.sub(r"^RuntimeDirectory=.*$", f"RuntimeDirectory={name}", text, flags=re.MULTILINE)
     # The host runs this as User=nish; the runner has no such user, so the copy
     # takes the job's user instead.
-    text = re.sub(r"^User=.*$", f"User={os.environ['USER']}" if IN_CI else "", text, flags=re.M)
+    text = re.sub(r"^User=.*$", f"User={os.environ['USER']}" if IN_CI else "", text, flags=re.MULTILINE)
     unit = mint.dir / f"{name}.service"
     unit.write_text(text)
     target = UNIT_DIR / unit.name

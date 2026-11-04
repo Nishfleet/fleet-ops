@@ -77,7 +77,7 @@ def run_case(command: str, home: Path, jailed: bool) -> subprocess.CompletedProc
     env = dict(os.environ, HOME=str(home))
     command_argv = ["bash", "-c", command]
     argv = launch_line(home) + command_argv if jailed else command_argv
-    return subprocess.run(argv, env=env, cwd=home, capture_output=True, text=True)
+    return subprocess.run(argv, env=env, cwd=home, capture_output=True, text=True, check=False)
 
 
 def reached(result: subprocess.CompletedProcess) -> bool:
@@ -107,7 +107,7 @@ def test_sandbox_blocks_the_relative_path_bypass(fake_home: Path) -> None:
     assert not reached(jailed), f"the probe reached inside the sandbox: {jailed.stdout!r}"
 
 
-@pytest.mark.skipif(subprocess.run(["sh", "-c", "command -v bwrap"], capture_output=True).returncode != 0,
+@pytest.mark.skipif(subprocess.run(["sh", "-c", "command -v bwrap"], capture_output=True, check=False).returncode != 0,
                     reason="bubblewrap is not installed")
 def test_the_zprofile_wrapper_carries_the_doc_sandbox() -> None:
     body = ZPROFILE.read_text()
@@ -131,14 +131,14 @@ def test_a_login_shell_starts_claude_inside_the_sandbox(fake_home: Path, tmp_pat
     env = dict(os.environ, HOME=str(fake_home), PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                SEATS_DIR=str(fake_home / SEATS_REL))
     inside = subprocess.run([LOGIN_SHELL, "-c", f". {shlex.quote(str(ZPROFILE))}; claude"],
-                            env=env, capture_output=True, text=True)
+                            env=env, capture_output=True, text=True, check=False)
     assert inside.returncode == 0, inside.stderr
     lines = inside.stdout.splitlines()
     assert lines[0] == "STUB-RAN", inside.stdout
     listing = lines[lines.index("LISTING-BEGIN") + 1:lines.index("LISTING-END")]
     assert listing == [], f"the seats listing is not empty inside the sandbox: {inside.stdout!r}"
     assert any("tmpfs" in line and str(fake_home / SEATS_REL) in line for line in lines), inside.stdout
-    bare = subprocess.run([LOGIN_SHELL, "-c", "claude"], env=env, capture_output=True, text=True)
+    bare = subprocess.run([LOGIN_SHELL, "-c", "claude"], env=env, capture_output=True, text=True, check=False)
     assert bare.returncode == 0, bare.stderr
     bare_lines = bare.stdout.splitlines()
     assert bare_lines[0] == "STUB-RAN", bare.stdout
@@ -157,7 +157,7 @@ def test_a_login_shell_inside_the_sandbox_does_not_wrap_twice(fake_home: Path, t
                SEATS_DIR=str(fake_home / SEATS_REL))
     script = f". {shlex.quote(str(ZPROFILE))}; claude"
     nested = subprocess.run(launch_line(fake_home) + [LOGIN_SHELL, "-c", script],
-                            env=env, capture_output=True, text=True)
+                            env=env, capture_output=True, text=True, check=False)
     assert nested.returncode == 0, nested.stderr
     lines = nested.stdout.splitlines()
     assert lines[0] == "STUB-RAN", nested.stdout
@@ -175,7 +175,7 @@ def test_the_wrapper_refuses_to_start_claude_without_bwrap(fake_home: Path, tmp_
         (bin_dir / tool).symlink_to(shutil.which(tool))
     env = dict(os.environ, HOME=str(fake_home), PATH=str(bin_dir), SEATS_DIR=str(fake_home / SEATS_REL))
     result = subprocess.run([LOGIN_SHELL, "-c", f". {shlex.quote(str(ZPROFILE))}; claude"],
-                            env=env, capture_output=True, text=True)
+                            env=env, capture_output=True, text=True, check=False)
     assert result.returncode != 0
     assert "STUB-RAN" not in result.stdout
     assert "bwrap is missing" in result.stderr
