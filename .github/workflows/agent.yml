@@ -192,24 +192,23 @@ jobs:
           gh issue edit "$ISSUE" -R "$REPO" --remove-label agent-in-progress
           gh issue close "$ISSUE" -R "$REPO" --reason completed --comment "gardener: nothing to change this week, see $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
       - if: needs.work.outputs.nochange != 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.claim.outputs.base }}
-          token: ${{ steps.app-token.outputs.token }}
-          persist-credentials: false
-      - if: needs.work.outputs.nochange != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: {name: work, path: "${{ runner.temp }}"}
+      # No checkout: an empty repo with only the base commit takes the worker's commits as
+      # data, so nothing the worker wrote runs in this job.
       - name: Push the branch, open the PR and arm auto-merge
         if: needs.work.outputs.nochange != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BASE: ${{ needs.claim.outputs.base }}
           PROOF: ${{ needs.work.outputs.proof }}
         run: |
           set -euo pipefail
-          git fetch -q "$RUNNER_TEMP/work.bundle" "refs/heads/agent/issue-$ISSUE:refs/heads/agent/issue-$ISSUE"
           gh auth setup-git
-          git push -q origin "refs/heads/agent/issue-$ISSUE"
+          git init -q "$RUNNER_TEMP/push" && cd "$RUNNER_TEMP/push"
+          git fetch -q --depth=1 "https://github.com/$REPO.git" "$BASE:refs/heads/base"
+          git fetch -q "$RUNNER_TEMP/work.bundle" "refs/heads/agent/issue-$ISSUE:refs/heads/agent/issue-$ISSUE"
+          git push -q "https://github.com/$REPO.git" "refs/heads/agent/issue-$ISSUE"
           title=$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)
           pr=$(gh pr create -R "$REPO" --head "agent/issue-$ISSUE" --title "$title" --body "Closes #$ISSUE"$'\n\n'"Built by the agent lane: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"$'\n\n'"${PROOF:-The worker wrote no run-proof line, so the reviewer bot will not approve.}")
           gh pr merge "$pr" -R "$REPO" --auto || true
