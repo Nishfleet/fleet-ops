@@ -450,6 +450,57 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "Same model and endpoint as alibaba-qwen38max-assistant: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%)."
     id: alibaba-qwen38max-review
+# The review job's group for every PR a pi run did not build (owner 2026-11-04: "need the others
+# as backup", never MiniMax). Qwen, GLM and DeepSeek rows: a failed row cools and the next call
+# takes another row (https://docs.litellm.ai/docs/routing). No Claude row, because Claude builds
+# these PRs, and no fallback. A pi build never asks for this group. Rows copy their source row.
+- model_name: review-any
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    tags:
+    - prepaid
+    - alibaba
+    extra_body:
+      enable_thinking: true
+      thinking_budget: 2048
+    additional_drop_params:
+    - reasoning_effort
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Same model and endpoint as alibaba-qwen38max-assistant: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%)."
+    id: alibaba-qwen38max-review-any
+- model_name: review-any
+  litellm_params:
+    model: openai/glm-5.3-flash
+    api_base: https://api.z.ai/api/coding/paas/v4
+    api_key: os.environ/ZAI_API_KEY
+    tags:
+    - prepaid
+    - zai
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Same model, endpoint and key as zai-glm53flash-worker-capable: Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache)."
+    id: zai-glm53flash-review-any
+- model_name: review-any
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    reasoning_effort: max
+    extra_headers:
+      x-opencode-session: fleet-review-any
+    tags:
+    - prepaid
+    - opencode-go
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Same gateway, model and key as opencodego-ds41flash-worker-capable (88.4% cache-read 7d, #9357 scoreboard)."
+    id: opencodego-ds41flash-review-any
 router_settings:
   routing_strategy: simple-shuffle
   # One task = one model: Pi sends x-litellm-session-id and session_affinity pins it to a row (fleet-ops#9015).
