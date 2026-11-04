@@ -1,17 +1,19 @@
-// Lets user nish (the Claude lane's jobs) start the units below and nothing
-// else, so neither needs sudo. polkit is what systemd asks before a non-root
-// caller starts a system unit (man polkit,
-// org.freedesktop.systemd1.manage-units). Only the verb start is granted:
+// Lets user nish (the fleet jobs) start the units below and nothing else, so
+// none needs sudo. polkit is what systemd asks before a non-root caller starts
+// a system unit (https://www.freedesktop.org/software/polkit/docs/latest/polkit.8.html,
+// action org.freedesktop.systemd1.manage-units). Only the verb start is granted:
 // stop, restart and every other unit stay refused.
 //
-// fleet-host-config.service is deliberately absent: the deploy-box job writes a
-// request to /var/lib/fleet-deploy/request and fleet-deploy.service, root,
-// runs fleet-sync.service and then this one (fleet-ops#10043), so no runner
-// holds a grant that can apply merged main to the host.
+// fleet-host-config.service: the deploy. deploy-box runs `systemctl start` on it,
+// which blocks until the oneshot ends and exits non-zero if it failed
+// (https://www.freedesktop.org/software/systemd/man/latest/systemctl.html). The
+// unit applies only signed main from root's own clone, so this grant can at most
+// redeploy main, the same reach the old request-file mailbox gave any nish process.
 // fleet-update.service: the daily update oneshot; re-run after a fix is live.
 // restic-r2-backup.service: the nightly backup oneshot; BackupFailed texts
 // Nish after 2h, so a re-run after the fix clears it.
 var fleetStartableUnits = [
+    "fleet-host-config.service",
     "fleet-update.service",
     "restic-r2-backup.service"
 ];
