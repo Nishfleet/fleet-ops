@@ -127,6 +127,13 @@ jobs:
           GH_TOKEN: ${{ secrets.APPROVER_TOKEN }}
           REVIEW: ${{ needs.review.outputs.review }}
           REVIEWER: ${{ needs.review.outputs.reviewer }}
+          # Test files the pull request removes, renames or deletes lines from. New test files
+          # and pure additions pass. tests/test_review_test_guard.py runs this filter.
+          # https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files
+          TEST_EDITS: >-
+            .[] | select(([.filename, .previous_filename // empty]
+            | any(test("(^|/)(tests?|e2e|__tests__)/|_test\\.go$|\\.(test|spec)\\.[^/]+$|(^|/)test_[^/]*\\.py$")))
+            and (.status == "removed" or .status == "renamed" or .deletions > 0)) | .filename
         run: |
           set -euo pipefail
           read -r head body_proof < <(gh pr view "$PR" -R "$REPO" --json headRefOid,body --jq '[.headRefOid, (.body | test("(?im)^run-proof:"))] | @tsv')
@@ -139,4 +146,9 @@ jobs:
             HOLD-OWNER/*) event=COMMENT; REVIEW+=$'\n\nHeld for the owner.' ;;
             *) echo "::error::the reviewer gave no verdict line"; exit 1 ;;
           esac
+          if [ "$event" = APPROVE ]; then
+            # An assignment, so a failed call stops the job instead of approving.
+            edits=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq "$TEST_EDITS")
+            [ -z "$edits" ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: this PR deletes or changes existing test lines.'; }
+          fi
           gh api "repos/$REPO/pulls/$PR/reviews" -f commit_id="$SHA" -f event="$event" -f body="Review ($REVIEWER, fleet-ops review.yml):"$'\n\n'"$REVIEW"

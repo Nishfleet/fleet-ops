@@ -309,20 +309,6 @@
     # that reads an issue through it, and a handler can flush before that proof
     # runs (fleet-ops#10267).
 
-    # Only when a runner's .env or .path changed, which is its first deploy as fleet-runner.
-    - name: Restart the review runner
-      ansible.builtin.systemd_service:
-        name: fleet-reviewer-runner.service
-        state: restarted
-        daemon_reload: true
-
-    - name: Restart the fleet runners
-      ansible.builtin.systemd_service:
-        name: "fleet-runner@{{ item }}.service"
-        state: restarted
-        daemon_reload: true
-      loop: "{{ fleet_runner_ids }}"
-
     # Established SSH sessions live in ssh@.service and survive this (fleet-ops#10541).
     - name: Restart ssh.socket
       ansible.builtin.systemd_service:
