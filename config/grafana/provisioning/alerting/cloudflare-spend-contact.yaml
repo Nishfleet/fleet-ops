@@ -29,7 +29,7 @@ contactPoints:
               {{- with index .Alerts 0 -}}
               {{- coll.Dict "title" (printf "grafana alert: %s" .Labels.alertname)
                      "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC. Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, filed by the severity policy in cloudflare-spend-contact.yaml. A paid plan to cancel, a spend to accept or a row to remove is Nish's call: open a needs-nish-decision issue with the evidence instead of acting. Otherwise find the cause, fix it, then close this issue." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
-                     "labels" (coll.Slice "agent-ready") | data.ToJSON -}}
+                     "labels" (coll.Slice "agent-ready" "alert") | data.ToJSON -}}
               {{- end -}}
 
 
@@ -53,7 +53,7 @@ contactPoints:
               {{- end -}}
               {{- coll.Dict "title" (printf "alert: %s" .Labels.prom_alertname)
                      "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` is firing for %d instance(s):\n\n%s\nSource: the Grafana prometheus-alerts rule, fleet-ops#10300. One issue covers every instance of this alert name (fleet-ops#10327): fix the one cause behind them.\n\nFix the cause, prove the alert resolved, then close this issue. If the failed unit is on the polkit start list, re-run it with `systemctl start <unit>` once your fix is live, and show `Result=success`." .Annotations.summary .Annotations.description .Labels.prom_alertname (len $$.Alerts) $$units)
-                     "labels" (coll.Slice "agent-ready" "strong-only") | data.ToJSON -}}
+                     "labels" (coll.Slice "agent-ready" "strong-only" "alert") | data.ToJSON -}}
               {{- end -}}
 
 policies:

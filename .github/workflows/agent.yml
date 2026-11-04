@@ -14,12 +14,39 @@ on:
       issue: {description: issue number, required: true, type: string}
       engine: {description: pi or claude, type: choice, options: [pi, claude], default: pi}
 permissions: {}
-concurrency:
-  group: agent-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
-  cancel-in-progress: false
 jobs:
+  # While paused, only gardener and alert issues still run (owner, 2026-11-04).
+  # The labels are read from the API on every event: in a called workflow the
+  # github context is the caller's, and inputs carry no labels.
+  # https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations
+  gate:
+    if: ${{ github.event_name != 'issues' || github.event.label.name == 'agent-ready' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {issues: read}
+    outputs:
+      run: ${{ steps.labels.outputs.run }}
+    steps:
+      - id: labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAUSED: ${{ vars.FLEET_DISPATCH_PAUSED }}
+          ISSUE: ${{ github.event.issue.number || inputs.issue }}
+        run: |
+          set -euo pipefail
+          run=true
+          if [ "$PAUSED" = true ]; then
+            run=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE" --jq 'any(.labels[]; .name == "gardener" or .name == "alert")')
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
   work:
-    if: ${{ vars.FLEET_DISPATCH_PAUSED != 'true' && (github.event_name != 'issues' || github.event.label.name == 'agent-ready') }}
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
+    # Job-level, so the runs that skip on an issue's other labels never queue
+    # here and cancel the agent-ready run as a pending twin.
+    concurrency:
+      group: agent-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
+      cancel-in-progress: false
     runs-on: [self-hosted, agent]
     timeout-minutes: 90
     env:
@@ -77,6 +104,7 @@ jobs:
           git -C "$dir" switch -c "agent/issue-$ISSUE"
           echo "dir=$dir" >> "$GITHUB_ENV"
       - name: Worker
+        id: worker
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
@@ -90,8 +118,15 @@ jobs:
           esac
           git -c user.name=nishfleet-worker -c user.email=nishfleet-worker@users.noreply.github.com add -A
           git -c user.name=nishfleet-worker -c user.email=nishfleet-worker@users.noreply.github.com commit -qm "$(head -n1 "$RUNNER_TEMP/issue.md") (#$ISSUE)" || true
+          # A gardener pass that changes nothing closes its issue, so gardener.yml files the next one.
+          if git diff --quiet origin/HEAD HEAD && gh issue view "$ISSUE" -R "$REPO" --json labels --jq 'any(.labels[]; .name == "gardener")' | grep -qx true; then
+            gh issue edit "$ISSUE" -R "$REPO" --remove-label agent-in-progress
+            gh issue close "$ISSUE" -R "$REPO" --reason completed --comment "gardener: nothing to change this week, see $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "nochange=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           git push -u origin "agent/issue-$ISSUE"
       - name: Open the PR and arm auto-merge
+        if: steps.worker.outputs.nochange != 'true'
         env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
         run: |
           set -euo pipefail
