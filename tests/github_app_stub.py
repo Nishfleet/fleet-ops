@@ -1,10 +1,9 @@
-"""Stub of the two GitHub REST calls systemd/fleet-grafana-github-token.service,
-systemd/fleet-worker-github-token@.service and
-rootfs/etc/systemd/system/fleet-hermes-github-token.service make.
+"""Stub of the two GitHub REST calls systemd/fleet-grafana-github-token.service
+and rootfs/etc/systemd/system/fleet-hermes-github-token.service make.
 
 fleet-ops#9445, fleet-ops#9738. CI runs each unit's real ExecStart under systemd
 against this stub (.github/workflows/ci.yml, step "GitHub App token units mint
-and refresh"; the worker unit through tests/test_worker_github_token.py).
+and refresh"; the Hermes unit through tests/test_hermes_github_token.py).
 The stub is strict where GitHub is strict, so a malformed JWT or request body
 fails the run instead of passing silently:
 
@@ -14,10 +13,7 @@ fails the run instead of passing silently:
        App's public key.
   POST /app/installations/<id>/access_tokens
        needs the same JWT and a body that asks for exactly repositories
-       [fleet-ops] and permissions {issues: write} (the Grafana token), or
-       exactly the one repo whose installation was looked up and permissions
-       {contents, issues, pull_requests: write} (the worker token) or
-       {actions: write} (the Actions-only token, instance actions:<repo>), or no
+       [fleet-ops] and permissions {issues: write} (the Grafana token), or no
        repositories key and permissions {actions: read, issues: write,
        pull_requests: read} (the hermes login: every repo the App is installed
        on, which is what gh repo list and the digest jobs need).
@@ -38,7 +34,6 @@ import tempfile
 PORT, PUB, APP_ID, MODE_FILE, LOG_FILE = sys.argv[1:6]
 MINTS = 0
 REPOS = {}
-WORKER_PERMS = {"contents": "write", "issues": "write", "pull_requests": "write"}
 HERMES_PERMS = {"actions": "read", "issues": "write", "pull_requests": "read"}
 
 
@@ -98,8 +93,6 @@ class H(http.server.BaseHTTPRequestHandler):
             iid = int(self.path.split("/")[3])
             repo = REPOS.get(iid)
             wants = [{"repositories": ["fleet-ops"], "permissions": {"issues": "write"}},
-                     {"repositories": [repo], "permissions": WORKER_PERMS},
-                     {"repositories": [repo], "permissions": {"actions": "write"}},
                      {"permissions": HERMES_PERMS}]
             if repo is None:
                 # A token request for an installation id nobody looked up is not

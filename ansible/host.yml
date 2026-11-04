@@ -115,6 +115,9 @@
       - fleet-grafana-provisioning.path
       # The VNC desktop; the box has no graphical desktop (fleet-ops#10935).
       - tigervnc.service
+      # drive's d1-export.yml restores each dump in the same run (fleet-ops#10594).
+      - fleet-d1-restore-drill.timer
+      - fleet-d1-restore-drill.service
     retired:
       - /etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service
       - /etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service.d
@@ -175,6 +178,12 @@
       # The VNC desktop unit and its enable link (fleet-ops#10935).
       - "{{ nish_home }}/.config/systemd/user/tigervnc.service"
       - "{{ nish_home }}/.config/systemd/user/default.target.wants/tigervnc.service"
+      # The host D1 restore drill and the App token unit only it used; drive's
+      # d1-export.yml restores each dump in the same run now (fleet-ops#10594).
+      - "{{ nish_home }}/.config/systemd/user/fleet-d1-restore-drill.service"
+      - "{{ nish_home }}/.config/systemd/user/fleet-d1-restore-drill.timer"
+      - "{{ nish_home }}/.config/systemd/user/timers.target.wants/fleet-d1-restore-drill.timer"
+      - "{{ nish_home }}/.config/systemd/user/fleet-worker-github-token@.service"
       # Replaced by "Install the router config" and the Grafana reload in
       # tasks/services.yml (fleet-ops#10935 E2).
       - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.path"

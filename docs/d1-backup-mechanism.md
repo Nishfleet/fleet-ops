@@ -120,8 +120,8 @@ performs that step, so it is filed as its own parked item.
    added the new path without deleting the poller it superseded, which is what
    made it +124.
 3. Flip drive's row to the dump path. Its artifact appears as
-   `d1-backup-drive`, which is what `fleet-d1-restore-drill` already looks for, so
-   the monthly drill restores it with no change of its own, and drive#1027 closes
+   `d1-backup-drive`, which is what drive's own `drill` job restores, so
+   the drill restores it with no change of its own, and drive#1027 closes
    on a green weekly run.
 
 ## Not in this change
