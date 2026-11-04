@@ -35,22 +35,9 @@ jobs:
         run: |
           pip install -q pytest==8.3.5 pyyaml jsonschema httpx jinja2 litellm==1.105.0
           pytest -q -p no:cacheprovider tests
-      - name: Alert rules and routes check, rule tests pass (nothing ran them, 2026-11-03)
-        shell: bash
-        # Upstream release binaries at the versions the box's packages run (Prometheus 3 changed
-        # range semantics), checked against each release's sha256sums.txt.
-        env: {PROM: 2.45.3, AM: 0.26.0}
+      - name: Alert rules, routes and rule tests (nothing ran them, 2026-11-03; images = box versions)
         run: |
-          cd "$RUNNER_TEMP"
-          curl -fsSLO "https://github.com/prometheus/prometheus/releases/download/v$PROM/prometheus-$PROM.linux-amd64.tar.gz"
-          curl -fsSLO "https://github.com/prometheus/alertmanager/releases/download/v$AM/alertmanager-$AM.linux-amd64.tar.gz"
-          sha256sum -c <<<"53b23de673c54bf6eeac13f17fe14027e8fe7800d0cf361e3177ba96413812b8  prometheus-$PROM.linux-amd64.tar.gz
-          abd73e2ee6bf67d3888699660abbecba7b076bf1f9459a3a8999d493b149ffa6  alertmanager-$AM.linux-amd64.tar.gz"
-          tar xzf "prometheus-$PROM.linux-amd64.tar.gz" --strip-components=1 "prometheus-$PROM.linux-amd64/promtool"
-          tar xzf "alertmanager-$AM.linux-amd64.tar.gz" --strip-components=1 "alertmanager-$AM.linux-amd64/amtool"
-          cd "$GITHUB_WORKSPACE"
-          "$RUNNER_TEMP/promtool" check rules rootfs/etc/prometheus/*_rules.yml
-          "$RUNNER_TEMP/promtool" test rules config/prometheus-tests/*.test.yml
-          "$RUNNER_TEMP/amtool" check-config rootfs/etc/alertmanager/alertmanager.yml
+          docker run --rm -v "$PWD:/w:ro" -w /w --entrypoint sh prom/prometheus:v2.45.3@sha256:1534519c0a215a47840bfa09991b6262fb302989b734fc1073b2844445b04313 -c 'promtool check rules rootfs/etc/prometheus/*_rules.yml && promtool test rules config/prometheus-tests/*.test.yml'
+          docker run --rm -v "$PWD:/w:ro" -w /w --entrypoint amtool prom/alertmanager:v0.26.0@sha256:361db356b33041437517f1cd298462055580585f26555c317df1a3caf2868552 check-config rootfs/etc/alertmanager/alertmanager.yml
       - name: Workflow files lint
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12

@@ -15,9 +15,8 @@ need Nish's approval (CODEOWNERS); the reviewer App covers the rest.
   CI runs, the reviewer App reviews, the merge queue merges, `deploy-box.yml` applies
   the host play on merge. Product repos call the lane with a 10-line
   `workflow_call` stub.
-- CI is `.github/workflows/ci.yml`, under 60 lines, hosted runners: host-play syntax,
-  unit-file verify, python-only tests under `tests/`, alert rule and route checks
-  with the rule tests, actionlint. A check that goes red
+- CI is `.github/workflows/ci.yml`, under 50 lines, hosted runners: host-play syntax,
+  unit-file verify, python-only tests under `tests/`, actionlint. A check that goes red
   for a reason other than the change is deleted, not patched.
 - The box is `ansible/host.yml`, applied by `ansible-pull` on every merge to main and
   nightly. Anything on the box that is not in the play comes back from the play.
