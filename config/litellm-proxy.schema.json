@@ -34,7 +34,7 @@
       "properties": { "litellm_params": { "type": "object", "required": ["api_key"], "properties": { "api_key": { "const": "os.environ/ANTHROPIC_API_KEY" } } } }
     },
     "reviewClaudeRow": {
-      "$comment": "The review job's Claude row (decisions ledger 2026-11-04: the reviewer may be Claude when the builder is not). Its own group with no fallback, so a failed call ends the review instead of answering from a lane builder's family; its own 5 USD/day wall on the Anthropic key, apart from Tether's 50. Only the review runner's virtual key lists it.",
+      "$comment": "The review job's Claude row (decisions ledger 2026-11-04: the reviewer may be Claude when the builder is not). Its own group with no fallback, so a failed call ends the review instead of answering from a lane builder's family; its own 20 USD/day wall on the Anthropic key (owner 2026-11-04), apart from Tether's 50. Only the review runner's virtual key lists it.",
       "type": "object",
       "required": ["model_name", "litellm_params"],
       "properties": {
@@ -45,7 +45,7 @@
           "properties": {
             "model": { "const": "anthropic/claude-sonnet-5-5" },
             "api_key": { "const": "os.environ/ANTHROPIC_API_KEY" },
-            "max_budget": { "const": 5 },
+            "max_budget": { "const": 20 },
             "budget_duration": { "const": "1d" }
           }
         }
