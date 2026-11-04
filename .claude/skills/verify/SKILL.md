@@ -48,7 +48,7 @@ The play makes its own packages and folders on a fresh host only from #11712 on.
 that, the run stops at the first apt or promtool task.
 
 Ready means `converge.log` holds a `PLAY RECAP` line. `features/host-play-converge.md`
-names the one stop that is expected in a container.
+names the two failures that are expected in a container (the tmpfiles task and the oomd restart handler).
 
 The `STANDINS` block places what a human or a secret places on the real box: runner
 registrations (a stub `runsvc.sh` in nish's runner folder, which the play copies to
