@@ -1,0 +1,2 @@
+[lint]
+extend-select = ["ERA001", "FIX", "TD"]
