@@ -102,7 +102,7 @@ The official extension point is a reusable workflow (`uses:`). Its homes, checke
 | `Nishfleet/shared-workflows` | **archived**, read-only. This is the fleet's "defined once" reusable-workflow repo, and every consumer still resolves `deploy-production.yml@v1` from it, but no new workflow can be added. |
 | `Nishfleet/fleet-ops` | reusable workflows do live here (`ratchet.yml` is called by 0509), but `ratchet / ratchet` is required on `main` and counts `.github/workflows`: this workflow is +243 net code lines. |
 | `Nishfleet/drive` | same required check, same count. |
-| this host (a systemd unit next to `fleet-d1-restore-drill`) | the drill's own test forbids the D1 API anywhere in its body, and every agent lane here runs in a jail that mounts an empty tmpfs over `~/.config/cloudflare` — the dump needs the API and the token, so neither is reachable from a lane. |
+| this host (a systemd unit) | every agent lane here runs in a jail that mounts an empty tmpfs over `~/.config/cloudflare` — the dump needs the API and the token, so neither is reachable from a lane. |
 
 A copy parked in `template/` would be code nothing runs, kept where the ratchet
 does not count it. That is the gate's loophole, not its answer, so no such file is
@@ -120,9 +120,7 @@ performs that step, so it is filed as its own parked item.
    added the new path without deleting the poller it superseded, which is what
    made it +124.
 3. Flip drive's row to the dump path. Its artifact appears as
-   `d1-backup-drive`, which is what `fleet-d1-restore-drill` already looks for, so
-   the monthly drill restores it with no change of its own, and drive#1027 closes
-   on a green weekly run.
+   `d1-backup-drive`, and drive#1027 closes on a green weekly run.
 
 ## Not in this change
 
