@@ -12,22 +12,19 @@ permissions: {}
 concurrency: {group: gardener, cancel-in-progress: false}
 jobs:
   file:
-    runs-on: [self-hosted, agent]
+    # A hosted runner and environment `agent`, like agent.yml: the App key never sits on
+    # the worker's runners (fleet-ops#11715).
+    # https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
+    runs-on: ubuntu-latest
+    environment: agent
     timeout-minutes: 10
     steps:
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          grep . "$keyfile" | sed 's/^/::add-mask::/'
-          { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
       - name: App token
         id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: Nishfleet
           repositories: 0509,drive,mailbox,aiconverter-app,seo-fix-kit,TinyStudio.io-public,siterep-public,inish-site,fleet-console-worker,tether,rera-report-card,fleet-ops
           permission-issues: write
