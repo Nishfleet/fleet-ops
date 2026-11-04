@@ -170,14 +170,14 @@
           }
         },
         "fallbacks": {
-          "$comment": "Tether: the tether entry is exactly [assistant] (a Claude failure falls to the group Hermes already uses, never to a worker group or back), and no other group may fall into tether. No review-* group falls back or is fallen into (owner 2026-11-04): review.yml moves between reviewers itself, so a review never lands in a worker group, in tether, or on a builder's row, and the Claude credit is spent only by Tether and the review job. W10c: worker-capable is the strong group and never falls down, so no worker-capable entry may name worker-cheap, worker-public or assistant; a strong call with no healthy row fails at the caller.",
+          "$comment": "Tether: the tether entry is exactly [assistant] (a Claude failure falls to the group Hermes already uses, never to a worker group or back), and no other group may fall into tether. The one review-* fallback is review-claude -> review-qwen (Qwen builds nothing), and no other group falls into a review group, so a review never lands in a worker group, in tether, or on a builder's row, never reaches Claude from the Qwen review a Claude build gets, and the Claude credit is spent only by Tether and the review job. W10c: worker-capable is the strong group and never falls down, so no worker-capable entry may name worker-cheap, worker-public or assistant; a strong call with no healthy row fails at the caller.",
           "type": "array",
           "not": { "anyOf": [
             { "contains": { "type": "object", "required": ["worker-capable"], "properties": { "worker-capable": { "contains": { "enum": ["worker-cheap", "worker-public", "assistant"] } } } } },
             { "contains": { "type": "object", "required": ["tether"], "not": { "$ref": "#/$defs/tetherFallsToAssistant" } } },
             { "contains": { "type": "object", "minProperties": 1, "patternProperties": { ".*": { "contains": { "const": "tether" } } } } },
-            { "contains": { "type": "object", "not": { "propertyNames": { "not": { "pattern": "^review-" } } } } },
-            { "contains": { "type": "object", "minProperties": 1, "patternProperties": { ".*": { "contains": { "pattern": "^review-" } } } } }
+            { "contains": { "allOf": [ { "type": "object", "not": { "propertyNames": { "not": { "pattern": "^review-" } } } }, { "not": { "const": { "review-claude": ["review-qwen"] } } } ] } },
+            { "contains": { "type": "object", "minProperties": 1, "not": { "const": { "review-claude": ["review-qwen"] } }, "patternProperties": { ".*": { "contains": { "pattern": "^review-" } } } } }
           ] }
         },
         "redis_host": { "const": "127.0.0.1" },
