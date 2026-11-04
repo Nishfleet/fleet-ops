@@ -22,7 +22,7 @@ d = os.environ["FAKE_GH_DIR"]
 args = sys.argv[1:]
 open(os.path.join(d, "calls.log"), "a").write(json.dumps(args) + "\n")
 jq = args[args.index("--jq") + 1] if "--jq" in args else None
-data = {"view": {"headRefOid": "abc", "author": {"login": os.environ["AUTHOR"]}},
+data = {"view": {"headRefOid": "abc", "author": {"login": os.environ["AUTHOR"]}, "body": os.environ["BODY"]},
         "files": json.loads(os.environ["FILES"])}
 if args[:2] == ["pr", "view"]:
     data = data["view"]
@@ -41,12 +41,12 @@ def f(filename, status="modified", deletions=1, **extra):
 APP_CHANGE = (f("src/app.py"),)
 
 
-def verdict(tmp_path, author, review, files=APP_CHANGE):
+def verdict(tmp_path, author, review, files=APP_CHANGE, body="Closes #1\n\nrun-proof: pytest -q -> 3 passed"):
     gh = tmp_path / "gh"
     gh.write_text(f"#!{sys.executable}\n{FAKE_GH}")
     gh.chmod(0o755)
     env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "FAKE_GH_DIR": str(tmp_path), "AUTHOR": author,
-           "FILES": json.dumps(list(files)),
+           "FILES": json.dumps(list(files)), "BODY": body,
            "REPO": "o/r", "PR": "7", "SHA": "abc", "REVIEW": review, "TEST_EDITS": STEP["env"]["TEST_EDITS"]}
     subprocess.run(["bash", "-c", STEP["run"]], env=env, check=True, capture_output=True, text=True)
     post = [json.loads(c) for c in (tmp_path / "calls.log").read_text().splitlines() if "/reviews" in c][-1]
@@ -64,6 +64,12 @@ def test_the_bot_posts_the_reviewers_verdict(tmp_path, review, event):
 
 def test_the_owners_own_pull_request_is_never_approved(tmp_path):
     assert verdict(tmp_path, "nish3451", "fine\nVERDICT: APPROVE") == "COMMENT"
+
+
+@pytest.mark.parametrize("body", ["Closes #1", "Closes #1\n\nThe worker wrote no run-proof line, so the reviewer bot will not approve."])
+def test_a_pull_request_without_a_run_proof_line_is_never_approved(tmp_path, body):
+    # agent.yml promises the worker this, and the reviewer AI alone does not keep it.
+    assert verdict(tmp_path, "nishfleet-worker[bot]", "fine\nVERDICT: APPROVE", body=body) == "COMMENT"
 
 
 @pytest.mark.parametrize("change", [f(n) for n in ["tests/test_a.py", "app/test/x.ts", "e2e/login.ts", "src/__tests__/a.js",

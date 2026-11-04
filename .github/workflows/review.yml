@@ -84,7 +84,7 @@ jobs:
             and (.status == "removed" or .status == "renamed" or .deletions > 0)) | .filename
         run: |
           set -euo pipefail
-          read -r head author < <(gh pr view "$PR" -R "$REPO" --json headRefOid,author --jq '"\(.headRefOid) \(.author.login)"')
+          read -r head author proof < <(gh pr view "$PR" -R "$REPO" --json headRefOid,author,body --jq '"\(.headRefOid) \(.author.login) \(.body // "" | test("(?im)^run-proof:"))"')
           [ "$head" = "$SHA" ] || { echo "head moved past $SHA; its own CI run starts the next review"; exit 0; }
           case "$(grep -oE '^VERDICT: [A-Z-]+' <<<"$REVIEW" | tail -1)" in
             'VERDICT: APPROVE') event=APPROVE ;;
@@ -95,6 +95,8 @@ jobs:
           # GitHub counts the code owner's own pull request as owner-reviewed, so the bot's
           # approval alone merged fleet-ops#11741. The bot never approves the owner's pull request.
           [ "$event" != APPROVE ] || [ "$author" != nish3451 ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: the owner opened this pull request.'; }
+          # agent.yml tells the worker the bot will not approve without a run-proof line; this holds it.
+          [ "$event" != APPROVE ] || [ "$proof" = true ] || { event=COMMENT; REVIEW+=$'\n\nNot approved: the body has no run-proof line.'; }
           # An assignment, so a failed call stops the job instead of approving.
           edits=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq "$TEST_EDITS")
           [ "$event" != APPROVE ] || [ -z "$edits" ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: this PR deletes or changes existing test lines.'; }
