@@ -14,11 +14,13 @@ on:
       issue: {description: issue number, required: true, type: string}
       engine: {description: pi or claude, type: choice, options: [pi, claude], default: pi}
 permissions: {}
-concurrency:
-  group: agent-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
-  cancel-in-progress: false
 jobs:
   work:
+    # Job-level, so the runs that skip on an issue's other labels never queue
+    # here and cancel the agent-ready run as a pending twin.
+    concurrency:
+      group: agent-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
+      cancel-in-progress: false
     # While paused, only gardener and alert issues still run (owner, 2026-11-04).
     if: ${{ (vars.FLEET_DISPATCH_PAUSED != 'true' || contains(github.event.issue.labels.*.name, 'gardener') || contains(github.event.issue.labels.*.name, 'alert')) && (github.event_name != 'issues' || github.event.label.name == 'agent-ready') }}
     runs-on: [self-hosted, agent]
