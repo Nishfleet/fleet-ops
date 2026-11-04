@@ -207,8 +207,8 @@ jobs:
           gh auth setup-git
           git init -q "$RUNNER_TEMP/push" && cd "$RUNNER_TEMP/push"
           git fetch -q --depth=1 "https://github.com/$REPO.git" "$BASE:refs/heads/base"
-          git fetch -q "$RUNNER_TEMP/work.bundle" "refs/heads/agent/issue-$ISSUE:refs/heads/agent/issue-$ISSUE"
-          git push -q "https://github.com/$REPO.git" "refs/heads/agent/issue-$ISSUE"
+          git fetch -q "$RUNNER_TEMP/work.bundle" 'refs/heads/*:refs/work/*'
+          git push -q "https://github.com/$REPO.git" "refs/work/agent/issue-$ISSUE:refs/heads/agent/issue-$ISSUE"
           title=$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)
           pr=$(gh pr create -R "$REPO" --head "agent/issue-$ISSUE" --title "$title" --body "Closes #$ISSUE"$'\n\n'"Built by the agent lane: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"$'\n\n'"${PROOF:-The worker wrote no run-proof line, so the reviewer bot will not approve.}")
           gh pr merge "$pr" -R "$REPO" --auto || true
