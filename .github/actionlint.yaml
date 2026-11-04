@@ -3,5 +3,5 @@ self-hosted-runner:
   labels:
     - agent
     - fleet-ci
-    - review
+    - reviewer
     - fleet-ops
