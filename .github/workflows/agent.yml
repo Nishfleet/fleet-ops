@@ -15,14 +15,38 @@ on:
       engine: {description: pi or claude, type: choice, options: [pi, claude], default: pi}
 permissions: {}
 jobs:
+  # While paused, only gardener and alert issues still run (owner, 2026-11-04).
+  # The labels are read from the API on every event: in a called workflow the
+  # github context is the caller's, and inputs carry no labels.
+  # https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations
+  gate:
+    if: ${{ github.event_name != 'issues' || github.event.label.name == 'agent-ready' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {issues: read}
+    outputs:
+      run: ${{ steps.labels.outputs.run }}
+    steps:
+      - id: labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAUSED: ${{ vars.FLEET_DISPATCH_PAUSED }}
+          ISSUE: ${{ github.event.issue.number || inputs.issue }}
+        run: |
+          set -euo pipefail
+          run=true
+          if [ "$PAUSED" = true ]; then
+            run=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE" --jq 'any(.labels[]; .name == "gardener" or .name == "alert")')
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
   work:
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
     # Job-level, so the runs that skip on an issue's other labels never queue
     # here and cancel the agent-ready run as a pending twin.
     concurrency:
       group: agent-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
-    # While paused, only gardener and alert issues still run (owner, 2026-11-04).
-    if: ${{ (vars.FLEET_DISPATCH_PAUSED != 'true' || contains(github.event.issue.labels.*.name, 'gardener') || contains(github.event.issue.labels.*.name, 'alert')) && (github.event_name != 'issues' || github.event.label.name == 'agent-ready') }}
     runs-on: [self-hosted, agent]
     timeout-minutes: 90
     env:
