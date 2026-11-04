@@ -14,7 +14,7 @@ The deploy: `ansible/host.yml` applies on a fresh Ubuntu 24.04 host, and a secon
 
 ## Driving it with podman exec
 
-- **Converge.** The Launch command in `SKILL.md`. `converge.log` ends with `PLAY RECAP` and `converge rc=0`.
+- **Converge.** The Launch command in `SKILL.md`. In the rootless container `converge.log` holds a `PLAY RECAP` line with `failed=` above 0, and the first failed task is `Apply tmpfiles on every run` (see Gotchas). Every task before it is proven, and that task and every task after it are not run. `converge rc=0` happens only on a host with a writable `/sys`.
 - **Idempotence.** Run the converge command again, into `$EV/converge2.log`. The recap line reads `changed=0`.
 - **Proof.** `grep -E '^localhost ' $EV/converge.log $EV/converge2.log`.
 

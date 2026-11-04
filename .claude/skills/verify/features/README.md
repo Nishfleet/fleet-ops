@@ -18,7 +18,7 @@ Read this index, then use the matching feature file as the recipe.
 ## Proof and skip reporting
 
 - Proof is the command, its output and its exit code, plus a second read of the state it changed.
-- A step that needs a stand-in from `stand-ins.sh` is reported as "stand-in", never as proven.
+- A step that needs a stand-in from the `STANDINS` block in `SKILL.md` is reported as "stand-in", never as proven.
 - Report a stop with the failing task name and its `Origin:` line from the log.
 
 ## Feature entry contract
