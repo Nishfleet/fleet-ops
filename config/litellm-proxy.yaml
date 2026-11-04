@@ -434,8 +434,9 @@ router_settings:
     - tether: [assistant]
   cooldown_time: 60
   allowed_fails: 1
-  # A 429 parks its row at once; with allowed_fails set, a 429 would only count (fleet-ops#11723, docs.litellm.ai/docs/routing#cooldowns).
+  # A 401 or 429 parks its row at once; with allowed_fails set, it would only count (fleet-ops#10756, #11723, docs.litellm.ai/docs/routing#cooldowns).
   allowed_fails_policy:
+    AuthenticationErrorAllowedFails: 0
     RateLimitErrorAllowedFails: 0
   # a same-group retry re-hits the same wall; fallbacks fire on the first failure (fleet-ops#5792).
   num_retries: 0

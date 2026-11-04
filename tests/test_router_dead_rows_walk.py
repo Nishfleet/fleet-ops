@@ -32,6 +32,7 @@ from litellm.router_utils.pre_call_checks.deployment_affinity_check import (
 )
 
 CONFIG = Path(__file__).resolve().parents[1] / "config/litellm-proxy.yaml"
+SCHEMA = CONFIG.with_name("litellm-proxy.schema.json")
 OUT_OF_CREDIT = ("https://api.z.ai/", "https://api.commandcode.ai/")
 REDIS_KEYS = {"redis_host", "redis_port", "redis_password"}
 CALLS_PER_WINDOW = 30
@@ -88,7 +89,6 @@ def _worker_rows(config, port):
 
 def _router(config, port):
     settings = {k: v for k, v in config["router_settings"].items() if k not in REDIS_KEYS}
-    settings["fallbacks"] = [f for f in settings["fallbacks"] if "worker-cheap" in f]
     return Router(model_list=_worker_rows(config, port), **settings)
 
 
@@ -127,9 +127,41 @@ def test_every_worker_capable_name_retries_a_429_once_per_other_row():
     config = _live()
     rows = sum(1 for r in config["model_list"] if r["model_name"] == "worker-capable")
     policies = config["router_settings"].get("model_group_retry_policy", {})
-    assert config["router_settings"].get("allowed_fails_policy", {}).get("RateLimitErrorAllowedFails") == 0
+    assert config["router_settings"].get("allowed_fails_policy") == {
+        "AuthenticationErrorAllowedFails": 0, "RateLimitErrorAllowedFails": 0}
     for name in _worker_capable_names(config):
-        assert policies.get(name, {}).get("RateLimitErrorRetries", 0) >= rows - 1, name
+        assert policies.get(name, {}).get("RateLimitErrorRetries", 0) == rows - 1, name
+
+
+def test_worker_capable_never_falls_back():
+    config = _live()
+    settings = config["router_settings"]
+    assert "default_fallbacks" not in settings
+    sources = {name for edge in settings.get("fallbacks", []) for name in edge}
+    assert not sources & set(_worker_capable_names(config)), settings["fallbacks"]
+
+
+@pytest.mark.parametrize("path, value", [
+    (("allowed_fails_policy", "AuthenticationErrorAllowedFails"), None),
+    (("allowed_fails_policy", "RateLimitErrorAllowedFails"), 1),
+    (("model_group_retry_policy", "worker-capable", "RateLimitErrorRetries"), 14),
+    (("retry_policy", "RateLimitErrorRetries"), 3),
+])
+def test_schema_rejects_a_lost_park_or_a_longer_walk(path, value):
+    jsonschema = pytest.importorskip("jsonschema")
+    validator = jsonschema.Draft202012Validator(json.loads(SCHEMA.read_text(encoding="utf-8")))
+    config = _live()
+    assert [e.message for e in validator.iter_errors(config)] == []
+    *parents, key = path
+    node = config["router_settings"]
+    for part in parents:
+        node[part] = dict(node[part])
+        node = node[part]
+    if value is None:
+        del node[key]
+    else:
+        node[key] = value
+    assert list(validator.iter_errors(config)), path
 
 
 def test_worker_capable_walks_past_out_of_credit_rows_across_cooldown_expiry():
