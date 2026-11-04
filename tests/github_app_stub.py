@@ -65,7 +65,7 @@ def jwt_problem(auth):
         sig.flush()
         r = subprocess.run(
             ["openssl", "dgst", "-sha256", "-verify", PUB, "-signature", sig.name],
-            input=f"{h}.{p}".encode(), capture_output=True)
+            input=f"{h}.{p}".encode(), capture_output=True, check=False)
     return None if r.returncode == 0 else "signature"
 
 
@@ -81,7 +81,8 @@ class H(http.server.BaseHTTPRequestHandler):
     def handle_any(self, method):
         global MINTS
         body = self.rfile.read(int(self.headers.get("content-length") or 0))
-        mode = open(MODE_FILE).read().strip()
+        with open(MODE_FILE) as f:
+            mode = f.read().strip()
         bad = jwt_problem(self.headers.get("authorization"))
         verdict = "ok"
         if mode == "fail":

@@ -1,9 +1,9 @@
 """The Mac's daily topgrade job runs from mac/, one run a day, unchanged, with no home path."""
 import plistlib
-import tomllib
-from pathlib import Path
-from typing import Iterator
 import re
+import tomllib
+from collections.abc import Iterator
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLIST = ROOT / "mac/com.nish.topgrade.plist"

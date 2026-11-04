@@ -37,22 +37,23 @@ drill is about.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import http.server
+import itertools
 import json
 import random
 import socketserver
 import threading
-from typing import List
 
 from router_litellm_pin import require_pinned_litellm
 
 require_pinned_litellm(__file__)
 
-import litellm  # noqa: E402
-import pytest  # noqa: E402
-import yaml  # noqa: E402
-from litellm import Router  # noqa: E402
-from litellm.router_utils.pre_call_checks.deployment_affinity_check import (  # noqa: E402
+import litellm
+import pytest
+import yaml
+from litellm import Router
+from litellm.router_utils.pre_call_checks.deployment_affinity_check import (
     DeploymentAffinityCheck,
 )
 
@@ -118,7 +119,7 @@ class _Server:
         srv.daemon_threads = True
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.port = srv.server_address[1]
-        self.hits: List[str] = []
+        self.hits: list[str] = []
         self.walled: set = set()
         self._srv = srv
 
@@ -127,7 +128,7 @@ class _Server:
         self._srv.server_close()
 
 
-_CURRENT_SERVER: List[_Server] = []
+_CURRENT_SERVER: list[_Server] = []
 
 
 def _rows(port):
@@ -176,12 +177,10 @@ async def _drill(server, calls=CALLS, reclaim=False):
         session_id = "hop-drill-9412"
 
         async def call():
-            try:
+            with contextlib.suppress(Exception):
                 await router.acompletion(model="worker-capable",
                                          messages=[{"role": "user", "content": "hi"}],
                                          metadata={"session_id": session_id})
-            except Exception:  # noqa: BLE001 - the answer is the row, not the outcome
-                pass
             answered = server.hits[-1].split("/row-", 1)[-1].split("/", 1)[0] if server.hits else None
             server.hits.clear()
             return answered
@@ -200,8 +199,8 @@ async def _drill(server, calls=CALLS, reclaim=False):
         litellm.callbacks = saved_callbacks
 
 
-def _hop_share(answers: List[str]) -> float:
-    hops = sum(1 for before, after in zip(answers, answers[1:]) if before != after)
+def _hop_share(answers: list[str]) -> float:
+    hops = sum(1 for before, after in itertools.pairwise(answers) if before != after)
     return hops / max(len(answers) - 1, 1)
 
 

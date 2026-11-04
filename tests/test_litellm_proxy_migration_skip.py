@@ -14,7 +14,7 @@ QUADLET = ROOT / "containers/quadlet/fleet-litellm-proxy.container"
 
 
 def migration_line() -> str:
-    lines = re.findall(r"^ExecStartPre=/bin/sh -c '(.*skip_server_startup.*)'$", QUADLET.read_text(), re.M)
+    lines = re.findall(r"^ExecStartPre=/bin/sh -c '(.*skip_server_startup.*)'$", QUADLET.read_text(), re.MULTILINE)
     assert len(lines) == 1, lines
     return lines[0]
 
@@ -30,7 +30,7 @@ def run(tmp: Path, count: int, podman_rc: int = 0) -> tuple[int, int]:
     # systemd turns $$ into $ and expands %S; the stubs stand in for the two absolute paths.
     line = migration_line().replace("$$", "$").replace("%S", str(state))
     line = line.replace("/usr/bin/psql", str(psql)).replace("/usr/bin/podman", str(podman))
-    rc = subprocess.run(["/bin/sh", "-c", line], capture_output=True).returncode
+    rc = subprocess.run(["/bin/sh", "-c", line], capture_output=True, check=False).returncode
     return rc, calls.read_text().count("run") if calls.exists() else 0
 
 
@@ -68,8 +68,8 @@ def test_the_stop_window_is_bounded_by_podman_inside_systemd() -> None:
     podman's SIGKILL, which removes the container cleanly, always fires before systemd's.
     """
     text = QUADLET.read_text()
-    stop = [int(x) for x in re.findall(r"^PodmanArgs=--stop-timeout=(\d+)$", text, re.M)]
-    unit = [int(x) for x in re.findall(r"^TimeoutStopSec=(\d+)$", text, re.M)]
+    stop = [int(x) for x in re.findall(r"^PodmanArgs=--stop-timeout=(\d+)$", text, re.MULTILINE)]
+    unit = [int(x) for x in re.findall(r"^TimeoutStopSec=(\d+)$", text, re.MULTILINE)]
     assert len(stop) == 1 and len(unit) == 1, (stop, unit)
     assert stop[0] <= 45, "a restart must not stall longer than 45 s"
     assert stop[0] + 10 <= unit[0], "systemd's timeout must leave room after podman's SIGKILL"

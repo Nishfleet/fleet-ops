@@ -283,8 +283,8 @@ def selftest():
     wrong_token["fleet-alert-dispatch"]["receivers"][0]["settings"]["authorization_credentials"] = "$__file{/etc/token}"
     shape_bad = []
     sink_shape(wrong_token, shape_bad)
-    assert shape_bad == ["fleet-alert-dispatch: authorization_credentials is '$__file{/etc/token}', want "
-                         "'$__file{/run/secrets/github-token/token}', so its alert files nothing"], shape_bad
+    assert shape_bad == [("fleet-alert-dispatch: authorization_credentials is '$__file{/etc/token}', want "
+                         "'$__file{/run/secrets/github-token/token}', so its alert files nothing")], shape_bad
 
 
 AGENT_GATE = ".github/workflows/agent.yml"
@@ -313,7 +313,7 @@ def gate_titles(repo):
     list could not be read). Read out of the workflow itself, so a copy of the
     list cannot drift from the one the gate runs."""
     text = (repo / AGENT_GATE).read_text()
-    found = re.search(r"^ *if jq -e --argjson titles '(\[[^']*\])'", text, re.M)
+    found = re.search(r"^ *if jq -e --argjson titles '(\[[^']*\])'", text, re.MULTILINE)
     if not found:
         return None, (f"{AGENT_GATE}: the dispatch gate's twin check no longer names its alert title prefixes in one "
                       f"--argjson titles list, or that line was reformatted")
@@ -349,7 +349,7 @@ def alert_titles_agree(points, repo, bad):
         print(f"alert titles: {len(written)} contact points file issues, and the dispatch gate's twin list covers every title prefix")
 
 
-ACTION = re.compile(r"\{\{(.*?)\}\}", re.S)
+ACTION = re.compile(r"\{\{(.*?)\}\}", re.DOTALL)
 VALUE_FIELD = re.compile(r"\$values\.([A-Za-z_]\w*)")
 LABEL_FIELD = re.compile(r"\$labels\.([A-Za-z_]\w*)")
 VALUE_INDEX = re.compile(r'index\s+\$values\s+"([^"]+)"')

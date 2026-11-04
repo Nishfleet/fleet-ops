@@ -20,9 +20,8 @@ import os
 import pathlib
 import subprocess
 
-import pytest
-
 import ansible_host
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
