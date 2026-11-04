@@ -295,20 +295,25 @@
 # src/Runner.Listener/JobDispatcher.cs). A busy runner restarts on a later run, so these are tasks
 # every run, not a handler: a handler fires only on a change in the same run, at the play's end.
 # https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_handlers.html
+# rc 0 restarts, rc 1 leaves the runner, and any other rc fails the task. Only pgrep's 1 means no
+# match; 2 and 3 are errors (pgrep(1) EXIT STATUS: https://man7.org/linux/man-pages/man1/pgrep.1.html).
 - name: Find the idle runners that started before their unit, .env or .path changed
   ansible.builtin.shell:
     executable: /bin/bash
     cmd: >-
       set -o pipefail;
-      started=$(systemctl show -P ActiveEnterTimestamp --timestamp=unix {{ item }});
-      dir=$(systemctl show -P WorkingDirectory {{ item }});
-      newest=$(stat -c %Y "$(systemctl show -P FragmentPath {{ item }})" "$dir/.env" "$dir/.path" | sort -n | tail -n 1);
-      test "${started#@}" -lt "$newest"
-      && ! pgrep --cgroup "$(systemctl show -P ControlGroup {{ item }})" -x Runner.Worker
+      started=$(systemctl show -P ActiveEnterTimestamp --timestamp=unix {{ item }}) || exit 2;
+      dir=$(systemctl show -P WorkingDirectory {{ item }}) || exit 2;
+      unit=$(systemctl show -P FragmentPath {{ item }}) || exit 2;
+      cgroup=$(systemctl show -P ControlGroup {{ item }}) || exit 2;
+      newest=$(stat -c %Y "$unit" "$dir/.env" "$dir/.path" | sort -n | tail -n 1) || exit 2;
+      test "${started#@}" -lt "$newest" || exit;
+      pgrep --cgroup "$cgroup" -x Runner.Worker;
+      case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac
   loop: "{{ fleet_runner_ids | map('regex_replace', '^(.*)$', 'fleet-runner@\\1.service') | list + ['fleet-reviewer-runner.service'] }}"
   register: runner_stale
   changed_when: runner_stale.rc == 0
-  failed_when: false
+  failed_when: runner_stale.rc not in [0, 1]
   check_mode: false
 
 - name: Restart those runners
