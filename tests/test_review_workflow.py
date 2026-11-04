@@ -46,3 +46,12 @@ def test_callers_must_pass_the_bot_token():
     wf = yaml.safe_load((ROOT / ".github/workflows/review.yml").read_text())
     on = wf.get("on", wf.get(True))
     assert on["workflow_call"] == {"secrets": {"APPROVER_TOKEN": {"required": True}}}
+
+
+def test_a_new_head_cancels_only_its_own_pull_requests_review():
+    # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
+    wf = yaml.safe_load((ROOT / ".github/workflows/review.yml").read_text())
+    assert wf["concurrency"] == {
+        "group": "review-${{ github.repository }}-${{ github.event.workflow_run.pull_requests[0].number || github.run_id }}",
+        "cancel-in-progress": True,
+    }

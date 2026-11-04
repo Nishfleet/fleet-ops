@@ -38,6 +38,8 @@
     # version and the sha256 GitHub publishes with it.
     fleet_reviewer_runner_version: 2.338.2
     fleet_reviewer_runner_sha256: baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
+    # netcup-reviewer-1 to 3, so reviews of different pull requests run side by side.
+    fleet_reviewer_runner_ids: [1, 2, 3]
     fleet_reviewer_pi_packages: "{{ (lookup('ansible.builtin.file', repo_root ~ '/config/pi-packages.json') | from_json).packages | select('search', 'pi-grok') | list }}"
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
@@ -129,6 +131,8 @@
       - /etc/systemd/system/fleet-runner-sandbox-apply.timer
       - /etc/systemd/system/timers.target.wants/fleet-runner-sandbox-apply.timer
       - /etc/polkit-1/rules.d/50-fleet-runner-restart.rules
+      # The single review runner's plain unit; fleet-reviewer-runner@1 replaces it.
+      - /etc/systemd/system/fleet-reviewer-runner.service
       # Hermes runs on the unit its own installer writes (`hermes gateway install
       # --system`); our drop-ins on it and on hermes-serve went (fleet-ops#10935 D9).
       - /etc/systemd/system/hermes-gateway.service.d/60-clean-sigterm.conf

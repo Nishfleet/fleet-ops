@@ -37,7 +37,7 @@ def _stale(tmp_path, started, newest_file, busy, cgroup=CGROUP, pgrep_rc=None, m
         (run / missing).unlink()
     bin_ = tmp_path / "bin"
     bin_.mkdir()
-    props = {"ActiveEnterTimestamp": f"@{started}", "WorkingDirectory": str(run),
+    props = {"ActiveEnterTimestamp": f"@{started}" if started is not None else "", "WorkingDirectory": str(run),
              "FragmentPath": str(run / "unit.service"), "ControlGroup": cgroup}
     cases = "".join(f'  *{k}*) echo "{v}";;\n' for k, v in props.items())
     (bin_ / "systemctl").write_text(f'#!/bin/sh\ncase "$*" in\n{cases}esac\n')
@@ -69,6 +69,10 @@ def test_a_runner_started_after_the_change_is_left_alone(tmp_path):
     assert _stale(tmp_path, started=2500, newest_file="unit.service", busy=False) == 1
 
 
+def test_a_runner_that_never_started_is_left_alone(tmp_path):
+    assert _stale(tmp_path, started=None, newest_file="unit.service", busy=False) == 1
+
+
 def test_the_task_fails_on_any_status_but_restart_or_leave():
     assert _check()["failed_when"] == "runner_stale.rc not in [0, 1]"
 
@@ -90,7 +94,8 @@ def test_a_missing_runner_file_fails_the_task(tmp_path):
 
 def test_the_check_covers_every_runner_and_only_its_hits_restart():
     check = _check()
-    assert "fleet_runner_ids" in check["loop"] and "fleet-reviewer-runner.service" in check["loop"]
+    assert "fleet_runner_ids | map('regex_replace', '^(.*)$', 'fleet-runner@\\1.service')" in check["loop"]
+    assert "fleet_reviewer_runner_ids | map('regex_replace', '^(.*)$', 'fleet-reviewer-runner@\\1.service')" in check["loop"]
     restarts = [t for t in _tasks() if t.get("ansible.builtin.systemd_service", {}).get("state") == "restarted"
                 and "runner" in t["ansible.builtin.systemd_service"]["name"] + str(t.get("loop", ""))]
     assert [t["loop"] for t in restarts] == [
