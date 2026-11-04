@@ -1,0 +1,15 @@
+# https://docs.ansible.com/projects/lint/configuring/
+profile: basic
+skip_list:
+  - yaml[line-length]
+exclude_paths:
+  - .github/
+  - config/
+  - containers/
+  - rootfs/
+  - infra/
+  - mac/
+  - tests/
+enable_list:
+  - ignore-errors
+  - no-changed-when

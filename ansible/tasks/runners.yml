@@ -168,7 +168,7 @@
 # What `gh auth setup-git` writes: git asks gh, and gh answers with the job's GH_TOKEN.
 - name: Let git push with the job's GitHub token
   ansible.builtin.copy:
-    content: "[credential \"https://github.com\"]\n\thelper =\n\thelper = !/usr/bin/gh auth git-credential\n"
+    content: "[credential \"https://github.com\"]\n\thelper =\n\thelper = !/usr/bin/gh auth git-credential\n"  # noqa: no-tabs
     dest: /var/lib/fleet-runner/.gitconfig
     owner: fleet-runner
     group: fleet-runner

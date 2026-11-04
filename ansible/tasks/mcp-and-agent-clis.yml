@@ -25,7 +25,7 @@
     path: "{{ chrome_devtools_mcp_dir }}/node_modules/.bin/chrome-devtools-mcp"
   register: chrome_devtools_installed
 
-- name: Install the pinned Chrome DevTools MCP server from the lockfile
+- name: Install the pinned Chrome DevTools MCP server from the lockfile  # noqa: no-changed-when
   become: true
   become_user: nish
   environment: "{{ nish_env }}"
@@ -86,7 +86,7 @@
   check_mode: false
   timeout: 60
 
-- name: Drop a stale drive entry
+- name: Drop a stale drive entry  # noqa: no-changed-when
   become: true
   become_user: nish
   environment: "{{ nish_env }}"
@@ -95,7 +95,7 @@
   when: drive_entry.rc == 0 and (drive_mcp_words | reject('in', drive_entry.stdout ~ drive_entry.stderr) | list | length) > 0
   timeout: 60
 
-- name: Pin the Drive filesystem server in Claude Code's user config
+- name: Pin the Drive filesystem server in Claude Code's user config  # noqa: no-changed-when
   become: true
   become_user: nish
   environment: "{{ nish_env }}"
@@ -153,7 +153,7 @@
   diff: false
   no_log: true
 
-- name: Delete the retired jobs from Hermes' cron store
+- name: Delete the retired jobs from Hermes' cron store  # noqa: no-changed-when
   become: true
   become_user: nish
   ansible.builtin.command:
