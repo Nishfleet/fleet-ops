@@ -36,5 +36,22 @@
     - Reload systemd
     - Reload nish's user manager
 
+# The retired 0509 verify lane's runner users and lock group (fleet-ops#11714):
+# nothing in the repo uses /run/lock/0509 or the gha0509-* accounts any more,
+# and the group no play task makes made "Apply tmpfiles on every run" fail on a
+# fresh box. After "Remove retired host files" above, so this apply's earlier
+# tmpfiles run still finds the group while the lane's conf file is on the box.
+- name: Remove the retired 0509 verify runner users
+  ansible.builtin.user:
+    name: "{{ item }}"
+    state: absent
+    remove: true
+  loop: "{{ retired_verify_users }}"
+
+- name: Remove the retired 0509 lock group
+  ansible.builtin.group:
+    name: gha0509-lock
+    state: absent
+
 - name: Apply pending handlers before the credential check
   ansible.builtin.meta: flush_handlers

@@ -190,12 +190,25 @@
       - /etc/fleet-ops/box-only
       # Unused Pi prompt; its source and install line left the repo (fleet-ops#10935).
       - "{{ nish_home }}/.pi/agent/prompts/worker.md"
+      # The old 0509 verify lane's lock-dir tmpfiles file: its lane is retired
+      # and the group and users it named go with it (fleet-ops#11714).
+      - /etc/tmpfiles.d/github-runner-0509.conf
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: "{{ nish_home }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
     agent_runner_root: "{{ nish_env.HOME }}/.local/share/agent-runner"
+    # The retired 0509 verify lane's runner users (fleet-ops#11714): the lock
+    # group they were made into is gone with them, and the lane's tmpfiles file
+    # is in retired above. Before the fix, fresh boxes failed
+    # "Apply tmpfiles on every run" on the group no play task makes.
+    retired_verify_users:
+      - gha0509-verify1
+      - gha0509-verify2
+      - gha0509-verify3
+      - gha0509-verify4
+      - gha0509-verify5
     # Hermes jobs whose prompt lives in config/hermes/<name>.md and is applied on every run.
     digest_prompts:
       - digest-morning
