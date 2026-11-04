@@ -70,9 +70,7 @@ policies:
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
         group_by: [prom_alertname]
         group_wait: 30s
-        # 24h, not 5m: each unit that joins a firing group re-sent the group after
-        # group_interval, so one cause filed six issues in an hour (2026-11-04).
-        group_interval: 24h
+        group_interval: 5m
         # 24h, not 168h: a worker that closes the issue without fixing the cause
         # must not silence the alert for 7 days (fleet-ops#10321). Cost: at most
         # one strong-seat run per still-firing alert per day.
