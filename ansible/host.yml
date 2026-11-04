@@ -23,9 +23,8 @@
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
     repo_root: "{{ (playbook_dir ~ '/..') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
-    # Every runner unit that ran as nish or as fleet-reviewer is retired: the agent
-    # lane runs on fleet_runner_ids as fleet-runner, and no workflow asks for the
-    # `review` label any more (fleet-ops#10935). 23 was the nish-vault runner's
+    # Every runner unit that ran as nish is retired: the agent lane runs on
+    # fleet_runner_ids as fleet-runner (fleet-ops#10935). 23 was the nish-vault runner's
     # directory; `retired` removes it after retired_units stops that runner, so it is
     # left out here. A retired registration is not removed at GitHub, because no
     # credential on this box may do that; GitHub drops a self-hosted runner that has
@@ -35,6 +34,11 @@
     # raised only after measuring), run as fleet-runner by tasks/runners.yml.
     fleet_runner_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     fleet_runner_pi_version: 1.4.0
+    # The review runner (tasks/runners.yml): the stock actions/runner release, pinned by
+    # version and the sha256 GitHub publishes with it.
+    fleet_reviewer_runner_version: 2.338.2
+    fleet_reviewer_runner_sha256: baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
+    fleet_reviewer_pi_packages: "{{ (lookup('ansible.builtin.file', repo_root ~ '/config/pi-packages.json') | from_json).packages | select('search', 'pi-grok') | list }}"
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
     # release's SHASUMS256.txt (https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
@@ -114,8 +118,8 @@
       - /etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service.d
       - /etc/systemd/system/multi-user.target.wants/actions.runner.nish3451-nish-vault.netcup-vault-1.service
       - "{{ agent_runner_root }}/23"
-      # The nish runner jails, their re-apply timer and restart grant, and the review
-      # runners' user state; fleet-runner@.service replaces them (fleet-ops#10935).
+      # The nish runner jails, their re-apply timer and restart grant;
+      # fleet-runner@.service replaces them (fleet-ops#10935).
       - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d
       - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-9.service.d
       - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-10.service.d
@@ -125,7 +129,6 @@
       - /etc/systemd/system/fleet-runner-sandbox-apply.timer
       - /etc/systemd/system/timers.target.wants/fleet-runner-sandbox-apply.timer
       - /etc/polkit-1/rules.d/50-fleet-runner-restart.rules
-      - /var/lib/fleet-reviewer
       # Hermes runs on the unit its own installer writes (`hermes gateway install
       # --system`); our drop-ins on it and on hermes-serve went (fleet-ops#10935 D9).
       - /etc/systemd/system/hermes-gateway.service.d/60-clean-sigterm.conf
@@ -307,6 +310,12 @@
     # runs (fleet-ops#10267).
 
     # Only when a runner's .env or .path changed, which is its first deploy as fleet-runner.
+    - name: Restart the review runner
+      ansible.builtin.systemd_service:
+        name: fleet-reviewer-runner.service
+        state: restarted
+        daemon_reload: true
+
     - name: Restart the fleet runners
       ansible.builtin.systemd_service:
         name: "fleet-runner@{{ item }}.service"
