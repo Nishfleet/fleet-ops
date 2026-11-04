@@ -102,11 +102,12 @@
       "minItems": 1,
       "allOf": [
         {
-          "$comment": "fleet-ops#10608 (Nish 2026-10-28): GLM-5.3-Flash is a worker model only and Qwen is a judge or reviewer only. A GLM-5.3-Flash row in any group but a worker group, or a Qwen row in a worker group, fails here. pilot is the gh-aw pilot's worker group (fleet-ops#11311).",
+          "$comment": "fleet-ops#10608 (Nish 2026-10-28): GLM-5.3-Flash is a worker model only and Qwen is a judge or reviewer only. A GLM-5.3-Flash row in any group but a worker group, or a Qwen row in a worker group, fails here. A review-* row is never MiniMax, GLM or DeepSeek (owner 2026-11-04: the lane builds on those, and MiniMax never reviews). pilot is the gh-aw pilot's worker group (fleet-ops#11311).",
           "items": {
             "allOf": [
               { "if": { "type": "object", "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "pattern": "[Gg][Ll][Mm]-5\\.3-[Ff][Ll][Aa][Ss][Hh]" } } } } }, "then": { "required": ["model_name"], "properties": { "model_name": { "enum": ["worker-capable", "worker-cheap", "worker-public", "pilot"] } } } },
-              { "if": { "type": "object", "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "pattern": "[Qq][Ww][Ee][Nn]" } } } } }, "then": { "properties": { "model_name": { "not": { "pattern": "^worker-" } } } } }
+              { "if": { "type": "object", "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "pattern": "[Qq][Ww][Ee][Nn]" } } } } }, "then": { "properties": { "model_name": { "not": { "pattern": "^worker-" } } } } },
+              { "if": { "type": "object", "required": ["model_name"], "properties": { "model_name": { "pattern": "^review-" } } }, "then": { "required": ["litellm_params"], "properties": { "litellm_params": { "type": "object", "required": ["model"], "properties": { "model": { "not": { "pattern": "[Mm][Ii][Nn][Ii][Mm][Aa][Xx]|[Gg][Ll][Mm]|[Dd][Ee][Ee][Pp][Ss][Ee][Ee][Kk]" } } } } } } }
             ]
           }
         },
@@ -169,14 +170,14 @@
           }
         },
         "fallbacks": {
-          "$comment": "Tether: the tether entry is exactly [assistant] (a Claude failure falls to the group Hermes already uses, never to a worker group or back), and no other group may fall into tether. review-claude neither falls back nor is fallen into, so the Claude credit is spent only by Tether and the review job. W10c: worker-capable is the strong group and never falls down, so no worker-capable entry may name worker-cheap, worker-public or assistant; a strong call with no healthy row fails at the caller.",
+          "$comment": "Tether: the tether entry is exactly [assistant] (a Claude failure falls to the group Hermes already uses, never to a worker group or back), and no other group may fall into tether. No review-* group falls back or is fallen into (owner 2026-11-04): review.yml moves between reviewers itself, so a review never lands in a worker group, in tether, or on a builder's row, and the Claude credit is spent only by Tether and the review job. W10c: worker-capable is the strong group and never falls down, so no worker-capable entry may name worker-cheap, worker-public or assistant; a strong call with no healthy row fails at the caller.",
           "type": "array",
           "not": { "anyOf": [
             { "contains": { "type": "object", "required": ["worker-capable"], "properties": { "worker-capable": { "contains": { "enum": ["worker-cheap", "worker-public", "assistant"] } } } } },
             { "contains": { "type": "object", "required": ["tether"], "not": { "$ref": "#/$defs/tetherFallsToAssistant" } } },
             { "contains": { "type": "object", "minProperties": 1, "patternProperties": { ".*": { "contains": { "const": "tether" } } } } },
-            { "contains": { "type": "object", "required": ["review-claude"] } },
-            { "contains": { "type": "object", "minProperties": 1, "patternProperties": { ".*": { "contains": { "const": "review-claude" } } } } }
+            { "contains": { "type": "object", "not": { "propertyNames": { "not": { "pattern": "^review-" } } } } },
+            { "contains": { "type": "object", "minProperties": 1, "patternProperties": { ".*": { "contains": { "pattern": "^review-" } } } } }
           ] }
         },
         "redis_host": { "const": "127.0.0.1" },
