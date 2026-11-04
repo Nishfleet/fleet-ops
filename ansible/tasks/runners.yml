@@ -82,6 +82,45 @@
   loop: "{{ fleet_runner_ids }}"
   notify: Restart the fleet runners
 
+# Node for tether and for the runners' pi: the official linux-x64 tarball, pinned by
+# version and sha256, unpacked into a root-owned versioned directory. tether's
+# ExecStart and the pi install below name it by absolute path. It comes before the
+# pi install, which failed on a fresh box when it was in tasks/tether.yml. The distro nodejs package
+# is not used and is not touched.
+- name: Download the pinned Node tarball
+  tags: [tether]
+  ansible.builtin.get_url:
+    url: "https://nodejs.org/dist/v{{ tether_node_version }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+    dest: "{{ tether_node_cache }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+    checksum: "sha256:{{ tether_node_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+  # A --check run by a user that cannot write /var/cache (the test) fails here.
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Create the versioned Node directory, root-owned
+  tags: [tether]
+  ansible.builtin.file:
+    path: "{{ tether_node_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Unpack the pinned Node
+  tags: [tether]
+  ansible.builtin.unarchive:
+    src: "{{ tether_node_cache }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+    dest: "{{ tether_node_dir }}"
+    remote_src: true
+    extra_opts: [--strip-components=1]
+    owner: root
+    group: root
+    creates: "{{ tether_node_dir }}/bin/node"
+  # Under --check the download above did not really happen.
+  ignore_errors: "{{ ansible_check_mode }}"
+
 - name: Install pi for fleet-runner
   become: true
   become_user: fleet-runner

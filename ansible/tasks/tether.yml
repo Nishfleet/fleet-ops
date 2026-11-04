@@ -62,47 +62,6 @@
     mode: "0755"
   when: not tether_off.stat.exists
 
-# Node for the unit: the official linux-x64 tarball, pinned by version and
-# sha256, unpacked into a root-owned versioned directory. The unit's
-# ExecStart names that binary by absolute path. The distro nodejs package
-# is not used and is not touched.
-- name: Download the pinned Node tarball for tether
-  tags: [tether]
-  ansible.builtin.get_url:
-    url: "https://nodejs.org/dist/v{{ tether_node_version }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
-    dest: "{{ tether_node_cache }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
-    checksum: "sha256:{{ tether_node_sha256 }}"
-    owner: root
-    group: root
-    mode: "0644"
-  when: not tether_off.stat.exists
-  # A --check run by a user that cannot write /var/cache (the test) fails here.
-  ignore_errors: "{{ ansible_check_mode }}"
-
-- name: Create the versioned Node directory, root-owned
-  tags: [tether]
-  ansible.builtin.file:
-    path: "{{ tether_node_dir }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-  when: not tether_off.stat.exists
-
-- name: Unpack the pinned Node for tether
-  tags: [tether]
-  ansible.builtin.unarchive:
-    src: "{{ tether_node_cache }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
-    dest: "{{ tether_node_dir }}"
-    remote_src: true
-    extra_opts: [--strip-components=1]
-    owner: root
-    group: root
-    creates: "{{ tether_node_dir }}/bin/node"
-  when: not tether_off.stat.exists
-  # Under --check the download above did not really happen.
-  ignore_errors: "{{ ansible_check_mode }}"
-
 # The tether release. Download, verify, unpack and link share one block, so a
 # GitHub or download failure cannot abort the host-config tasks after it: the
 # rescue leaves `current` where it was and records the failure, and the last

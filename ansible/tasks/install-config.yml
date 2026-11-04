@@ -13,6 +13,31 @@
     group: root
     mode: "u=rwX,go=rX"
 
+# The Ubuntu packages this play configures or calls. A fresh box has none of
+# them, so the checks below and later tasks failed there (trust-fleetops, 2026-11-04).
+- name: Install the Ubuntu packages the play configures and calls
+  ansible.builtin.apt:
+    name:
+      - acl
+      - auditd
+      - curl
+      - fail2ban
+      - git
+      - gpg
+      - iproute2
+      - jq
+      - nftables
+      - openssh-server
+      - podman
+      - prometheus
+      - prometheus-alertmanager
+      - restic
+      - sudo
+      - unattended-upgrades
+    state: present
+    update_cache: true
+    cache_valid_time: 86400
+
 - name: Check the prometheus config before installing it
   ansible.builtin.command: /usr/bin/promtool check config {{ rootfs }}/etc/prometheus/prometheus.yml
   changed_when: false
@@ -63,6 +88,14 @@
 # copied: it is repo documentation, not box config. Rendered as templates
 # so newer lines can name the home directory through nish_home. Keep
 # Jinja markers ({{, {% and {#) out of their comments and patterns.
+- name: Create /etc/restic
+  ansible.builtin.file:
+    path: /etc/restic
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
 - name: Install restic include and exclude files
   ansible.builtin.template:
     src: "{{ playbook_dir }}/../config/restic/{{ item }}"

@@ -38,6 +38,16 @@
 # Root writes the file and owner/group hand it to nish. Becoming nish here fails: the copy's
 # staged source is root's, and an unprivileged become cannot chmod it (Ansible docs, "Risks of
 # becoming an unprivileged user"); host-config failed on every run from #11176 on.
+# The relay unit's StateDirectory= makes this folder on its first start, which a
+# fresh box has not had yet. Made as nish, so ~/.local and ~/.local/state stay nish's.
+- name: Create the tincan relay state folder
+  become: true
+  become_user: nish
+  ansible.builtin.file:
+    path: "{{ tincan_relay_state }}"
+    state: directory
+    mode: "0700"
+
 - name: Install the rendered tincan relay approval policy
   become: true
   ansible.builtin.copy:
