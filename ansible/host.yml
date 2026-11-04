@@ -41,6 +41,13 @@
     # netcup-reviewer-1 to 3, so reviews of different pull requests run side by side.
     fleet_reviewer_runner_ids: [1, 2, 3]
     fleet_reviewer_pi_packages: "{{ (lookup('ansible.builtin.file', repo_root ~ '/config/pi-packages.json') | from_json).packages | select('search', 'pi-grok') | list }}"
+    # pi's own retry (docs/settings.md "Network and retries"): a dropped or refused router call is
+    # retried after 2, 4, 8, 16, 32 s, then every 60 s (baseDelayMs * 2^(n-1), capped at
+    # maxAgentDelayMs). pi's default of 3 retries waits 14 s, and a router restart is down for its
+    # drain (up to the quadlet's 300 s --stop-timeout) plus about 30-75 s to readiness, so the
+    # 2026-11-04 agent run failed (fleet-ops#11739). 11 retries wait 422 s.
+    # tests/test_pi_retry_outlasts_router_restart.py keeps the wait above the restart.
+    pi_router_retry: {maxRetries: 11}
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
     # release's SHASUMS256.txt (https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
@@ -322,6 +329,27 @@
     # systemd_service scope=user would reload root's user manager, not nish's.
     - name: Reload nish's user manager  # noqa: command-instead-of-module no-changed-when
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host daemon-reload
+
+    # LiteLLM's own migration job, before the proxy restarts onto a new image: the upgrade guide's
+    # "Custom deployments" command, run where Helm runs its pre-upgrade hook
+    # (https://docs.litellm.ai/docs/proxy/upgrade_guide). The image is the quadlet's Image= line,
+    # so a bump edits one line. The old proxy keeps serving while it runs. A failure fails the
+    # deploy before the restart, so the proxy never starts on a schema the job did not migrate.
+    - name: Migrate the litellm database  # noqa: no-changed-when
+      become: true
+      become_user: nish
+      environment: "{{ nish_env }}"
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/podman
+          - run
+          - --rm
+          - --network=host
+          - --env-file={{ nish_config }}/fleet-ops/litellm-db.env
+          - --env=DISABLE_SCHEMA_UPDATE=false
+          - --env=LITELLM_LOG=INFO
+          - "{{ lookup('ansible.builtin.file', repo_root ~ '/containers/quadlet/fleet-litellm-proxy.container') | regex_search('^Image=(\\S+)$', '\\1', multiline=True) | first }}"
+          - --skip_server_startup
 
     # One systemctl call, so one transaction: Redis first (the proxy is After= and Requires= it),
     # then the proxy, restarted once. Fires only when a rendered Redis file changed (first

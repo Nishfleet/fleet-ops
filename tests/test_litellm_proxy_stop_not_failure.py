@@ -5,7 +5,6 @@ so conmon exits 137. systemd reads these keys, so the test pins them.
 """
 
 import re
-import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,10 +15,6 @@ def values(key: str) -> list[str]:
     return re.findall(rf"^{key}=(.*)$", QUADLET.read_text(), re.MULTILINE)
 
 
-def pre_start_scripts() -> list[str]:
-    return re.findall(r"^ExecStartPre=/bin/sh -c '(.*)'$", QUADLET.read_text(), re.MULTILINE)
-
-
 def test_exit_137_from_the_stop_is_a_success() -> None:
     assert values("SuccessExitStatus") == ["137"], "only 137; 125 (podman failed to start) and 139 must stay failures"
 
@@ -27,16 +22,3 @@ def test_exit_137_from_the_stop_is_a_success() -> None:
 def test_an_oom_kill_still_fails_the_unit() -> None:
     assert values("OOMPolicy") == ["stop"], "a 137 from the kernel OOM killer must end as oom-kill, not success"
     assert values("Restart") == ["on-failure"]
-
-
-def test_a_sigkilled_pre_start_step_never_exits_137(tmp_path: Path) -> None:
-    scripts = pre_start_scripts()
-    assert len(scripts) == 1, "the migration step"
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "podman").write_text("#!/bin/sh\nkill -KILL $$\n")
-    (bin_dir / "podman").chmod(0o755)
-    for script in scripts:
-        script = script.replace("/usr/bin/", f"{bin_dir}/")
-        rc = subprocess.run(["/bin/sh", "-c", script], cwd=tmp_path, check=False).returncode
-        assert rc == 1, f"a killed step must exit 1, got {rc}: {script[:60]}"
