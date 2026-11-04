@@ -243,7 +243,7 @@
 
 # Applies only the file that changed. `sysctl --system` would also re-apply
 # the provider image's files, which README keeps a Nish-only action.
-- name: Apply a changed sysctl file
+- name: Apply a changed sysctl file  # noqa: no-changed-when
   ansible.builtin.command: /usr/sbin/sysctl -p /etc/sysctl.d/{{ item.item | basename }}
   loop: "{{ sysctl_files.results | selectattr('changed') | list }}"
   loop_control:

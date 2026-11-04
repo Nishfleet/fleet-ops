@@ -80,4 +80,3 @@
       Relay: {{ ((tincan_relay_agents.stdout | default('{}', true) | from_json).agents | default([]) | map(attribute='name') | list) | join(', ') }}.
       Fix the roster, or drop the name if that agent left the mesh.
   when: tincan_relay_agents.rc == 0
-

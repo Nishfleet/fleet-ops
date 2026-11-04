@@ -321,17 +321,17 @@
         state: restarted
 
     # systemd_service scope=user would reload root's user manager, not nish's.
-    - name: Reload nish's user manager
+    - name: Reload nish's user manager  # noqa: command-instead-of-module no-changed-when
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host daemon-reload
 
     # One systemctl call, so one transaction: Redis first (the proxy is After= and Requires= it),
     # then the proxy, restarted once. Fires only when a rendered Redis file changed (first
     # creation, or the password file was deleted and re-minted), never in steady state.
     # The proxy needs up to ~10 minutes to be healthy again after this.
-    - name: Restart litellm proxy
+    - name: Restart litellm proxy  # noqa: command-instead-of-module no-changed-when
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host try-restart fleet-litellm-proxy.service
 
-    - name: Restart litellm redis then proxy
+    - name: Restart litellm redis then proxy  # noqa: command-instead-of-module no-changed-when
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-litellm-redis.service fleet-litellm-proxy.service
 
     - name: Restart systemd-oomd
@@ -345,7 +345,7 @@
         name: systemd-journald.service
         state: restarted
 
-    - name: Load audit rules
+    - name: Load audit rules  # noqa: no-changed-when
       ansible.builtin.command: /usr/sbin/augenrules --load
 
     # nftables.service's ExecReload re-runs `nft -f /etc/nftables.conf`, and
@@ -376,7 +376,7 @@
 
     # Reported when it fails, but it never stops the rest of the play. A running Grafana
     # keeps the secret files it was started with, so it is restarted only after a change.
-    - name: Restart fleet-grafana
+    - name: Restart fleet-grafana  # noqa: command-instead-of-module ignore-errors no-changed-when
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-grafana.service
       ignore_errors: true
 
@@ -414,7 +414,7 @@
     # --no-block keeps a long backup from holding the deploy. The unit list is
     # the start list in rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules,
     # minus fleet-host-config.service itself.
-    - name: Read whether each re-runnable oneshot is failed
+    - name: Read whether each re-runnable oneshot is failed  # noqa: command-instead-of-module
       ansible.builtin.command: /usr/bin/systemctl is-failed {{ item }}
       loop:
         - fleet-update.service
@@ -423,7 +423,7 @@
       changed_when: false
       failed_when: oneshot_failed.rc not in [0, 1]
 
-    - name: Re-run each failed oneshot after the deploy
+    - name: Re-run each failed oneshot after the deploy  # noqa: command-instead-of-module no-changed-when
       ansible.builtin.command: /usr/bin/systemctl start --no-block {{ item.item }}
       loop: "{{ oneshot_failed.results }}"
       loop_control:

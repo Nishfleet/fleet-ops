@@ -22,6 +22,7 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ansible-core systemd >/dev/null
       - name: The host play parses (it is the deploy; a broken play breaks the box)
         run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
+      - uses: ansible/ansible-lint@9bce2bfb8f4a984e6b13767bc0d6bf0a49492164 # v26.10.1, fail-open tasks (#11121, #11636)
       - name: Unit files verify (three merges broke the box in one night, 2026-10-29)
         shell: bash
         run: |
