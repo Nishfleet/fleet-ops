@@ -243,6 +243,12 @@ jobs:
       # proof to the PR body before the push, because the push starts the re-review and
       # review.yml reads the body live.
       # https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request
+      # An issue run builds on main, so it replaces a branch an old run left behind (run
+      # 41846745347 failed "fetch first" on closed PR #11730's head), but only when no open PR
+      # uses it, and only if the branch still holds the commit read here. A review round and
+      # a branch with an open PR push fast-forward only.
+      # https://git-scm.com/docs/git-push#Documentation/git-push.txt---force-with-leaseltrefnamegt
+      # https://docs.github.com/en/rest/pulls/pulls#list-pull-requests
       - name: Push the branch, open the PR and arm auto-merge
         if: needs.work.outputs.nochange != 'true'
         env:
@@ -261,7 +267,12 @@ jobs:
           git init -q "$RUNNER_TEMP/push" && cd "$RUNNER_TEMP/push"
           git fetch -q --depth=1 "https://github.com/$REPO.git" "$BASE:refs/heads/base"
           git fetch -q "$RUNNER_TEMP/work.bundle" 'refs/heads/*:refs/work/*'
-          git push -q "https://github.com/$REPO.git" "refs/work/agent/issue-$ISSUE:refs/heads/agent/issue-$ISSUE"
+          lease=()
+          if [ -z "$PR" ] && [ "$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:agent/issue-$ISSUE&state=open" --jq length)" = 0 ]; then
+            old=$(git ls-remote "https://github.com/$REPO.git" "refs/heads/agent/issue-$ISSUE" | cut -f1)
+            lease=("--force-with-lease=refs/heads/agent/issue-$ISSUE:$old")
+          fi
+          git push -q "${lease[@]}" "https://github.com/$REPO.git" "refs/work/agent/issue-$ISSUE:refs/heads/agent/issue-$ISSUE"
           if [ -n "$PR" ]; then gh pr comment "$PR" -R "$REPO" --body "agent: pushed the answer; CI and the re-review run next"; exit 0; fi
           title=$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)
           pr=$(gh pr create -R "$REPO" --head "agent/issue-$ISSUE" --title "$title" --body "Closes #$ISSUE"$'\n\n'"Built by the agent lane: $run"$'\n\n'"$proof")
