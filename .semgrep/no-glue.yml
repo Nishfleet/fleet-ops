@@ -36,8 +36,9 @@ rules:
       (python -c, node -e, a heredoc fed to an interpreter). Use a stock tool's
       flag or the product's own code.
     # An interpreter by bare name or by path (/bin/sh, /usr/bin/python3), anywhere
-    # on the line (ExecStart=, validate:, run:), then -c / -e / -p / - or a heredoc.
-    pattern-regex: '(?m)(?<![\w./])(?:(?:/[\w.+-]+)*/)?(?:(?:python[\d.]*|node|perl|ruby|deno|bun)[ \t]+(?:-[cep]|-)(?=[ \t''\x22]|$)|(?:bash|sh|zsh|dash)[ \t]+-[a-z]*c(?=[ \t''\x22]|$)|(?:python[\d.]*|node|perl|ruby|deno|bun|bash|sh|zsh|dash)[ \t]+(?:-[ \t]*)?<<-?[ \t]*[''\x22]?\w+)'
+    # on the line (ExecStart=, validate:, run:, argv: [...]), then -c / -e / -p / - or a
+    # heredoc. The flag may follow a space or a list comma (argv: [/bin/sh, -c, ...]).
+    pattern-regex: '(?m)(?<![\w./])(?:(?:/[\w.+-]+)*/)?(?:(?:python[\d.]*|node|perl|ruby|deno|bun)(?:[ \t]+|[''\x22]?[ \t]*,[ \t]*[''\x22]?)(?:-[cep]|-)(?=[ \t''\x22,\]]|$)|(?:bash|sh|zsh|dash)(?:[ \t]+|[''\x22]?[ \t]*,[ \t]*[''\x22]?)-[a-z]*c(?=[ \t''\x22,\]]|$)|(?:python[\d.]*|node|perl|ruby|deno|bun|bash|sh|zsh|dash)[ \t]+(?:-[ \t]*)?<<-?[ \t]*[''\x22]?\w+)'
     paths:
       include:
         - "/.github/workflows/"

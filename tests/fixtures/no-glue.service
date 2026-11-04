@@ -13,6 +13,12 @@ ExecStart=-/usr/bin/bash -euc 'echo hi'
 ExecStart=/usr/bin/env python3 - <<'PY'
 # ruleid: no-inline-program
   bash <<EOF
+# ruleid: no-inline-program
+    argv: [/bin/sh, -c, "echo hi"]
+# ruleid: no-inline-program
+    argv: ["/usr/bin/python3", "-c", "print(1)"]
+# ok: no-inline-program
+    argv: [/bin/sh, /usr/lib/x/run, -c]
 # ok: no-inline-program
 ExecStart=/usr/bin/restic check
 # ok: no-inline-program
