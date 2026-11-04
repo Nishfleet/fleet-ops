@@ -10,6 +10,8 @@ import configparser
 import re
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parent.parent
 RULES = ROOT / "rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules"
 UNITS = ROOT / "rootfs/etc/systemd/system"
@@ -38,3 +40,24 @@ def test_only_the_deploy_runners_read_the_system_journal() -> None:
     shared = UNITS / "actions.runner.Nishfleet.netcup-fleet-ci-.service.d"
     for conf in [*eval_pool.glob("*.conf"), *shared.glob("*.conf")]:
         assert "SupplementaryGroups" not in conf.read_text(), conf
+
+
+DEPLOY_BOX = ROOT / ".github/workflows/deploy-box.yml"
+
+
+def _run_lines(workflow: str) -> list[str]:
+    steps = yaml.safe_load(workflow)["jobs"]["apply"]["steps"]
+    return [line for s in steps for line in s.get("run", "").splitlines()]
+
+
+def assert_waits_on_the_unit(workflow: str) -> None:
+    lines = _run_lines(workflow)
+    starts = [line for line in lines if "systemctl start fleet-host-config.service" in line]
+    assert starts, "deploy-box must start fleet-host-config.service"
+    assert not any("--no-block" in line for line in starts), "a --no-block start returns before the deploy ends"
+    assert not any(word in line for line in lines for word in ("sleep", "until ", "while ")), "no hand-made wait loop"
+
+
+def test_deploy_box_waits_on_the_unit_itself() -> None:
+    """The job blocks on the start and owns no wait loop of its own (fleet-ops#10935 glue audit)."""
+    assert_waits_on_the_unit(DEPLOY_BOX.read_text())

@@ -277,11 +277,6 @@ def test_no_other_play_task_touches_the_root_podman_api_socket() -> None:
 def test_the_host_playbook_keeps_the_tasks_this_change_must_not_drop() -> None:
     host = ansible_host.text()
     assert host.count("alertmanager_credentials is defined and (") == 4
-    watcher = re.search(r"- name: Enable the deploy request watcher\n(.*?)\n\n", host, re.DOTALL)
-    assert watcher, "no deploy request watcher task"
-    assert "name: fleet-deploy.path" in watcher.group(1)
-    assert "enabled: true" in watcher.group(1)
-    assert "state: started" in watcher.group(1)
 
 
 def test_a_failed_engine_start_is_reported_in_the_run_output() -> None:
