@@ -1,4 +1,8 @@
 name: agent
+# review.yml reads the engine from this name, which GitHub fixes when the run starts, to pick a
+# reviewer from another AI family. Same choice as the Worker step: claude, else pi.
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#run-name
+run-name: "agent #${{ github.event.issue.number || inputs.issue }} engine=${{ inputs.engine == 'claude' && 'claude' || 'pi' }}"
 # The one worker lane (fleet-ops#10935, owner reset 2026-11-01): an issue labelled
 # agent-ready starts one worker on a box runner; the worker opens one PR; CI runs;
 # the merge queue merges; deploy runs on merge. Nothing else lives here.
@@ -202,19 +206,15 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BASE: ${{ needs.claim.outputs.base }}
           PROOF: ${{ needs.work.outputs.proof }}
-          ENGINE: ${{ inputs.engine || 'pi' }}
         run: |
           set -euo pipefail
-          # review.yml reads this line to pick a reviewer from another AI family (decisions
-          # ledger 2026-11-04). Same case as the Worker step: claude, else pi on the router.
-          case "$ENGINE" in claude) builder='builder: claude' ;; *) builder='builder: pi litellm/worker-capable' ;; esac
           gh auth setup-git
           git init -q "$RUNNER_TEMP/push" && cd "$RUNNER_TEMP/push"
           git fetch -q --depth=1 "https://github.com/$REPO.git" "$BASE:refs/heads/base"
           git fetch -q "$RUNNER_TEMP/work.bundle" 'refs/heads/*:refs/work/*'
           git push -q "https://github.com/$REPO.git" "refs/work/agent/issue-$ISSUE:refs/heads/agent/issue-$ISSUE"
           title=$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)
-          pr=$(gh pr create -R "$REPO" --head "agent/issue-$ISSUE" --title "$title" --body "Closes #$ISSUE"$'\n\n'"Built by the agent lane: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"$'\n'"$builder"$'\n\n'"${PROOF:-The worker wrote no run-proof line, so the reviewer bot will not approve.}")
+          pr=$(gh pr create -R "$REPO" --head "agent/issue-$ISSUE" --title "$title" --body "Closes #$ISSUE"$'\n\n'"Built by the agent lane: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"$'\n\n'"${PROOF:-The worker wrote no run-proof line, so the reviewer bot will not approve.}")
           gh pr merge "$pr" -R "$REPO" --auto || true
           gh issue comment "$ISSUE" -R "$REPO" --body "agent: PR $pr"
   park:

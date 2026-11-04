@@ -23,6 +23,7 @@ env:
   REPO: ${{ github.repository }}
   PR: ${{ github.event.workflow_run.pull_requests[0].number }}
   SHA: ${{ github.event.workflow_run.head_sha }}
+  BRANCH: ${{ github.event.workflow_run.head_branch }}
 jobs:
   review:
     # A green CI run on a same-repo pull request. Fork text never reaches the reviewer, and
@@ -51,24 +52,40 @@ jobs:
         run: |
           set -euo pipefail
           gh pr view "$PR" -R "$REPO" --json title,body,author,reviews,comments --jq "$PR_TEXT" > "$RUNNER_TEMP/pr.md"
-          gh pr view "$PR" -R "$REPO" --json body --jq .body > "$RUNNER_TEMP/body.md"
           gh api "repos/$REPO/pulls/$PR" -H 'Accept: application/vnd.github.diff' > "$RUNNER_TEMP/pr.diff"
           [ "$(wc -c < "$RUNNER_TEMP/pr.diff")" -le 400000 ] || { echo "::error::diff over 400000 bytes, split the pull request"; exit 1; }
-      # The reviewer may be any AI but the builder's family (decisions ledger 2026-11-04).
-      # Builders come from facts the pull request carries: lead/* branches are the Claude lead;
-      # agent/issue-* bodies carry agent.yml's `builder:` line, and pi there runs worker-capable,
-      # whose rows are GLM, DeepSeek and MiniMax (tests/test_review_family.py holds that). Grok
-      # builds nothing, so it reviews Claude builds and any PR whose builder is unknown.
+          # GitHub's records of who built the head, which nobody can edit: the branch's push log
+          # (newest first) and the agent.yml runs on main that may have pushed it. A run lasts at
+          # most 35 days. On a public repo both answer without the Actions permission, so a
+          # product repo's call needs no new grant; on a private one they fail and so does the review.
+          # https://docs.github.com/en/rest/repos/repos#list-repository-activities
+          # https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow
+          # https://docs.github.com/en/actions/reference/limits
+          echo '[]' > "$RUNNER_TEMP/pushes.json"; echo '[]' > "$RUNNER_TEMP/runs.json"
+          case "$BRANCH" in agent/issue-*)
+            gh api "repos/$REPO/activity?ref=refs/heads/$BRANCH&per_page=100" > "$RUNNER_TEMP/pushes.json"
+            pushed=$(jq -r --arg sha "$SHA" 'map(select(.after == $sha))[0].timestamp // empty' "$RUNNER_TEMP/pushes.json")
+            [ -z "$pushed" ] || gh api --paginate --jq '.workflow_runs[]' \
+              "repos/$REPO/actions/workflows/agent.yml/runs?branch=main&per_page=100&created=$(date -u -d "$pushed -35 days" +%FT%TZ)..$pushed" | jq -s . > "$RUNNER_TEMP/runs.json" ;;
+          esac
+      # The reviewer may be any AI but the builder's family (decisions ledger 2026-11-04). The
+      # builder comes from GitHub's records, never the editable body: lead/* branches are the
+      # Claude lead. An agent/issue-* head is the lane's when the branch's newest push came from
+      # the lane App and landed this SHA; its builder is the one engine that every agent run named
+      # for the issue carries (agent.yml run-name). pi runs worker-capable, whose rows are GLM,
+      # DeepSeek and MiniMax (tests/test_review_family.py holds that). Grok builds nothing, so it
+      # reviews Claude builds and any PR whose builder is unknown.
       - name: Pick a reviewer from another family than the builder's
         id: pick
-        env:
-          BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
           builder=
           case "$BRANCH" in
             lead/*) builder=claude ;;
-            agent/issue-*) builder=$(tr -d '\r' < "$RUNNER_TEMP/body.md" | awk '$1 == "builder:" { print $2; exit }') ;;
+            agent/issue-*)
+              lane=$(jq -r --arg sha "$SHA" '.[0] | select(.actor.login == "nishfleet-worker[bot]" and .after == $sha) | "yes"' "$RUNNER_TEMP/pushes.json")
+              engines=$(jq -r --arg t "agent #${BRANCH#agent/issue-} engine=" '[.[].display_title | select(startswith($t)) | ltrimstr($t)] | unique | join(" ")' "$RUNNER_TEMP/runs.json")
+              [ "$lane" != yes ] || case "$engines" in pi|claude) builder=$engines ;; esac ;;
           esac
           case "$builder" in
             pi) echo 'provider=litellm'; echo 'model=review-claude'; echo 'name=Claude Sonnet 5.5' ;;
