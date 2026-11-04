@@ -1,4 +1,8 @@
 name: agent
+# review.yml reads the engine from this name, which GitHub fixes when the run starts, to pick a
+# reviewer from another AI family. Same choice as the Worker step: claude, else pi.
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#run-name
+run-name: "agent #${{ github.event.issue.number || inputs.issue }} engine=${{ inputs.engine == 'claude' && 'claude' || 'pi' }}"
 # The one worker lane (fleet-ops#10935, owner reset 2026-11-01): an issue labelled
 # agent-ready starts one worker on a box runner; the worker opens one PR; CI runs;
 # the merge queue merges; deploy runs on merge. Nothing else lives here.

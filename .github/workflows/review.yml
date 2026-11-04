@@ -1,7 +1,8 @@
 name: review
 # The one AI review and the approver bot (decisions ledger 2026-11-04). When CI goes green
-# on a pull request, Grok reads its text and diff against the merge bar, and the bot
-# account posts the result as its review: an approval only when Grok approves, CI is green
+# on a pull request, a reviewer from another AI family than the builder's reads its text and
+# diff against the merge bar, and the bot account posts the result as its review: an approval
+# only when the reviewer approves, CI is green
 # on that head and the body carries a run-proof line. Paths CODEOWNERS keeps for the owner
 # still need his click, because the bot is not their code owner. Nothing from the pull
 # request runs: no checkout, no tools, the diff as text only.
@@ -25,6 +26,7 @@ env:
   REPO: ${{ github.repository }}
   PR: ${{ github.event.workflow_run.pull_requests[0].number }}
   SHA: ${{ github.event.workflow_run.head_sha }}
+  BRANCH: ${{ github.event.workflow_run.head_branch }}
 jobs:
   review:
     # A green CI run on a same-repo pull request. Fork text never reaches the reviewer, and
@@ -41,7 +43,8 @@ jobs:
     timeout-minutes: 20
     permissions: {contents: read, pull-requests: read}
     outputs:
-      review: ${{ steps.grok.outputs.review }}
+      review: ${{ steps.ai.outputs.review }}
+      reviewer: ${{ steps.pick.outputs.name }}
     steps:
       - name: Read the pull request, the bot's last review and the author's answers
         env:
@@ -54,10 +57,52 @@ jobs:
           gh pr view "$PR" -R "$REPO" --json title,body,author,reviews,comments --jq "$PR_TEXT" > "$RUNNER_TEMP/pr.md"
           gh api "repos/$REPO/pulls/$PR" -H 'Accept: application/vnd.github.diff' > "$RUNNER_TEMP/pr.diff"
           [ "$(wc -c < "$RUNNER_TEMP/pr.diff")" -le 400000 ] || { echo "::error::diff over 400000 bytes, split the pull request"; exit 1; }
-      - name: Review on the Grok seat
-        id: grok
+          # GitHub's records of who built the head, which nobody can edit: the branch's push log
+          # (newest first) and the agent.yml runs on main that may have pushed it. A run lasts at
+          # most 35 days. On a public repo both answer without the Actions permission, so a
+          # product repo's call needs no new grant; on a private one they fail and so does the review.
+          # https://docs.github.com/en/rest/repos/repos#list-repository-activities
+          # https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow
+          # https://docs.github.com/en/actions/reference/limits
+          echo '[]' > "$RUNNER_TEMP/pushes.json"; echo '[]' > "$RUNNER_TEMP/runs.json"
+          case "$BRANCH" in agent/issue-*)
+            gh api "repos/$REPO/activity?ref=refs/heads/$BRANCH&per_page=100" > "$RUNNER_TEMP/pushes.json"
+            pushed=$(jq -r --arg sha "$SHA" 'map(select(.after == $sha))[0].timestamp // empty' "$RUNNER_TEMP/pushes.json")
+            [ -z "$pushed" ] || gh api --paginate --jq '.workflow_runs[]' \
+              "repos/$REPO/actions/workflows/agent.yml/runs?branch=main&per_page=100&created=$(date -u -d "$pushed -35 days" +%FT%TZ)..$pushed" | jq -s . > "$RUNNER_TEMP/runs.json" ;;
+          esac
+      # The reviewer may be any AI but the builder's family (decisions ledger 2026-11-04). The
+      # builder comes from GitHub's records, never the editable body: lead/* branches are the
+      # Claude lead. An agent/issue-* head is the lane's when the branch's newest push came from
+      # the lane App and landed this SHA; its builder is the one engine that every agent run named
+      # for the issue carries (agent.yml run-name). pi runs worker-capable, whose rows are GLM,
+      # DeepSeek and MiniMax (tests/test_review_family.py holds that). Grok builds nothing, so it
+      # reviews Claude builds and any PR whose builder is unknown.
+      - name: Pick a reviewer from another family than the builder's
+        id: pick
+        run: |
+          set -euo pipefail
+          builder=
+          case "$BRANCH" in
+            lead/*) builder=claude ;;
+            agent/issue-*)
+              lane=$(jq -r --arg sha "$SHA" '.[0] | select(.actor.login == "nishfleet-worker[bot]" and .after == $sha) | "yes"' "$RUNNER_TEMP/pushes.json")
+              engines=$(jq -r --arg t "agent #${BRANCH#agent/issue-} engine=" '[.[].display_title | select(startswith($t)) | ltrimstr($t)] | unique | join(" ")' "$RUNNER_TEMP/runs.json")
+              [ "$lane" != yes ] || case "$engines" in pi|claude) builder=$engines ;; esac ;;
+          esac
+          case "$builder" in
+            pi) echo 'provider=litellm'; echo 'model=review-claude'; echo 'name=Claude Sonnet 5.5' ;;
+            claude) echo 'provider=xai-oauth'; echo 'model=grok-4.7'; echo 'name=Grok 4.7' ;;
+            *) echo 'provider=xai-oauth'; echo 'model=grok-4.7'; echo 'name=Grok 4.7'
+               echo 'note=The builder could not be determined from this pull request, so Grok reviewed it.' ;;
+          esac >> "$GITHUB_OUTPUT"
+      - name: Review
+        id: ai
         env:
           GH_TOKEN: ${{ github.token }}
+          PROVIDER: ${{ steps.pick.outputs.provider }}
+          MODEL: ${{ steps.pick.outputs.model }}
+          NOTE: ${{ steps.pick.outputs.note }}
         run: |
           set -euo pipefail
           # The merge bar is docs/review-bar.md on fleet-ops main, the only ref the reviewer
@@ -65,8 +110,8 @@ jobs:
           gh api -H 'Accept: application/vnd.github.raw' 'repos/Nishfleet/fleet-ops/contents/docs/review-bar.md?ref=main' > "$RUNNER_TEMP/bar.md"
           { cat "$RUNNER_TEMP/pr.md"; echo; echo '# Diff'; echo '```diff'; cat "$RUNNER_TEMP/pr.diff"; echo '```'; } |
             pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
-              --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider xai-oauth --model grok-4.7 > "$RUNNER_TEMP/review.md"
-          { echo 'review<<REVIEW_END'; cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
+              --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider "$PROVIDER" --model "$MODEL" > "$RUNNER_TEMP/review.md"
+          { echo 'review<<REVIEW_END'; [ -z "$NOTE" ] || printf '%s\n\n' "$NOTE"; cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
   verdict:
     # On a hosted runner, so the bot's token never sits on the box. The token is a secret of
     # environment `approver`, which only main may deploy to; called from a product repo, the
@@ -84,6 +129,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.APPROVER_TOKEN }}
           REVIEW: ${{ needs.review.outputs.review }}
+          REVIEWER: ${{ needs.review.outputs.reviewer }}
           # Test files the pull request removes, renames or deletes lines from. New test files
           # and pure additions pass. tests/test_review_test_guard.py runs this filter.
           # https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files
@@ -108,4 +154,4 @@ jobs:
             edits=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq "$TEST_EDITS")
             [ -z "$edits" ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: this PR deletes or changes existing test lines.'; }
           fi
-          gh api "repos/$REPO/pulls/$PR/reviews" -f commit_id="$SHA" -f event="$event" -f body="Review (Grok 4.7, fleet-ops review.yml):"$'\n\n'"$REVIEW"
+          gh api "repos/$REPO/pulls/$PR/reviews" -f commit_id="$SHA" -f event="$event" -f body="Review ($REVIEWER, fleet-ops review.yml):"$'\n\n'"$REVIEW"
