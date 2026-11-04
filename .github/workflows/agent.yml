@@ -89,14 +89,23 @@ jobs:
             claude) claude -p --permission-mode bypassPermissions < "$RUNNER_TEMP/packet.md" ;;
             *) pi --print --provider litellm --model worker-capable < "$RUNNER_TEMP/packet.md" ;;
           esac
-      - name: Push the branch
-        env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
+      # The worker wrote $dir/.git, so git there runs its config and hooks (core.fsmonitor,
+      # core.hooksPath, url.*.insteadOf). Git's fix: take a clean copy with `git clone
+      # --no-local`, then push from the copy. No step holds the token while git runs in $dir,
+      # and the push ignores ~/.gitconfig, which the worker can also write.
+      # https://git-scm.com/docs/git#_security
+      - name: Commit what the worker left and take a clean copy
         run: |
           set -euo pipefail
           cd "$dir"
           git -c user.name=nishfleet-worker -c user.email=nishfleet-worker@users.noreply.github.com add -A
           git -c user.name=nishfleet-worker -c user.email=nishfleet-worker@users.noreply.github.com commit -qm "$(head -n1 "$RUNNER_TEMP/issue.md") (#$ISSUE)" || true
-          git push -u origin "agent/issue-$ISSUE"
+          rm -rf "$RUNNER_TEMP/push"
+          GIT_CONFIG_GLOBAL=/dev/null git clone -q --no-local --single-branch --branch "agent/issue-$ISSUE" "$dir" "$RUNNER_TEMP/push"
+      - name: Push the branch
+        env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}", GIT_CONFIG_GLOBAL: /dev/null}
+        working-directory: ${{ runner.temp }}/push
+        run: git -c credential.helper='!gh auth git-credential' push -q "https://github.com/$REPO.git" "agent/issue-$ISSUE"
       - name: Open the PR and arm auto-merge
         env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
         run: |
