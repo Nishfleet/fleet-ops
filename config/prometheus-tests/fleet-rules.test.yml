@@ -199,7 +199,7 @@ tests:
 
 
   # SiteDown: a site that fails one probe is silent; one that fails every
-  # probe for 10 minutes pages. Jobs not named site-* are ignored.
+  # probe for 3 minutes pages. Jobs not named site-* are ignored.
   - interval: 30s
     input_series:
       - series: 'probe_success{job="site-0509",instance="https://0509.io/"}'
@@ -209,10 +209,11 @@ tests:
       - series: 'probe_success{job="blackbox-other",instance="https://other.test/"}'
         values: '0x50'
     alert_rule_test:
-      - eval_time: 12m
+      # first failed probe at t=5.5m: pending until t=8.5m
+      - eval_time: 8m
         alertname: SiteDown
         exp_alerts: []
-      - eval_time: 16m
+      - eval_time: 9m
         alertname: SiteDown
         exp_alerts:
           - exp_labels:
@@ -220,8 +221,23 @@ tests:
               job: site-rera
               instance: https://example.test/
             exp_annotations:
-              summary: "https://example.test/ has not answered for 10 minutes"
-              description: "Every blackbox probe of https://example.test/ (job site-rera) failed, or could not run, for 10 minutes."
+              summary: "https://example.test/ has not answered for 3 minutes"
+              description: "Every blackbox probe of https://example.test/ (job site-rera) failed, or could not run, for 3 minutes."
+
+
+  # A flapping site (one good probe in every three at the one-minute
+  # interval) never pages: each good probe resets `for:`.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{job="site-products",instance="https://flap.test/"}'
+        values: '0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SiteDown
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SiteDown
+        exp_alerts: []
 
 
   # SiteDown when the blackbox exporter itself is down: the scrape fails, so
@@ -235,10 +251,10 @@ tests:
       - series: 'up{job="prometheus",instance="localhost:9090"}'
         values: '0x50'
     alert_rule_test:
-      - eval_time: 12m
+      - eval_time: 8m
         alertname: SiteDown
         exp_alerts: []
-      - eval_time: 16m
+      - eval_time: 9m
         alertname: SiteDown
         exp_alerts:
           - exp_labels:
@@ -246,22 +262,23 @@ tests:
               job: site-products
               instance: https://example.test/
             exp_annotations:
-              summary: "https://example.test/ has not answered for 10 minutes"
-              description: "Every blackbox probe of https://example.test/ (job site-products) failed, or could not run, for 10 minutes."
+              summary: "https://example.test/ has not answered for 3 minutes"
+              description: "Every blackbox probe of https://example.test/ (job site-products) failed, or could not run, for 3 minutes."
 
 
-  # SiteDown on a newly added target: three failed probes are not enough
-  # samples to page; ten minutes of them at the one-minute site-products
-  # interval are.
+  # The exporter dies mid-outage: probe_success turns into up == 0 with the
+  # same labels, so the alert keeps firing instead of starting over.
   - interval: 1m
     input_series:
       - series: 'probe_success{job="site-products",instance="https://new.test/"}'
-        values: '0x20'
+        values: '0x5 _x10'
+      - series: 'up{job="site-products",instance="https://new.test/"}'
+        values: '1x5 0x10'
     alert_rule_test:
-      - eval_time: 3m
+      - eval_time: 2m
         alertname: SiteDown
         exp_alerts: []
-      - eval_time: 10m
+      - eval_time: 8m
         alertname: SiteDown
         exp_alerts:
           - exp_labels:
@@ -269,7 +286,33 @@ tests:
               job: site-products
               instance: https://new.test/
             exp_annotations:
-              summary: "https://new.test/ has not answered for 10 minutes"
-              description: "Every blackbox probe of https://new.test/ (job site-products) failed, or could not run, for 10 minutes."
+              summary: "https://new.test/ has not answered for 3 minutes"
+              description: "Every blackbox probe of https://new.test/ (job site-products) failed, or could not run, for 3 minutes."
 
 
+  # RemoteControlDown: one crash it heals after the 5-minute RestartSec stays
+  # silent; a stop pages once 15 minutes hold no active sample.
+  - interval: 30s
+    input_series:
+      - series: 'up{job="node"}'
+        values: '1x80'
+      - series: 'node_systemd_unit_state{name="claude-remote-control.service",state="active"}'
+        values: '1x10 0x10 1x10 0x50'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RemoteControlDown
+        exp_alerts: []
+      # last active sample at t=16m; the window holds none from t=31m30s
+      - eval_time: 31m
+        alertname: RemoteControlDown
+        exp_alerts: []
+      - eval_time: 32m
+        alertname: RemoteControlDown
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              name: claude-remote-control.service
+              state: active
+            exp_annotations:
+              summary: "claude-remote-control.service has not been active for 15 minutes"
+              description: "node_systemd_unit_state{name=\"claude-remote-control.service\",state=\"active\"} has no active sample in the last 15 minutes, or the series is missing."
