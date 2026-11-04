@@ -12,8 +12,6 @@ on:
     workflows: [CI]
     types: [completed]
   workflow_call:
-    secrets:
-      APPROVER_TOKEN: {required: true}
 permissions: {}
 concurrency:
   group: review-${{ github.repository }}-${{ github.event.workflow_run.head_branch }}
@@ -31,7 +29,10 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
       github.event.workflow_run.actor.login != 'dependabot[bot]'
-    runs-on: [self-hosted, agent]
+    # The reviewer's own runner: OS user fleet-reviewer, runner group `reviewer` that only
+    # this workflow on main may use, so the worker lane can neither run here nor change the
+    # pi that writes the verdict. https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access
+    runs-on: {group: reviewer, labels: [self-hosted, reviewer]}
     timeout-minutes: 20
     permissions: {contents: read, pull-requests: read}
     outputs:
@@ -50,31 +51,27 @@ jobs:
           [ "$(wc -c < "$RUNNER_TEMP/pr.diff")" -le 400000 ] || { echo "::error::diff over 400000 bytes, split the pull request"; exit 1; }
       - name: Review on the Grok seat
         id: grok
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/bar.md" <<'BAR'
-          You are the one reviewer of this change. You did not write it. You have no tools: judge the description and the diff alone, and write the review, never a plan.
-          The merge bar, all must hold for APPROVE:
-          1. Required: it fixes something broken or blocked, or a real need named in an issue.
-          2. Zero findings: correct; the smallest change for the cause; no glue (no new hand-rolled script, wrapper, poller or harness; vendor extension points only); no layer, knob or option the cause does not need; tests check behaviour, never wording; matches the surrounding code; public text names no host, home path, credential path, IP or account id.
-          3. Proof: the body shows one real run, or a credible "run-proof: not-needed - <reason>".
-          4. Reserved for the owner whatever the quality: money, billing or payments; secrets or credentials; sign-in; deleting customer data; privacy or legal promises; CODEOWNERS, workflow or review-gate changes; Dependabot major bumps.
-          If "Your last review" lists findings, check each against the new diff and the author's answers: drop the ones fixed or answered well, keep the rest.
-          Write each finding with file, line, one-line reason and the smallest fix. Then the last line, exactly one of:
-          VERDICT: APPROVE
-          VERDICT: CHANGES
-          VERDICT: HOLD-OWNER
-          Use CHANGES for a real finding, never for taste. Use HOLD-OWNER for point 4, or for a finding you keep open after the author answered it.
-          BAR
+          # The merge bar is docs/review-bar.md on fleet-ops main, the only ref the reviewer
+          # runner group lets this workflow run from; CODEOWNERS keeps it for the owner.
+          gh api -H 'Accept: application/vnd.github.raw' 'repos/Nishfleet/fleet-ops/contents/docs/review-bar.md?ref=main' > "$RUNNER_TEMP/bar.md"
           { cat "$RUNNER_TEMP/pr.md"; echo; echo '# Diff'; echo '```diff'; cat "$RUNNER_TEMP/pr.diff"; echo '```'; } |
             pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
               --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider xai-oauth --model grok-4.7 > "$RUNNER_TEMP/review.md"
           { echo 'review<<REVIEW_END'; cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
   verdict:
-    # On a hosted runner, so the bot's token never sits on the box the worker lane shares.
+    # On a hosted runner, so the bot's token never sits on the box. The token is a secret of
+    # environment `approver`, which only main may deploy to; called from a product repo, the
+    # caller's own `approver` environment answers.
     # https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
+    # https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments
+    # https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#using-inputs-and-secrets-in-a-reusable-workflow
     needs: review
     runs-on: ubuntu-latest
+    environment: approver
     timeout-minutes: 5
     permissions: {}
     steps:
