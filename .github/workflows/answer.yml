@@ -1,15 +1,9 @@
 name: answer
-# Hands a review round to the agent lane (agent.yml): when nishfleet-approver requests
-# changes on an agent/issue-* PR, dispatch agent.yml on the default branch with the issue
-# and the PR. The round cannot run here: a pull_request_review run has GITHUB_REF
-# refs/pull/N/merge, which environment `agent` and runner group `agent` (main only)
-# refuse, and its workflow file comes from the PR. A dispatch by GITHUB_TOKEN still starts
-# a run. A file of its own, because the hop needs actions: write and agent.yml may ask for
-# no more than its product callers grant (issues: read).
+# When nishfleet-approver requests changes on an agent/issue-* PR, dispatch agent.yml on main
+# to answer them. It cannot run here, because a pull_request_review run is on the PR's merge
+# ref, which environment `agent` (main only) refuses.
 # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_review
-# https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments#deployment-branches-and-tags
 # https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs
-# https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations#access-and-permissions-for-nested-workflows
 on:
   pull_request_review:
     types: [submitted]

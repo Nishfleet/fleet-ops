@@ -410,8 +410,8 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 # The review job's Claude (decisions ledger 2026-11-04): it reviews lane PRs, whose builders are
-# GLM, DeepSeek or MiniMax. No router fallback: on a failure or the 20 USD/day wall, review.yml
-# moves on to Grok, then review-qwen. Only the review runner's virtual key lists this group.
+# GLM, DeepSeek or MiniMax. On a failure or the 20 USD/day wall it falls back to review-qwen.
+# Only the review runner's virtual key lists this group.
 - model_name: review-claude
   litellm_params:
     model: anthropic/claude-sonnet-5-5
@@ -430,8 +430,8 @@ model_list:
     cache_proof: "Nothing repeats: each call is a new diff, and the shared system prompt (docs/review-bar.md) is under the 1024-token minimum cacheable prompt (docs.claude.com/en/docs/build-with-claude/prompt-caching)."
     id: anthropic-sonnet55-review
 # The review job's last reviewer (owner 2026-11-04: any family but the builder's, never MiniMax).
-# Qwen builds nothing, so it may review every PR. Its own group, no fallback either way, so a
-# review never reaches a builder's row. Alibaba Token Plan is prepaid, so no max_budget.
+# Qwen builds nothing, so it may review every PR. It falls back to nothing, so a review never
+# reaches a builder's row. Alibaba Token Plan is prepaid, so no max_budget.
 - model_name: review-qwen
   litellm_params:
     model: openai/qwen3.8-max
@@ -473,6 +473,7 @@ router_settings:
     - worker-cheap: [worker-capable]
     - assistant: [worker-capable]
     - tether: [assistant]
+    - review-claude: [review-qwen]
   cooldown_time: 60
   allowed_fails: 1
   # A 401 or 429 parks its row at once; with allowed_fails set, it would only count (fleet-ops#10756, #11723, docs.litellm.ai/docs/routing#cooldowns).

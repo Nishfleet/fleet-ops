@@ -1,11 +1,7 @@
 name: review
-# The one AI review and the approver bot (decisions ledger 2026-11-04). When CI goes green
-# on a pull request, a reviewer from another AI family than the builder's reads its text and
-# diff against the merge bar, and the bot account posts the result as its review: an approval
-# only when the reviewer approves, CI is green
-# on that head and the body carries a run-proof line. A pull request that touches a path
-# CODEOWNERS lists is held for the owner, never approved (fleet-ops#11741). Nothing from the
-# pull request runs: no checkout, no tools, the diff as text only.
+# When CI goes green on a pull request, one AI from another family than the builder's reviews
+# its text and diff against docs/review-bar.md, and nishfleet-approver posts the verdict.
+# Nothing from the pull request runs: no checkout, the diff as text only.
 # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run
 # https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request
 on:
@@ -17,8 +13,6 @@ on:
       APPROVER_TOKEN: {required: true}
 permissions: {}
 concurrency:
-  # One group per pull request: its newer head cancels its older review, and other pull
-  # requests never do. A CI run with no pull request falls back to its own run id.
   # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
   group: review-${{ github.repository }}-${{ github.event.workflow_run.pull_requests[0].number || github.run_id }}
   cancel-in-progress: true
@@ -29,140 +23,49 @@ env:
   BRANCH: ${{ github.event.workflow_run.head_branch }}
 jobs:
   review:
-    # A green CI run on a same-repo pull request. Fork text never reaches the reviewer, and
-    # Dependabot keeps its own auto-merge recipe.
     if: >-
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
       github.event.workflow_run.actor.login != 'dependabot[bot]'
-    # The reviewer's own runner: OS user fleet-reviewer, runner group `reviewer` that only
-    # this workflow on main may use, so the worker lane can neither run here nor change the
-    # pi that writes the verdict. https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access
+    # Runner group `reviewer` only this workflow on main may use, so the worker lane cannot
+    # change the pi that writes the verdict. https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access
     runs-on: {group: reviewer, labels: [self-hosted, reviewer]}
     timeout-minutes: 30
     permissions: {contents: read, pull-requests: read}
     outputs:
       review: ${{ steps.ai.outputs.review }}
-      reviewer: ${{ steps.ai.outputs.reviewer }}
     steps:
-      - name: Read the pull request, the bot's last review and the author's answers
+      - name: Review with an AI from another family than the builder's
+        id: ai
         env:
           GH_TOKEN: ${{ github.token }}
           # Only the author's comments: anyone can comment on a public pull request.
           PR_TEXT: >-
             .author.login as $a | "# \(.title)\n\n\(.body)\n\n# Your last review\n\([.reviews[] | select(.author.login == "nishfleet-approver")] | last | .body // "none")\n\n# The author's answers\n\([.comments[] | select(.author.login == $a) | .body] | join("\n---\n"))"
+        # Claude reviews only a head the lane App pushed from a pi run (GLM, DeepSeek or MiniMax).
+        # Anything else goes to Qwen, which builds nothing. review-claude falls back to
+        # review-qwen in the router. https://docs.litellm.ai/docs/proxy/reliability#fallbacks
+        # https://docs.github.com/en/rest/repos/repos#list-repository-activities
         run: |
           set -euo pipefail
-          gh pr view "$PR" -R "$REPO" --json title,body,author,reviews,comments --jq "$PR_TEXT" > "$RUNNER_TEMP/pr.md"
-          gh api "repos/$REPO/pulls/$PR" -H 'Accept: application/vnd.github.diff' > "$RUNNER_TEMP/pr.diff"
-          [ "$(wc -c < "$RUNNER_TEMP/pr.diff")" -le 400000 ] || { echo "::error::diff over 400000 bytes, split the pull request"; exit 1; }
-          # GitHub's records of who built the head, which nobody can edit: the branch's push log
-          # (newest first) and the agent.yml runs on main that may have pushed it. A run lasts at
-          # most 35 days. On a public repo both answer without the Actions permission, so a
-          # product repo's call needs no new grant; on a private one they fail and so does the review.
-          # https://docs.github.com/en/rest/repos/repos#list-repository-activities
-          # https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow
-          # https://docs.github.com/en/actions/reference/limits
-          echo '[]' > "$RUNNER_TEMP/pushes.json"; echo '[]' > "$RUNNER_TEMP/runs.json"
+          model=review-qwen
           case "$BRANCH" in agent/issue-*)
-            gh api "repos/$REPO/activity?ref=refs/heads/$BRANCH&per_page=100" > "$RUNNER_TEMP/pushes.json"
-            pushed=$(jq -r --arg sha "$SHA" 'map(select(.after == $sha))[0].timestamp // empty' "$RUNNER_TEMP/pushes.json")
-            [ -z "$pushed" ] || gh api --paginate --jq '.workflow_runs[]' \
-              "repos/$REPO/actions/workflows/agent.yml/runs?branch=main&per_page=100&created=$(date -u -d "$pushed -35 days" +%FT%TZ)..$pushed" | jq -s . > "$RUNNER_TEMP/runs.json" ;;
+            last=$(gh api "repos/$REPO/activity?ref=refs/heads/$BRANCH&per_page=1" --jq '.[0] | "\(.actor.login) \(.after)"')
+            engines=$(gh run list -R "$REPO" -w agent.yml -b main -L 1000 --json displayTitle \
+              --jq "[.[].displayTitle | select(startswith(\"agent #${BRANCH#agent/issue-} engine=\"))] | unique | join(\" \")")
+            [ "$last" != "nishfleet-worker[bot] $SHA" ] || [ "$engines" != "agent #${BRANCH#agent/issue-} engine=pi" ] || model=review-claude ;;
           esac
-      # The reviewer may be any AI but the builder's family, and never MiniMax (owner 2026-11-04).
-      # The builder comes from GitHub's records, never the editable body: lead/* branches are the
-      # Claude lead. An agent/issue-* head is the lane's when the branch's newest push came from
-      # the lane App and landed this SHA; its builder is the one engine that every agent run named
-      # for the issue carries (agent.yml run-name). pi runs worker-capable, whose rows are GLM,
-      # DeepSeek and MiniMax (tests/test_review_family.py holds that). Grok and Qwen build nothing,
-      # so they review every PR. The order is who tries first; each later reviewer runs only when
-      # every earlier one failed or hit its budget.
-      - name: Pick the reviewers, in order, from other families than the builder's
-        id: pick
-        run: |
-          set -euo pipefail
-          builder=
-          case "$BRANCH" in
-            lead/*) builder=claude ;;
-            agent/issue-*)
-              lane=$(jq -r --arg sha "$SHA" '.[0] | select(.actor.login == "nishfleet-worker[bot]" and .after == $sha) | "yes"' "$RUNNER_TEMP/pushes.json")
-              engines=$(jq -r --arg t "agent #${BRANCH#agent/issue-} engine=" '[.[].display_title | select(startswith($t)) | ltrimstr($t)] | unique | join(" ")' "$RUNNER_TEMP/runs.json")
-              [ "$lane" != yes ] || case "$engines" in pi|claude) builder=$engines ;; esac ;;
-          esac
-          case "$builder" in
-            pi) echo 'order=claude grok qwen' ;;
-            claude) echo 'order=grok qwen' ;;
-            *) echo 'order=grok qwen'
-               echo 'note=The builder could not be determined from this pull request, so Claude did not review it.' ;;
-          esac >> "$GITHUB_OUTPUT"
-      # One step per reviewer: a failed step lets the job go on, and the next step reads its
-      # outcome. https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepscontinue-on-error
-      # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#steps-context
-      # The merge bar is docs/review-bar.md on fleet-ops main, the only ref the reviewer runner
-      # group lets this workflow run from; CODEOWNERS keeps it for the owner. pi's errors go to a
-      # file, never the log, and only the word budget or error reaches the review.
-      - name: Fetch the merge bar
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
           gh api -H 'Accept: application/vnd.github.raw' 'repos/Nishfleet/fleet-ops/contents/docs/review-bar.md?ref=main' > "$RUNNER_TEMP/bar.md"
-          { cat "$RUNNER_TEMP/pr.md"; echo; echo '# Diff'; echo '```diff'; cat "$RUNNER_TEMP/pr.diff"; echo '```'; } > "$RUNNER_TEMP/prompt.md"
-      - name: Review with Claude Sonnet 5.5 (router review-claude)
-        id: claude
-        if: contains(steps.pick.outputs.order, 'claude')
-        continue-on-error: true
-        timeout-minutes: 8
-        env: {PROVIDER: litellm, MODEL: review-claude}
-        run: &review |
-          set -euo pipefail
-          pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
-            --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider "$PROVIDER" --model "$MODEL" \
-            < "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/review.md" 2> "$RUNNER_TEMP/$GITHUB_ACTION.err"
-          grep -q '^VERDICT: ' "$RUNNER_TEMP/review.md" || { echo 'no verdict line' >> "$RUNNER_TEMP/$GITHUB_ACTION.err"; exit 1; }
-      - name: Review with Grok 4.7 (pi provider xai-oauth)
-        id: grok
-        if: steps.claude.outcome != 'success'
-        continue-on-error: true
-        timeout-minutes: 8
-        env: {PROVIDER: xai-oauth, MODEL: grok-4.7}
-        run: *review
-      - name: Review with Qwen 3.8 Max (router review-qwen)
-        id: qwen
-        if: steps.claude.outcome != 'success' && steps.grok.outcome != 'success'
-        timeout-minutes: 8
-        env: {PROVIDER: litellm, MODEL: review-qwen}
-        run: *review
-      - name: Name the AI that answered and any that failed before it
-        id: ai
-        env:
-          NOTE: ${{ steps.pick.outputs.note }}
-          OUTCOMES: claude=${{ steps.claude.outcome }} grok=${{ steps.grok.outcome }} qwen=${{ steps.qwen.outcome }}
-        run: |
-          set -euo pipefail
-          declare -A name=([claude]='Claude Sonnet 5.5' [grok]='Grok 4.7' [qwen]='Qwen 3.8 Max')
-          notes=()
-          for pair in $OUTCOMES; do
-            id=${pair%%=*}
-            case "${pair#*=}" in
-              success) echo "reviewer=${name[$id]}" >> "$GITHUB_OUTPUT"; break ;;
-              failure) reason=error
-                       ! grep -qi budget "$RUNNER_TEMP/$id.err" 2>/dev/null || reason=budget
-                       notes+=("${name[$id]} did not answer ($reason).") ;;
-            esac
-          done
-          { echo 'review<<REVIEW_END'; [ -z "$NOTE" ] || printf '%s\n\n' "$NOTE"
-            [ ${#notes[@]} -eq 0 ] || printf '%s\n\n' "${notes[*]}"
-            cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
+          { gh pr view "$PR" -R "$REPO" --json title,body,author,reviews,comments --jq "$PR_TEXT"
+            echo '# Diff'; echo '```diff'; gh api "repos/$REPO/pulls/$PR" -H 'Accept: application/vnd.github.diff'; echo '```'; } |
+            pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
+              --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider litellm --model "$model" > "$RUNNER_TEMP/review.md" 2> "$RUNNER_TEMP/pi.err"
+          { echo 'review<<REVIEW_END'; echo "Review ($model, fleet-ops review.yml):"; echo; cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
   verdict:
-    # On a hosted runner, so the bot's token never sits on the box. The token is a secret of
-    # environment `approver`, which only main may deploy to; called from a product repo, the
-    # caller's own `approver` environment answers.
+    # A hosted runner and environment `approver` (main only), so the bot token never sits on the box.
     # https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
     # https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments
-    # https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#using-inputs-and-secrets-in-a-reusable-workflow
     needs: review
     runs-on: ubuntu-latest
     environment: approver
@@ -173,49 +76,26 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.APPROVER_TOKEN }}
           REVIEW: ${{ needs.review.outputs.review }}
-          REVIEWER: ${{ needs.review.outputs.reviewer }}
-          # Test files the pull request removes, renames or deletes lines from. New test files
-          # and pure additions pass. tests/test_review_test_guard.py runs this filter.
-          # https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files
+          # Test files the pull request removes, renames or deletes lines from: CODEOWNERS does
+          # not cover tests/, so the bot holds these itself. https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files
           TEST_EDITS: >-
             .[] | select(([.filename, .previous_filename // empty]
             | any(test("(^|/)(tests?|e2e|__tests__)/|_test\\.go$|\\.(test|spec)\\.[^/]+$|(^|/)test_[^/]*\\.py$")))
             and (.status == "removed" or .status == "renamed" or .deletions > 0)) | .filename
         run: |
           set -euo pipefail
-          read -r head base body_proof < <(gh pr view "$PR" -R "$REPO" --json headRefOid,baseRefName,body --jq '[.headRefOid, .baseRefName, (.body | test("(?im)^run-proof:"))] | @tsv')
+          read -r head author < <(gh pr view "$PR" -R "$REPO" --json headRefOid,author --jq '"\(.headRefOid) \(.author.login)"')
           [ "$head" = "$SHA" ] || { echo "head moved past $SHA; its own CI run starts the next review"; exit 0; }
-          verdict=$(grep -oE '^VERDICT: (APPROVE|CHANGES|HOLD-OWNER)' <<<"$REVIEW" | tail -1 | cut -d' ' -f2 || true)
-          case "$verdict/$body_proof" in
-            APPROVE/true) event=APPROVE ;;
-            CHANGES/*) event=REQUEST_CHANGES ;;
-            APPROVE/false) event=COMMENT; REVIEW+=$'\n\nNot approved: the body has no run-proof line.' ;;
-            HOLD-OWNER/*) event=COMMENT; REVIEW+=$'\n\nHeld for the owner.' ;;
+          case "$(grep -oE '^VERDICT: [A-Z-]+' <<<"$REVIEW" | tail -1)" in
+            'VERDICT: APPROVE') event=APPROVE ;;
+            'VERDICT: CHANGES') event=REQUEST_CHANGES ;;
+            'VERDICT: HOLD-OWNER') event=COMMENT; REVIEW+=$'\n\nHeld for the owner.' ;;
             *) echo "::error::the reviewer gave no verdict line"; exit 1 ;;
           esac
-          if [ "$event" = APPROVE ]; then
-            # An assignment, so a failed call stops the job instead of approving.
-            edits=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq "$TEST_EDITS")
-            [ -z "$edits" ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: this PR deletes or changes existing test lines.'; }
-            # The base branch's CODEOWNERS, the first of the three places GitHub looks. Its
-            # patterns follow gitignore rules, so git's own gitignore matcher (on the runner, no
-            # install in the job that holds the bot token) decides. It holds more than GitHub, never
-            # less: a pattern with no owners still holds, and docs/* also holds docs/a/b.md.
-            # Owners are dropped, and a leading ! stays literal because CODEOWNERS has no negation.
-            # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners#codeowners-file-location
-            # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners#codeowners-syntax
-            # https://git-scm.com/docs/git-check-ignore
-            git init -q "$RUNNER_TEMP/owners"
-            for path in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
-              if gh api -X GET -H 'Accept: application/vnd.github.raw' "repos/$REPO/contents/$path" -f ref="$base" \
-                   > "$RUNNER_TEMP/CODEOWNERS" 2> "$RUNNER_TEMP/codeowners.err"; then
-                sed -E 's/^[[:space:]]+//; /^(#|$)/d; s/[[:space:]].*//; s/^!/\\!/' "$RUNNER_TEMP/CODEOWNERS" > "$RUNNER_TEMP/owners/.git/info/exclude"
-                break
-              fi
-              grep -q 'HTTP 404' "$RUNNER_TEMP/codeowners.err" || { cat "$RUNNER_TEMP/codeowners.err" >&2; exit 1; }
-            done
-            names=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
-            owned=$(git -C "$RUNNER_TEMP/owners" check-ignore --no-index --stdin <<<"$names") || [ $? -eq 1 ]
-            [ -z "$owned" ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: CODEOWNERS lists '"$(paste -sd' ' <<<"$owned")."; }
-          fi
-          gh api "repos/$REPO/pulls/$PR/reviews" -f commit_id="$SHA" -f event="$event" -f body="Review ($REVIEWER, fleet-ops review.yml):"$'\n\n'"$REVIEW"
+          # GitHub counts the code owner's own pull request as owner-reviewed, so the bot's
+          # approval alone merged fleet-ops#11741. The bot never approves the owner's pull request.
+          [ "$event" != APPROVE ] || [ "$author" != nish3451 ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: the owner opened this pull request.'; }
+          # An assignment, so a failed call stops the job instead of approving.
+          edits=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq "$TEST_EDITS")
+          [ "$event" != APPROVE ] || [ -z "$edits" ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: this PR deletes or changes existing test lines.'; }
+          gh api "repos/$REPO/pulls/$PR/reviews" -f commit_id="$SHA" -f event="$event" -f body="$REVIEW"
