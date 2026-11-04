@@ -16,4 +16,3 @@ def _router_litellm_is_pinned(request):
     module_file = getattr(request.module, "__file__", None)
     if module_file is not None:
         require_pinned_litellm(module_file)
-import os
