@@ -3,6 +3,7 @@
 # - Ubuntu packages: unattended-upgrades (Ubuntu's default, never reboots).
 # - Container images: digest-pinned, bumped by Renovate PRs (.github/renovate.json).
 # - Claude Code: its own background auto-updater.
+# - Cua Spaces: pinned in host.yml, bumped by Renovate PRs, installed by the host play.
 - name: Update npm and uv tools
   hosts: localhost
   connection: local

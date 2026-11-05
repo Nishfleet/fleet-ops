@@ -1,12 +1,29 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "enabledManagers": ["quadlet"],
+  "enabledManagers": ["quadlet", "custom.regex"],
+  "customManagers": [
+    {
+      "description": "Cua Spaces has no apt repository: its release is pinned in the host play.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^ansible/host\\.yml$/"],
+      "matchStrings": ["cua_spaces_version: (?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "cua-spaces",
+      "packageNameTemplate": "trycua/cua",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^cua-spaces-v(?<version>\\d+\\.\\d+\\.\\d+)$"
+    }
+  ],
   "packageRules": [
     {
       "description": "A Postgres major needs a dump and restore, not an Image= bump.",
       "matchPackageNames": ["/(^|/)postgres$/"],
       "matchUpdateTypes": ["major"],
       "enabled": false
+    },
+    {
+      "description": "A Cua Spaces release is taken only once it is 3 days old, as the old daily update did.",
+      "matchDepNames": ["cua-spaces"],
+      "minimumReleaseAge": "3 days"
     }
   ]
 }

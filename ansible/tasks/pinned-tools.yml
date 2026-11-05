@@ -40,6 +40,54 @@
     - /tmp/tofu.tar.gz
     - /tmp/tofu
 
+# Cua Spaces at the version pinned in host.yml (cua_spaces_version). The .deb is
+# checked against the release's own checksums.txt (get_url's checksum URL form)
+# and installed with apt, which downgrades too, so a revert of a bump is the
+# rollback. Nothing is restarted, because the vendor's .deb restarts nothing on
+# an upgrade (apps/cua-spaces-desktop/README.md "Upgrade and uninstall"; its
+# prerm acts only on remove and purge): Spaces keep running, and the host
+# service runs its own copy of cua-spacesd from ~/.cua/host/bin. tasks/tether.yml
+# then readies tether's Space on the new version. A failure is recorded and
+# fails the run in final-checks.yml, after the rest of the play applied.
+- name: Install the pinned Cua Spaces release, or record why it failed
+  tags: [cua-spaces]
+  vars:
+    cua_spaces_deb: "cua-spaces-{{ cua_spaces_version }}-linux-x64.deb"
+    cua_spaces_release: "https://github.com/trycua/cua/releases/download/cua-spaces-v{{ cua_spaces_version }}"
+  block:
+    - name: Read the installed Cua Spaces version
+      ansible.builtin.command:
+        argv: [dpkg-query, --show, --showformat, "${Version}", cua-spaces]
+      register: cua_spaces_installed
+      changed_when: false
+      failed_when: cua_spaces_installed.rc not in [0, 1]
+      check_mode: false
+
+    - name: Download the pinned Cua Spaces package, checked against the release checksums
+      ansible.builtin.get_url:
+        url: "{{ cua_spaces_release }}/{{ cua_spaces_deb }}"
+        dest: "/var/cache/{{ cua_spaces_deb }}"
+        checksum: "sha256:{{ cua_spaces_release }}/checksums.txt"
+        mode: "0644"
+      when: cua_spaces_installed.stdout != cua_spaces_version
+
+    - name: Install the pinned Cua Spaces package
+      ansible.builtin.apt:
+        deb: "/var/cache/{{ cua_spaces_deb }}"
+        lock_timeout: 300
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      when: cua_spaces_installed.stdout != cua_spaces_version
+
+    - name: Drop the Cua Spaces download
+      ansible.builtin.file:
+        path: "/var/cache/{{ cua_spaces_deb }}"
+        state: absent
+  rescue:
+    - name: Record that Cua Spaces could not be installed
+      ansible.builtin.set_fact:
+        cua_spaces_install_failure: "{{ ansible_failed_task.name }}: {{ ansible_failed_result.msg | default('failed') }}"
+
 # enabled only: never restarts the Remote Control link this playbook may run
 # under, so a change to the unit file it installs is staged, not applied.
 # This task adds no reload of its own. The restart, and the reload before
