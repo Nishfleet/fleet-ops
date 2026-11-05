@@ -42,6 +42,7 @@
 - name: Give nish the aiostreams data
   ansible.builtin.file:
     path: /srv/aiostreams/data
+    state: directory
     owner: nish
     group: nish
     recurse: true
