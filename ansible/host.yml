@@ -376,3 +376,9 @@
       ansible.builtin.systemd_service:
         name: prometheus-blackbox-exporter.service
         state: restarted
+
+    # json_exporter reads its config only at start.
+    - name: Restart json exporter
+      ansible.builtin.systemd_service:
+        name: prometheus-json-exporter.service
+        state: restarted

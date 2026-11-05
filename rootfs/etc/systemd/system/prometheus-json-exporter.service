@@ -1,0 +1,22 @@
+# prometheus-community/json_exporter (fleet-ops#11799): feeds the agent-runs scrape job
+# that AgentRunFailureShare reads. No apt package on Ubuntu 24.04, so the play installs
+# the pinned release binary (tasks/alerting.yml). Upstream: https://github.com/prometheus-community/json_exporter
+# To switch it off: delete this unit, its tasks in tasks/alerting.yml, the agent-runs job
+# in prometheus.yml, json_exporter.yml, the AgentRunFailureShare alert and its test.
+[Unit]
+Description=Prometheus JSON exporter (agent run counts from the GitHub API)
+Documentation=https://github.com/prometheus-community/json_exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/opt/json_exporter-0.8.0.linux-amd64/json_exporter --config.file=/etc/prometheus/json_exporter.yml --web.listen-address=127.0.0.1:7979
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
