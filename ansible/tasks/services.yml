@@ -236,8 +236,3 @@
     group: root
     mode: "0644"
 
-# The router's Redis is labelled AutoUpdate=registry; podman's own timer pulls it.
-- name: Enable podman's image auto-update for nish's containers
-  ansible.builtin.command:
-    argv: [systemctl, --user, --machine=nish@.host, enable, --now, podman-auto-update.timer]
-  changed_when: false
