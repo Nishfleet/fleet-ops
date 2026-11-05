@@ -104,23 +104,6 @@
   when: drive_entry.rc != 0 or (drive_mcp_words | reject('in', drive_entry.stdout ~ drive_entry.stderr) | list | length) > 0
   timeout: 60
 
-- name: Look for Codex's config
-  become: true
-  become_user: nish
-  ansible.builtin.stat:
-    path: "{{ nish_home }}/.codex/config.toml"
-  register: codex_config
-
-- name: Drop Codex's dead camofox entry and its subtables
-  become: true
-  become_user: nish
-  ansible.builtin.replace:
-    path: "{{ nish_home }}/.codex/config.toml"
-    regexp: '(?m)^\[mcp_servers\.camofox-browser(?:\.[^\]\n]+)?\]\n(?:[^\[\n][^\n]*\n|\n)*'
-    replace: ""
-  when: codex_config.stat.exists and codex_config.stat.isreg
-  diff: false
-
 - name: Read Hermes' config
   become: true
   become_user: nish
