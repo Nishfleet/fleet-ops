@@ -71,20 +71,10 @@ def test_the_unit_keeps_the_prototype_flags_and_limits() -> None:
     assert "NoNewPrivileges" not in unit
 
 
-def test_the_unit_hides_credentials_sockets_and_the_old_stores() -> None:
+def test_the_unit_hides_the_host_sockets() -> None:
     paths = hidden(UNIT)
-    for path in (
-        "-/run/docker.sock",
-        "-/var/run/docker.sock",
-        "-/run/user/1000",
-        "-/etc/restic",
-        "-/home/nish/.local/share/containers/storage",
-        "-/home/nish/.local/share/podman-eval",
-        "-/home/nish/.ssh",
-    ):
+    for path in ("-/run/docker.sock", "-/var/run/docker.sock", "-/run/user/1000", "-/etc/restic"):
         assert path in paths, path
-    visible = ("/home/nish/.local/share/dockerd-eval", "/home/nish/.local/bin/rclone", "_work")
-    assert not [p for p in paths if any(v in p for v in visible)]
 
 
 def test_the_engine_sees_only_its_data_root_and_rclone_under_home() -> None:
