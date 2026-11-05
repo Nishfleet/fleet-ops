@@ -44,6 +44,17 @@
   changed_when: "'already installed' not in (hermes_gateway_install.stdout | lower)"
   when: not ansible_check_mode
 
+# The installer runs as root and loads config.yaml, and every config load saves
+# a "good" copy under $HERMES_HOME/backups/config, so that folder was created
+# root-owned and nish's Hermes could no longer write its config backups.
+- name: Give the Hermes config backups back to nish after the root installer
+  ansible.builtin.file:
+    path: "{{ nish_home }}/.hermes/backups"
+    state: directory
+    owner: nish
+    group: nish
+    recurse: true
+
 # The kept relay listener and Hermes (fleet-ops#10935).
 - name: Enable the relay listener and Hermes
   ansible.builtin.systemd_service:
