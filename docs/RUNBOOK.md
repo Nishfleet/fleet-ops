@@ -226,15 +226,13 @@ fails the `.path` unit with result `unit-start-limit-hit` the moment the service
 spends its start limit, and a `.path` unit cannot restart itself, so the wait for a Grafana
 restart lives inside the one start (fleet-ops#10848).
 
-Cloudflare cost alarm (fleet-ops#9355): `config/grafana/provisioning/alerting/cloudflare-spend.yaml`
-evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy-ci
-analytics token, from `~/.config/cloudflare/deploy-ci.env`). A firing rule opens a fleet-ops
-issue labelled `agent-ready` and `priority-now` through the webhook contact point
-`cloudflare-spend-dispatch`. The webhook
-sends a GitHub App installation token (issues:write on Nishfleet/fleet-ops only), see
-"Grafana's GitHub token" below. `grafana_alerting_notifications_failed_total` rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a rule by typing a past
-window into its GraphQL `filter:` in place of the `${__timeFrom:date:iso}` and `${__timeTo:date:iso}`
-macros, run it, then restore the file; close the test issue at once, the dispatcher claims it.
+Cloudflare cost alarm (fleet-ops#9355): `config/grafana/provisioning/alerting/cloudflare-billed-cost.yaml`,
+one rule. Every hour it reads Cloudflare's billable-usage API through the Infinity data source
+`fleet-cloudflare` (the `vps-grafana` token, Billing Read). It fires when any one service bills
+more than 0.10 USD on the latest UTC day Cloudflare has published, so a charge is caught the
+morning after it starts. A firing rule files a fleet-ops issue through the catch-all policy
+(`fleet-alert-dispatch`). To replay a day, POST the rule's `data` to Grafana's `/api/v1/eval`
+with the query's `source` set to `inline` and the API rows up to that day as its `data`.
 
 Who gets paged (fleet-ops#9445). Nish's contract is that only a real outage, a money problem,
 or something only he can act on interrupts him. Every alert rule carries a `severity` label and

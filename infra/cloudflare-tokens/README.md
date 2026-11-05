@@ -37,7 +37,7 @@ now in `main.tf`, so the weekly apply no longer destroys it; `seo-fix-kit` is ne
 | `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, D1 Write, Account Settings Read | none | GitHub-hosted (`deploy.yml`, `d1-export.yml`) | none |
 | `seo-fix-kit` | seo-fix-kit | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`: D1 migrations apply, `wrangler deploy` with custom domains and a queue consumer) | none |
 | `fleet_console` | fleet-console-worker | `CLOUDFLARE_API_TOKEN` (repo), plus a repo `CLOUDFLARE_ACCOUNT_ID` | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
-| `vps-grafana` | the VPS (no repo) | `CLOUDFLARE_API_TOKEN` in `~/.config/cloudflare/deploy-ci.env`, a 0600 file (no GitHub secret) | Account Analytics Read | none | the VPS host: Grafana's `fleet-cloudflare` data source, the Cloudflare cost alarm (fleet-ops#9355) | VPS addresses (`vps_only`) |
+| `vps-grafana` | the VPS (no repo) | `CLOUDFLARE_API_TOKEN` in `~/.config/cloudflare/deploy-ci.env`, a 0600 file (no GitHub secret) | Account Analytics Read, Billing Read | none | the VPS host: Grafana's `fleet-cloudflare` data source, the Cloudflare cost alarm (fleet-ops#9355) | VPS addresses (`vps_only`) |
 
 The `0509-support-inbox` entry writes to `mailbox`, the same repo under its new
 name. The key keeps its old name so the Cloudflare token is not replaced; the
@@ -56,7 +56,7 @@ Podman secret that the `fleet-cloudflare` data source uses. Nothing downstream
 changes, and the value never enters a GitHub secret, a log line or argv.
 
 **One token is IP-locked.** `vps-grafana` is: every read of it is a Cloudflare
-GraphQL analytics query from the VPS host, which has a fixed address, and the
+GraphQL analytics or billable-usage query from the VPS host, which has a fixed address, and the
 lock is the config's own `vps_only = true` (see "VPS-only tokens" below). Every
 other token is not, because its consumer job runs on `ubuntu-latest` and
 GitHub-hosted runners have no fixed address (an IP-locked deploy token failed on

@@ -28,8 +28,8 @@ def test_vps_token_is_ip_locked_and_read_only():
     assert "vps_only    = true" in entry
     assert re.search(r"zone\s+= \[\]", entry)
     groups = re.search(r"account\s+= \[([^\]]*)\]", entry).group(1)
-    assert set(re.findall(r'"([^"]+)"', groups)) == {"Account Analytics Read"}, (
-        "the consumer queries account-level GraphQL datasets only, so a wider group is unused access"
+    assert set(re.findall(r'"([^"]+)"', groups)) == {"Account Analytics Read", "Billing Read"}, (
+        "the consumer reads account GraphQL analytics and the billable-usage API only, so a wider group is unused access"
     )
 
 
