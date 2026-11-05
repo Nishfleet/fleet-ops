@@ -230,6 +230,21 @@
     - hermes_installed_sandbox_dropin.stat.exists
     - "hermes_installed_sandbox_dropin.stat.mtime | int > ([hermes_gateway_start.stdout | int, hermes_serve_start.stdout | int] | min)"
 
+# hermes-serve reads its unit (its PATH pins the managed Node) only at start, and
+# the unit tree copy only reloads systemd, so a changed unit restarts serve here
+# by the same mtime-against-start comparison as the drop-in above.
+- name: Read the installed hermes-serve unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/hermes-serve.service
+  register: hermes_serve_unit
+
+- name: Restart hermes-serve onto its installed unit
+  ansible.builtin.systemd_service:
+    name: hermes-serve.service
+    state: restarted
+    daemon_reload: true
+  when: "hermes_serve_unit.stat.mtime | int > hermes_serve_start.stdout | int"
+
 # The router container mounts this copy. A changed file restarts the router.
 - name: Install the router config
   ansible.builtin.copy:
