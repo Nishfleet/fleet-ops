@@ -60,6 +60,8 @@ def test_hermes_login_unit_writes_the_hosts_yml_gh_reads(mint):
     text = re.sub(r"^Environment=APP_KEY=.*$", f"Environment=APP_KEY={mint.dir / 'app.pem'}", text, flags=re.MULTILINE)
     text = re.sub(r"^OnFailure=.*\n", "", text, flags=re.MULTILINE)
     text = re.sub(r"^Environment=GITHUB_API_URL=.*$", f"Environment=GITHUB_API_URL=http://127.0.0.1:{mint.port}", text, flags=re.MULTILINE)
+    text = re.sub(r"^Environment=MINT=.*$", f"Environment=MINT={ROOT / 'config/github-app-token/mint.mjs'}", text, flags=re.MULTILINE)
+    text = text.replace("/opt/node-v22.23.3/bin/node", shutil.which("node"))
     text = re.sub(r"^RuntimeDirectory=.*$", f"RuntimeDirectory={name}", text, flags=re.MULTILINE)
     # The host runs this as User=nish; the runner has no such user, so the copy
     # takes the job's user instead.

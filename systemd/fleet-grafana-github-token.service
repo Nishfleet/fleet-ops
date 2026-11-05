@@ -16,8 +16,8 @@ Description=Mint the short-lived GitHub App token Grafana's alert webhook sends 
 # The token is minted from the nishfleet-worker App key that fleet-grafana
 # already mounts, scoped by the request body to issues:write on this one repo
 # (the contact points only POST issues). It lives in the user runtime dir
-# (tmpfs, mode 0700), never on disk and never in argv: the App JWT goes to curl
-# as a config fd. A failed mint keeps the previous token file, pages through
+# (tmpfs, mode 0700), never on disk and never in argv: the SDK holds the key
+# and the JWT in its own process and hands the token over stdout. A failed mint keeps the previous token file, pages through
 # OnFailure=, and Grafana's own delivery rule
 # (cloudflare-spend-delivery.yaml) pages hermes-urgent if a webhook still fails.
 #
@@ -42,19 +42,17 @@ Environment=APP_KEY=%h/.config/fleet-worker/nishfleet-worker.private-key.pem
 # Grafana expands $__file{} at load and a missing file fails the whole
 # alerting provisioning, so the file must exist before anything can fail.
 ExecStartPre=/bin/sh -c 'rm -f "$$RUNTIME_DIRECTORY/token.new"; test -e "$$RUNTIME_DIRECTORY/token" || { umask 077; : > "$$RUNTIME_DIRECTORY/token"; }'
-# RS256 App JWT (docs: "Generating a JSON Web Token (JWT) for a GitHub App";
-# iat 60 s back for clock drift, exp inside the 10 min cap), then the
-# installation id of this repo, then a token limited to this repo and
-# issues:write. `$$` is systemd's escape for a literal `$`, `%%` for `%`.
+# GitHub's Octokit SDK (@octokit/auth-app, pinned by
+# config/github-app-token/package-lock.json) signs the App JWT and mints a
+# token limited to this repo and issues:write, so this unit carries no crypto
+# of its own (docs: "Generating an installation access token for a GitHub
+# App", "use GitHub's Octokit SDKs"). Grafana reads a file, not an SDK, so the
+# timer and the file write stay. `$$` is systemd's escape for a literal `$`.
+Environment=MINT=%h/.local/share/github-app-token/mint.mjs
+Environment='TOKEN_PERMISSIONS={"issues":"write"}'
+Environment=TOKEN_REPOSITORIES=fleet-ops
 ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
-  b64() { openssl base64 -A | tr "+/" "-_" | tr -d "="; }; \
-  now=$$(date +%%s); \
-  h=$$(printf "{\\"alg\\":\\"RS256\\",\\"typ\\":\\"JWT\\"}" | b64); \
-  p=$$(printf "{\\"iat\\":%%d,\\"exp\\":%%d,\\"iss\\":\\"%%s\\"}" $$((now-60)) $$((now+540)) "$$APP_ID" | b64); \
-  s=$$(printf "%%s.%%s" "$$h" "$$p" | openssl dgst -sha256 -sign "$$APP_KEY" | b64); \
-  auth() { printf "header = \\"Authorization: Bearer %%s.%%s.%%s\\"\\nheader = \\"Accept: application/vnd.github+json\\"\\n" "$$h" "$$p" "$$s"; }; \
-  id=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --config <(auth) "$$GITHUB_API_URL/repos/Nishfleet/fleet-ops/installation" | jq -er .id); \
-  tok=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 -X POST --config <(auth) -d "{\\"repositories\\":[\\"fleet-ops\\"],\\"permissions\\":{\\"issues\\":\\"write\\"}}" "$$GITHUB_API_URL/app/installations/$$id/access_tokens" | jq -er .token); \
+  tok=$$(/opt/node-v22.23.3/bin/node "$$MINT"); \
   printf "%%s" "$$tok" > "$$RUNTIME_DIRECTORY/token.new"; \
   mv -f "$$RUNTIME_DIRECTORY/token.new" "$$RUNTIME_DIRECTORY/token"; \
   echo "minted a GitHub App token for Nishfleet/fleet-ops issues:write, valid one hour"'
