@@ -130,15 +130,17 @@ locals {
     # below, which ansible/host.yml renders into the grafana-cloudflare-api-token
     # Podman secret (the apply starts the host-config run that republishes it). It replaces the
     # hand-made deploy-ci user token, which has no
-    # expiry, is not IP-locked and is wider than the one read-only group the
-    # spend watch needs. The value never enters a GitHub secret and never enters
+    # expiry, is not IP-locked and is wider than the two read-only groups the
+    # cost alarm needs: Billing Read for the billed-cost rule
+    # (alerting/cloudflare-billed-cost.yaml), Account Analytics Read for the
+    # GraphQL panels. The value never enters a GitHub secret and never enters
     # argv: OpenTofu writes it straight to the file, mode 0600.
     "vps-grafana" = {
       repo        = null
       environment = null
       secret_name = null
       file        = "~/.config/cloudflare/deploy-ci.env"
-      account     = ["Account Analytics Read"]
+      account     = ["Account Analytics Read", "Billing Read"]
       zone        = []
       vps_only    = true
     }

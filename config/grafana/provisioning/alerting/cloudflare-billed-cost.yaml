@@ -1,0 +1,81 @@
+# Cloudflare cost alarm (fleet-ops#9355): one rule on what Cloudflare bills.
+#
+# Nish restored this one rule during the reset proof week (2026-11-05, "BOTH
+# NOW!") after $9.90 of R2 Infrequent Access charges went unseen for 17 days.
+# The 7 rules the reset deleted (#11580) watched chosen GraphQL usage meters
+# (Workers AI, D1, email, R2 Standard), so they could not see a charge on any
+# meter they did not name. The same IA charge also hit on 2026-09-07/08.
+#
+# Source: Cloudflare's billable-usage API ("Get Account Billable Usage",
+# https://developers.cloudflare.com/api/resources/billing/subresources/usage/)
+# returns one row per service per UTC day with BilledCost, the amount that
+# goes on the invoice, for every service. The read needs Billing Read on the
+# vps-grafana token (infra/cloudflare-tokens/main.tf).
+#
+# What fires: any service billed over 0.10 USD on the latest day Cloudflare has
+# published. Steady state is R2 storage at 0.015 USD a day and revenue is zero,
+# so anything above that is a surprise. A replay over 2026-09-06..2026-11-04
+# fires on every known leak: IA ops (09-07, 10-19, 10-20), D1 rows written
+# (09-11 to 09-19), Browser Run, Workers CPU, email sends (09-24 to 09-28) and
+# Workers AI (10-02 to 10-04). It does not fire on any day from 10-05 to 11-04
+# except the two IA days.
+#
+# Freshness: rows are per UTC day. On 2026-11-05 at 03:20Z the latest row was
+# 2026-11-04, so a charge is caught the morning after it starts, not within the
+# hour. That is the cost of covering every service with one rule.
+#
+# The window is 35 days because the API returns nothing unless the range holds
+# the billing anchor day (the 6th). A window that holds the previous anchor
+# returns both periods, so the last day of a period is still read the next day.
+# The root selector keeps only the latest day, one row per service, so each row
+# becomes one alert instance labelled service and day. If the API returns no
+# rows at all, the endpoint changed (it is alpha), so the rule alerts on NoData.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: cloudflare-billed-cost
+    folder: fleet
+    interval: 1h
+    rules:
+      - uid: cf-billed-cost
+        title: Cloudflare billed cost
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3024000, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              refId: A
+              datasource: {type: yesoreyeram-infinity-datasource, uid: fleet-cloudflare}
+              type: json
+              source: url
+              url: https://api.cloudflare.com/client/v4/accounts/f670a698e17bf160c8e4679823e68916/billable-usage?from=${__timeFrom:date:iso}&to=${__timeTo:date:iso}
+              url_options: {method: GET}
+              parser: backend
+              format: table
+              root_selector: |-
+                (
+                  $latest := $max(result.$toMillis(ChargePeriodStart));
+                  [result[$toMillis(ChargePeriodStart) = $latest].{"service": ServiceName, "day": $substring(ChargePeriodStart, 0, 10), "cost": BilledCost}]
+                )
+              columns:
+                - {selector: service, text: service, type: string}
+                - {selector: day, text: day, type: string}
+                - {selector: cost, text: cost, type: number}
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: B
+              expression: A
+              conditions: [{evaluator: {params: [0.1], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: NoData
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Cloudflare billed {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.2f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} USD for {{ with $labels.service }}{{ . }}{{ else }}an unknown service{{ end }} on {{ with $labels.day }}{{ . }}{{ else }}the latest day{{ end }}'
+          description: 'It fires when one service is billed over 0.10 USD in one UTC day; steady state is R2 storage at 0.015 USD a day. Find what drove that service''s usage, stop it at the source, and write the cause in this issue. Cloudflare dashboard: Manage Account > Billing > Billable Usage.'
+        labels: {severity: warning}
+        isPaused: false
