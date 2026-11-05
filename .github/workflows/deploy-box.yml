@@ -2,7 +2,7 @@
 # signed main, as root) and waits for it: `systemctl start` on a Type=oneshot unit
 # blocks until the unit ends and exits non-zero if it failed
 # (https://www.freedesktop.org/software/systemd/man/latest/systemctl.html).
-# polkit lets nish start that one unit (rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules).
+# polkit lets the runner's user fleet-ci start that one unit (rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules).
 name: deploy-box
 
 on:

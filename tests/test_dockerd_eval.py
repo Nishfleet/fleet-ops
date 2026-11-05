@@ -1,4 +1,4 @@
-"""dockerd-eval.service, its runtime directory and the fleet-ci-3 drop-in must agree (fleet-ops#9983)."""
+"""dockerd-eval.service and its runtime directory must agree (fleet-ops#9983)."""
 
 import json
 import re
@@ -12,11 +12,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM = ROOT / "rootfs/etc/systemd/system"
 UNIT = SYSTEM / "dockerd-eval.service"
-CI3 = SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-3.service.d/30-eval.conf"
-OTHER_POOLS = [
-    SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-1.service.d/25-no-eval.conf",
-    SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-2.service.d/25-no-eval.conf",
-]
 NFT = ROOT / "rootfs/etc/nftables.d/evalnet.nft"
 TMPFILES = ROOT / "rootfs/etc/tmpfiles.d/dockerd-eval.conf"
 CONFIG = ROOT / "rootfs/etc/fleet-ops/dockerd-eval.json"
@@ -48,25 +43,6 @@ def test_the_socket_path_is_the_per_start_runtime_subdirectory() -> None:
     for flag in ("--state-dir", "--exec-root", "--pidfile"):
         assert re.search(rf"{flag}=/run/dockerd-eval/rt/", exec_start), flag
     assert unit["Environment"].count("XDG_RUNTIME_DIR=/run/dockerd-eval/rt") == 1
-
-
-def test_docker_host_in_the_ci3_drop_in_matches_the_socket() -> None:
-    drop_in = keys(CI3)
-    assert f"DOCKER_HOST=unix://{SOCKET}" in drop_in["Environment"]
-    assert "DRIVE_EVAL_SANDBOX_HOST=10.0.2.2" in drop_in["Environment"]
-
-
-def test_ci3_orders_after_dockerd_eval_and_no_longer_names_podman() -> None:
-    text = CI3.read_text()
-    assert "After=dockerd-eval.service" in text
-    assert "Wants=dockerd-eval.service" in text
-    assert not re.search(r"^(After|Wants|Environment)=.*podman", text, re.MULTILINE)
-
-
-def test_ci3_binds_promptfoo_writable_and_rclone_read_only() -> None:
-    drop_in = keys(CI3)
-    assert "-/home/nish/.promptfoo" in drop_in["BindPaths"][0].split()
-    assert "-/home/nish/.local/bin/rclone" in drop_in["BindReadOnlyPaths"][0].split()
 
 
 def test_the_unit_keeps_the_prototype_flags_and_limits() -> None:
@@ -131,34 +107,11 @@ def test_the_engine_config_is_an_empty_object() -> None:
     assert json.loads(CONFIG.read_text()) == {}
 
 
-@pytest.mark.parametrize("path", OTHER_POOLS, ids=lambda p: p.parent.name)
-def test_other_pools_hide_the_retired_and_engine_sockets(path: Path) -> None:
-    assert "-/run/dockerd-eval" in hidden(path)
-    assert "-/run/podman-eval" in hidden(path)
-
-
-def test_the_eval_runner_does_not_hide_the_engine_directory() -> None:
-    base = SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-.service.d/20-lockdown.conf"
-    for path in (base, CI3):
-        assert "-/run/dockerd-eval" not in hidden(path)
-        assert "-/run/dockerd-eval/rt" not in hidden(path)
-
-
 def nft_rules() -> list[str]:
     return [
         line
         for line in NFT.read_text().splitlines()
         if line.startswith("add rule inet evalnet engine_egress ")
-    ]
-
-
-def test_the_stand_in_port_is_the_same_in_the_drop_in_and_the_nft_rule() -> None:
-    (port,) = [v for v in keys(CI3)["Environment"] if v.startswith("DRIVE_EVAL_STANDIN_PORT=")]
-    number = port.split("=", 1)[1]
-    assert number.isdigit() and 1024 <= int(number) <= 65535
-    assert f"add rule inet evalnet engine_egress ip daddr 127.0.0.1 tcp dport {number} return" in nft_rules()
-    assert [r for r in nft_rules() if "dport" in r and "th dport 53" not in r] == [
-        f"add rule inet evalnet engine_egress ip daddr 127.0.0.1 tcp dport {number} return"
     ]
 
 

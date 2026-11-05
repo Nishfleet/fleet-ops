@@ -339,3 +339,77 @@
     state: started
     daemon_reload: true
   loop: "{{ fleet_reviewer_runner_ids }}"
+
+# The deploy runner netcup-fleet-ci-1: deploy-box's only runner, as its own user fleet-ci
+# (rootfs/etc/systemd/system/fleet-ci-runner.service), the same move the agent pool made
+# above. Its registration is copied once from nish's runner directory, while the copy has no
+# runsvc.sh, so it keeps its name, label and runner group and needs no new token. The play
+# runs inside a deploy-box job on this runner, so the one run that stops nish's unit cancels
+# that job ("The runner has received a shutdown signal"); fleet-host-config.service runs on,
+# and the next deploy runs on fleet-ci.
+# https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
+- name: Create the deploy runner user
+  ansible.builtin.user:
+    name: fleet-ci
+    system: true
+    shell: /usr/sbin/nologin
+    home: /var/lib/fleet-ci
+    create_home: true
+
+- name: Stop nish's unit for the deploy runner
+  ansible.builtin.systemd_service:
+    name: actions.runner.Nishfleet.netcup-fleet-ci-1.service
+    enabled: false
+    state: stopped
+  when: ('/etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-1.service') is exists
+
+- name: Copy the deploy runner registration to fleet-ci once
+  ansible.builtin.copy:
+    src: "{{ agent_share }}/fleet-ci-runner/1/"
+    dest: /var/lib/fleet-ci/runner/
+    remote_src: true
+    local_follow: false
+    owner: fleet-ci
+    group: fleet-ci
+    mode: preserve
+    directory_mode: '0750'
+  when:
+    - (agent_share ~ '/fleet-ci-runner/1/runsvc.sh') is exists
+    - ('/var/lib/fleet-ci/runner/runsvc.sh') is not exists
+
+- name: Read the deploy runner links
+  ansible.builtin.stat:
+    path: "/var/lib/fleet-ci/runner/{{ item }}"
+  loop: [bin, externals]
+  register: fleet_ci_links
+
+- name: Point the deploy runner links at the copy
+  ansible.builtin.file:
+    src: "{{ item.stat.lnk_target | basename }}"
+    dest: "{{ item.stat.path }}"
+    state: link
+    owner: fleet-ci
+    group: fleet-ci
+  loop: "{{ fleet_ci_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^/home/') | list }}"
+  loop_control:
+    label: "{{ item.stat.path }}"
+
+- name: Give the deploy runner fleet-ci's environment and PATH
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "/var/lib/fleet-ci/runner/{{ item.dest }}"
+    owner: fleet-ci
+    group: fleet-ci
+    mode: '0644'
+  loop:
+    - {dest: .env, content: "HOME=/var/lib/fleet-ci\nLANG=C.UTF-8\n"}
+    - {dest: .path, content: "/usr/bin:/bin\n"}
+  loop_control:
+    label: "{{ item.dest }}"
+
+- name: Start the deploy runner
+  ansible.builtin.systemd_service:
+    name: fleet-ci-runner.service
+    enabled: true
+    state: started
+    daemon_reload: true

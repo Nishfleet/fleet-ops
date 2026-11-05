@@ -1,0 +1,41 @@
+# The deploy runner netcup-fleet-ci-1 (label `fleet-ci`, runner group `fleet-ci`, which only
+# fleet-ops deploy-box.yml@main may use) as the unprivileged user fleet-ci, per GitHub's
+# "Hardening for self-hosted runners" and the runner's own service template
+# (actions/runner src/Misc/layoutbin/actions.runner.service.template).
+# https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
+# fleet-ci shares no user or group with nish, fleet-runner or fleet-reviewer, and
+# ProtectHome= hides /home and /run/user (systemd.exec(5)), so a job cannot read nish's logins.
+# Its one job, deploy-box, starts fleet-host-config.service through the polkit grant in
+# rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules and, on failure, prints that
+# unit's journal, which the systemd-journal group allows (journalctl(1)).
+# Installed by ansible/tasks/runners.yml. No handler restarts it: a restart from the play
+# would cancel the deploy-box job that runs the play, so a change here applies at its next start.
+[Unit]
+Description=GitHub Actions runner netcup-fleet-ci-1 (fleet-ci)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+User=fleet-ci
+Group=fleet-ci
+SupplementaryGroups=systemd-journal
+WorkingDirectory=/var/lib/fleet-ci/runner
+Environment=HOME=/var/lib/fleet-ci
+ExecStart=/var/lib/fleet-ci/runner/runsvc.sh
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=5min
+Restart=on-failure
+RestartSec=30s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+UMask=0077
+MemoryMax=3G
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=80%
+
+[Install]
+WantedBy=multi-user.target

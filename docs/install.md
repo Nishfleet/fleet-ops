@@ -64,8 +64,9 @@ and fails the job if the unit failed, and `fleet-host-config-boot.timer` once af
 
 - Run it now: `sudo systemctl start fleet-host-config.service`, then
   `journalctl -u fleet-host-config.service -n 60 --no-pager` for the PLAY RECAP.
-  `rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules` lets user nish start
-  it (start only), which is how deploy-box starts it without sudo.
+  `rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules` lets user nish and
+  the deploy runner's user fleet-ci start it (start only), which is how deploy-box
+  starts it without sudo.
 - Switch off the boot run: `systemctl disable --now fleet-host-config-boot.timer`.
   Merges keep deploying, because only the once-per-boot run stops.
 - Stop every automatic run: the timer line above plus

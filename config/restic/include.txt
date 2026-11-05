@@ -16,7 +16,6 @@
 /home/nish/.config
 /home/nish/.ssh
 /home/nish/.gnupg
-/home/nish/.git-credentials
 /home/nish/.netrc
 
 # Vault and agent memory. The standing rules name the vault as the durable

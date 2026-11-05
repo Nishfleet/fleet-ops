@@ -32,14 +32,22 @@ def _service(path: Path) -> dict:
     return dict(cp["Service"])
 
 
-def test_only_the_deploy_runners_read_the_system_journal() -> None:
-    for n in (1, 2):
-        conf = UNITS / f"actions.runner.Nishfleet.netcup-fleet-ci-{n}.service.d/40-no-bus.conf"
-        assert _service(conf).get("SupplementaryGroups") == "systemd-journal", conf
-    eval_pool = UNITS / "actions.runner.Nishfleet.netcup-fleet-ci-3.service.d"
-    shared = UNITS / "actions.runner.Nishfleet.netcup-fleet-ci-.service.d"
-    for conf in [*eval_pool.glob("*.conf"), *shared.glob("*.conf")]:
-        assert "SupplementaryGroups" not in conf.read_text(), conf
+def test_the_deploy_runner_runs_as_fleet_ci_and_reads_the_journal() -> None:
+    """GitHub's runner hardening: the runner is its own low-privilege user, never the owner's uid.
+
+    https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
+    """
+    svc = _service(UNITS / "fleet-ci-runner.service")
+    assert (svc["User"], svc["Group"]) == ("fleet-ci", "fleet-ci")
+    assert svc["ProtectHome"] == "yes"
+    assert svc["SupplementaryGroups"] == "systemd-journal"
+    assert not list(UNITS.glob("actions.runner.*")), "a runner unit drop-in implies a runner on nish's uid"
+
+
+def test_polkit_lets_fleet_ci_start_only_the_deploy_unit() -> None:
+    rule = RULES.read_text().split('subject.user == "nish"', 1)[1]
+    assert 'action.lookup("unit") == "fleet-host-config.service"' in rule
+    assert 'subject.user == "fleet-ci"' in rule
 
 
 DEPLOY_BOX = ROOT / ".github/workflows/deploy-box.yml"
