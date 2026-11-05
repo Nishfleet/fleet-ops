@@ -92,7 +92,7 @@
 
 # Laptop packages a VPS never uses: battery power (upower), device firmware
 # updates (fwupd; the provider owns this host's firmware), Intel thermal control
-# (thermald), Thunderbolt (bolt) and iPhone USB (usbmuxd). samba and ffmpeg went 2026-11-02: the share was an empty folder no client had opened since 2026-10-23, and nothing uses ffmpeg.
+# (thermald), Thunderbolt (bolt) and iPhone USB (usbmuxd). samba went 2026-11-02: the share was an empty folder no client had opened since 2026-10-23.
 # The cloud image also ships guest tools for hypervisors this KVM host is not on:
 # VMware (open-vm-tools), LXD (lxd-agent-loader, lxd-installer), and iSCSI disks
 # (open-iscsi), which it has none of. packagekit stays because
@@ -112,7 +112,6 @@
       - lxd-installer
       - samba
       - samba-vfs-modules
-      - ffmpeg
     state: absent
     purge: true
     lock_timeout: 300
@@ -155,11 +154,33 @@
 # pg_restore: final-checks logs in to the router's database with psql, and the
 # restore test reads the router dump with pg_restore. file: agents run it (26
 # sessions in October); only ImageMagick pulled it in.
-- name: Install the Postgres client and file
+# The rest are what agent skills import or call (owner 2026-11-05: a clean-up
+# deleted them once because no unit used them):
+# - python3-bs4, python3-lxml, python3-defusedxml, python3-openpyxl,
+#   python3-pypdf, python3-pil: the docx, pptx, xlsx and pdf document skills.
+# - python3-numpy: hyperframes-creative's audio script.
+# - libreoffice-*-nogui (soffice), poppler-utils (pdftoppm), qpdf, pandoc: the
+#   document skills, headless builds so no desktop comes back.
+# - ffmpeg: hyperframes-*, media-use, last30days, product-launch-video.
+- name: Install the Postgres client, file and the tools agent skills call
   ansible.builtin.apt:
     name:
       - postgresql-client
       - file
+      - python3-bs4
+      - python3-lxml
+      - python3-defusedxml
+      - python3-openpyxl
+      - python3-pypdf
+      - python3-pil
+      - python3-numpy
+      - libreoffice-writer-nogui
+      - libreoffice-calc-nogui
+      - libreoffice-impress-nogui
+      - poppler-utils
+      - qpdf
+      - pandoc
+      - ffmpeg
     state: present
     lock_timeout: 300
 
@@ -170,6 +191,9 @@
 # ImageMagick, native-build tools no build here calls (cmake, ninja, autoconf),
 # the old desktop's VNC viewer, X core fonts and UI fonts, and Ubuntu extras no
 # one runs (byobu, screen, landscape, pollinate, sosreport, GPU drivers tool).
+# The GStreamer base plugins, libhyphen0, libharfbuzz-icu0 and libwebpdemux2 are
+# not listed: LibreOffice and Pillow above depend on them, and removing a
+# library removes the packages that depend on it.
 - name: Remove packages nothing on the box uses
   ansible.builtin.apt:
     name:
@@ -182,18 +206,13 @@
       - gstreamer1.0-libav
       - gstreamer1.0-plugins-bad
       - gstreamer1.0-plugins-good
-      - gstreamer1.0-plugins-base
       - libgstreamer-gl1.0-0
       - libgstreamer-plugins-bad1.0-0
-      - libgstreamer-plugins-base1.0-0
       - libmanette-0.2-0
       - libwoff1
       - libenchant-2-2
-      - libhyphen0
       - libavif16
-      - libharfbuzz-icu0
       - libevent-2.1-7t64
-      - libwebpdemux2
       - cmake
       - ninja-build
       - autoconf

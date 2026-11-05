@@ -1,3 +1,24 @@
+# Python CLIs that agents and their skills run, each in its own uv tool
+# environment (https://docs.astral.sh/uv/guides/tools/). creates: skips a tool
+# that is already installed, and fleet-update's `uv tool upgrade --all` keeps
+# them current. yt-dlp: the research skills. zizmor: workflow audits.
+# html2text, semgrep, pytest, pipx: agents run them.
+- name: Install the uv tools agents run
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: ["{{ nish_home }}/.local/bin/uv", tool, install, "{{ item }}"]
+    creates: "{{ nish_home }}/.local/bin/{{ item }}"
+  loop:
+    - yt-dlp
+    - zizmor
+    - html2text
+    - semgrep
+    - pytest
+    - pipx
+  timeout: 600
+
 - name: Create the Chrome DevTools MCP install directory
   become: true
   become_user: nish
