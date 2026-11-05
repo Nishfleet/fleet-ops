@@ -1,5 +1,6 @@
 # Stock rclone lines (was /usr/local/sbin/restic-r2-locked-copy, removed 2026-09-25).
-# copy -> checksum check -> reclaim objects older than the 30-day lock (reclaim may fail).
+# copy -> checksum check -> reclaim objects older than the 30-day lock. Each step
+# must succeed: a failed reclaim fails the unit, which SystemUnitFailed reads.
 # No timer: restic-r2-backup.service starts it through OnSuccess=.
 [Unit]
 Description=Copy the encrypted Restic repository into 30-day-locked R2 storage
@@ -13,7 +14,7 @@ Environment=RCLONE_CONFIG=/etc/rclone/tiny-studio-r2.conf
 EnvironmentFile=/etc/tiny-studio/heartbeats.env
 ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/rclone copy --disable Copy --size-only --immutable --exclude /locks/** --transfers 4 --checkers 8 live:nish-netcup-rs2000-backups/netcup-rs2000 locked:nish-netcup-rs2000-backups-locked/netcup-rs2000
 ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/rclone check --checksum --one-way --exclude /locks/** live:nish-netcup-rs2000-backups/netcup-rs2000 locked:nish-netcup-rs2000-backups-locked/netcup-rs2000
-ExecStart=-/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/rclone sync --disable Copy --size-only --min-age 31d --exclude /locks/** --transfers 4 --checkers 8 live:nish-netcup-rs2000-backups/netcup-rs2000 locked:nish-netcup-rs2000-backups-locked/netcup-rs2000
+ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/rclone sync --disable Copy --size-only --min-age 31d --exclude /locks/** --transfers 4 --checkers 8 live:nish-netcup-rs2000-backups/netcup-rs2000 locked:nish-netcup-rs2000-backups-locked/netcup-rs2000
 ExecStartPost=/usr/bin/curl -fsS -m 10 --retry 3 -o /dev/null ${HC_LOCKED_COPY_URL}
 Nice=19
 IOSchedulingClass=best-effort
