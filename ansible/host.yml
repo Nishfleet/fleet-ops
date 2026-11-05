@@ -184,6 +184,9 @@
       - /etc/systemd/system/restic-r2-locked-copy.service.d
       - /etc/restic/retention.env
       - /etc/restic/netcup-r2-excludes
+      # The `ufw reload` drop-in: nftables.conf rebuilds only its own tables and
+      # never runs `flush ruleset`, so ufw's tables survive a reload.
+      - /etc/systemd/system/nftables.service.d
       # Folded into rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades.
       - /etc/apt/apt.conf.d/52nish-unattended-anthropic
       - /etc/apt/apt.conf.d/52-auto-reboot
@@ -396,8 +399,6 @@
     - name: Load audit rules  # noqa: no-changed-when
       ansible.builtin.command: /usr/sbin/augenrules --load
 
-    # nftables.service's ExecReload re-runs `nft -f /etc/nftables.conf`, and
-    # its drop-in re-runs `ufw reload` right after (fleet-ops#8258).
     - name: Reload nftables
       ansible.builtin.systemd_service:
         name: nftables.service
