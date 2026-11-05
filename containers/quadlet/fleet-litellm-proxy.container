@@ -35,17 +35,22 @@ Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
 PodmanArgs=--env=DATABASE_URL
 # INFO, not DEBUG: DEBUG dumps full prompts into the journal (fleet-ops#4449).
 Environment=LITELLM_LOG=INFO
-# A restart's stop waits for in-flight calls: uvicorn stops accepting, waits for open requests to
-# finish ("Waiting for connections to close"), then exits; podman SIGKILLs at this timeout
-# (https://docs.podman.io/en/v4.9.3/markdown/podman-run.1.html#stop-timeout-seconds; podman 4.9
-# Quadlet has no StopTimeout= key). At 45 s the 2026-11-04 12:59 UTC deploy SIGKILLed a streamed
-# call that was still running and the agent run failed (fleet-ops#11739). 300 s covers the p99.9
-# call: 99,912 calls in the 7 days to 2026-11-04 took p50 4.8 s, p99 131 s, p99.9 298 s, max 604 s
-# (LiteLLM_SpendLogs endTime-startTime). A stop with nothing in flight still ends at once: the five
-# stops of 2026-11-01..04 with no call open took 5-19 s. The value is fixed when the container is
-# created, so it bounds the next container's stop, not the running one's.
-# tests/test_litellm_proxy_stop_window.py keeps it below TimeoutStopSec.
-PodmanArgs=--stop-timeout=300
+# Podman's default stop timeout is 10 s, so `podman rm -f` SIGKILLed the
+# proxy at 10 s whatever TimeoutStopSec says: exit 137, unit failed, and
+# OnFailure= sent a false fail ping on every restart (10-02 11:16:41 journal:
+# "StopSignal SIGTERM failed to stop container ... in 10 seconds"). The window
+# must cover LiteLLM's own request drain, which is GRACEFUL_SHUTDOWN_TIMEOUT
+# (default 30 s, graceful_shutdown_manager.py), plus the uvicorn teardown.
+# fleet-ops#4449 set 110 s for that, but the journal of 2026-10-22/23 shows every
+# drain finishing in 0.00 s with 0 requests in flight, and four stops in a row
+# still sat the full 110 s: one uvicorn worker never exits after "Waiting for
+# connections to close", so the SIGKILL, not the drain, set the restart time.
+# 45 s keeps the whole 30 s drain and a margin, and takes 65 s off each such stop.
+# The value is fixed when the container is created, so it bounds the stop of the next container, not of
+# the one already running: the first restart after a change of this line still waits the old value
+# (2026-10-23 17:08 IST: a container made under 110 s sat until systemd's new 60 s timeout, then its
+# SIGKILL, about 120 s). tests/test_litellm_proxy_stop_window.py keeps this below TimeoutStopSec.
+PodmanArgs=--stop-timeout=45
 # Bytecode cache that outlives the --rm container. Each start re-compiled
 # litellm+prisma into a throwaway layer; measured 2026-10-02 on the pinned
 # image, `import litellm.proxy.proxy_server` 24.6/26.0 s cold vs 20.4/18.2 s
@@ -147,12 +152,14 @@ TimeoutStartSec=15min
 ManagedOOMPreference=avoid
 Restart=on-failure
 RestartSec=10s
-# Let in-flight requests drain (fleet-ops#4449, #11739). Above the 300 s --stop-timeout, so
-# podman's own SIGKILL fires first and the unit still has time to remove the container.
-TimeoutStopSec=320
-# A planned stop whose call outlives --stop-timeout ends in podman's SIGKILL (the pinned litellm CLI
-# has no uvicorn timeout_graceful_shutdown flag to bound it), so conmon exits 137 and the unit would
-# fail and page on a restart that worked (fleet-ops#10177). Exit 137 is therefore a success. A failed start is podman exit 125, a crash is
+# Let in-flight requests drain instead of being SIGKILLed at 15s (fleet-ops#4449).
+# Above the 45 s --stop-timeout, so podman's own SIGKILL fires first and the unit
+# still has time to remove the container.
+TimeoutStopSec=60
+# A planned stop ends in podman's SIGKILL of the one uvicorn worker that never exits (the pinned
+# litellm CLI has no uvicorn timeout_graceful_shutdown flag to bound it), so conmon exits 137 and the
+# unit would fail and page on a restart that worked (fleet-ops#10177). Exit 137 is therefore a
+# success. A failed start is podman exit 125, a crash is
 # another exit code or signal, and a kernel OOM kill inside this unit's cgroup ends the unit as
 # `oom-kill`, which OOMPolicy=stop (the default, written here so the pair stays together) sets
 # whatever the exit code. Not covered: an external `podman kill` or `kill -9` of the main container

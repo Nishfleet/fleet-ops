@@ -148,7 +148,7 @@
     mode: '0600'
   loop:
     - {src: "{{ repo_root }}/config/pi-models.json", dest: models.json}
-    - {content: "{{ {'defaultProvider': 'litellm', 'defaultModel': 'worker-capable', 'defaultProjectTrust': 'always', 'retry': pi_router_retry} | to_nice_json }}", dest: settings.json}
+    - {content: "{{ {'defaultProvider': 'litellm', 'defaultModel': 'worker-capable', 'defaultProjectTrust': 'always'} | to_nice_json }}", dest: settings.json}
   loop_control:
     label: "{{ item.dest }}"
 
@@ -308,7 +308,7 @@
 
 - name: Install pi's settings for fleet-reviewer
   ansible.builtin.copy:
-    content: "{{ {'packages': fleet_reviewer_pi_packages, 'retry': pi_router_retry} | to_nice_json }}"
+    content: "{{ {'packages': fleet_reviewer_pi_packages} | to_nice_json }}"
     dest: /var/lib/fleet-reviewer/.pi/agent/settings.json
     owner: fleet-reviewer
     group: fleet-reviewer
