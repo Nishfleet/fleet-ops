@@ -113,6 +113,11 @@
       # The full copy of Syncthing's packaged unit; the drop-in
       # rootfs/etc/systemd/user/syncthing.service.d/override.conf replaces it.
       - "{{ nish_home }}/.config/systemd/user/syncthing.service"
+      # aiostreams' hand-made Compose files; containers/quadlet/aiostreams.container
+      # runs it now ("Stop the Compose copy of aiostreams" stops it first).
+      - /srv/aiostreams/compose.yaml
+      - /srv/aiostreams/compose.yaml.bak-2026-10-22
+      - /srv/aiostreams/.env.bak-1789995543
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"
@@ -343,6 +348,12 @@
       ansible.builtin.systemd_service:
         name: htpdate.service
         state: restarted
+
+    # A quadlet's generated unit cannot be enabled; its [Install] WantedBy= starts it at
+    # boot, and this restart starts it on the first deploy and after each change.
+    # A failed restart fails the play.
+    - name: Restart aiostreams  # noqa: command-instead-of-module no-changed-when
+      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart aiostreams.service
 
     # A running Grafana keeps the secret files it was started with, so it is restarted
     # only after a change. A failed restart fails the play.
