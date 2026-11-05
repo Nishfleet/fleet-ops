@@ -27,6 +27,18 @@
     and 'does not exist' not in retired_user_unit_off.stderr | lower
     and 'not found' not in retired_user_unit_off.stderr | lower
 
+# aiostreams ran from a Docker Compose file outside the play; the quadlet in
+# tasks/user-files.yml runs it now. `compose down` stops and removes the
+# container before `retired` deletes the Compose file, so it frees port 3000
+# for the quadlet. `removes` skips it once the file is gone. Drop this task with
+# the compose.yaml line in `retired`. ansible-core only, as the play's header says.
+# https://docs.docker.com/reference/cli/docker/compose/down/
+# No noqa needed (ansible-lint v26.10.1): rules/no_changed_when.py skips `removes`; rules/command_instead_of_module.py has no docker entry.
+- name: Stop the Compose copy of aiostreams
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, compose, --project-directory, /srv/aiostreams, down]
+    removes: /srv/aiostreams/compose.yaml
+
 - name: Remove retired host files
   ansible.builtin.file:
     path: "{{ item }}"

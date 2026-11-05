@@ -37,6 +37,28 @@
     - Reload nish's user manager
     - Restart fleet-grafana
 
+# Docker ran aiostreams as root, so its files are root's; rootless podman maps the
+# container's root to nish, who must own them to write the database.
+- name: Give nish the aiostreams data
+  ansible.builtin.file:
+    path: /srv/aiostreams/data
+    state: directory
+    owner: nish
+    group: nish
+    recurse: true
+
+# Its own task, so only a change of this file restarts aiostreams.
+- name: Install the aiostreams quadlet
+  become: true
+  become_user: nish
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/containers/quadlet/aiostreams.container"
+    dest: "{{ nish_home }}/.config/containers/systemd/aiostreams.container"
+    mode: '0644'
+  notify:
+    - Reload nish's user manager
+    - Restart aiostreams
+
 # Its own task, so only a change of this file (in practice the Image= line) runs LiteLLM's
 # migration job and then the rolling restart, in the order host.yml lists the handlers.
 # https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_handlers.html
