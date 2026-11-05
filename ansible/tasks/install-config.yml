@@ -20,6 +20,7 @@
     name:
       - acl
       - auditd
+      - bubblewrap
       - curl
       - fail2ban
       - git
@@ -32,6 +33,7 @@
       - prometheus
       - prometheus-alertmanager
       - restic
+      - socat
       - sudo
       - unattended-upgrades
     state: present
@@ -76,6 +78,8 @@
 # detached-job.json is the list for detached `claude -p` jobs: the vault's
 # "Detached work" recipe passes it with --permission-mode dontAsk in place of
 # --dangerously-skip-permissions (https://code.claude.com/docs/en/permissions).
+# Its sandbox block runs Bash under bubblewrap and socat, installed above
+# (https://code.claude.com/docs/en/sandboxing).
 - name: Install the per-role Claude permission allow lists
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/claude-code/roles/"
