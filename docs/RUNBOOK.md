@@ -1,8 +1,7 @@
 # Runbook
 
 One page. How to run the fleet. What it is, install mechanics and the deploy
-rail are in `README.md`; design and enforced rules are in
-`docs/ARCHITECTURE.md`.
+rail are in `README.md`; the rules are in `AGENTS.md`.
 
 ## Live-state check (the canonical order)
 
@@ -202,7 +201,7 @@ its own `bin/runsvc.sh`. A runner's self-update and restarts are unaffected:
 `tests/test_runner_jail_start_state.py` fails the PR if the line is widened;
 detection that catches it live is `fleet-sync`'s STUB-GUARD (fleet-ops#11483).
 
-## Dashboards and the CI runner flip
+## Dashboards
 
 `systemctl --user is-active fleet-grafana.service` prints `active`. The service is
 the Quadlet `containers/quadlet/fleet-grafana.container`, read-only for every
@@ -249,26 +248,6 @@ still-firing alert files a new issue per repeat. CI fails when a rule has no sev
 without being on the urgent list (or the reverse), or a critical alert would re-send slower than
 hourly. To make a new rule page, add it to the list there with the reason and label it critical.
 Switch off the fleet issue route: point the policy root and the last route back at `hermes-urgent`.
-
-Router dead-row persistence (fleet-ops#9562). `router-dead-row.yaml` fires only when a row
-answered 402, 403 or 404 more than 5 times in the last hour and is still failing: at least one
-such failure in the last 10 minutes, held for 15 continuous minutes. A row that answered for a
-minute and healed files nothing, and a dead row still files while the failures continue. To fire
-on the first burst again, set `for: 0s` and drop the 10-minute factor; to silence the rule, set
-`isPaused: true`. `config/grafana/tests/router-dead-row.test.yml` holds the behaviour under
-promtool in CI, and `tests/test_grafana_fixture_drift.py` fails when that fixture and the
-deployed rule drift apart.
-
-Router dead key (fleet-ops#11063, split out in fleet-ops#11081). A second rule in the same file,
-`router-dead-key` on `signal=router-dead-key`, fires when one row parked on a 401 more than
-2 times in 6 hours and is still parking: at least one park in the last 30 minutes, held for 15
-minutes. A 401 row parks on its first failure, so a park is one cooldown, and a row cannot park
-again until that cooldown ends (15 minutes on the worker rows), which is why its bar is 2 and
-not the row rule's 5. No worker can renew a key, so this rule's issue is filed
-`needs-nish-decision`: a worker run and a hand-off on it are wasted until Nish renews the key or
-approves taking its rows out of the router. `config/grafana/tests/router-dead-key.test.yml`
-holds its bar under promtool, and `tests/alert_routes_check.py` fails when the rule, its
-threshold or its issue label drift.
 
 Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
 Authorization value and a GitHub App installation token lives an hour, so a token pasted into
@@ -322,7 +301,7 @@ an installation token with `issues:write`, `pull_requests:read` and `actions:rea
 `repositories` key (the digest counts with `gh repo list Nishfleet`), then a `hosts.yml` in the
 0700 `/run` directory (0600 file, so the token lives in tmpfs, never on disk). The directory is
 not private to Hermes, so the agent lock's shared drop-in hides it too
-(`fleet-agent-lock.service.d/50-shared.conf`, `config/agent-locks.json` `must_hide`). The deploy
+(`fleet-agent-lock.service.d/50-shared.conf`). The deploy
 enables the timer and mints once; a failed mint is reported and does not stop the rest of the
 host config, and the Hermes units restart onto the new login only once the `hosts.yml` exists
 and a `gh issue view` through it has succeeded, and also only when the sandbox drop-in on
@@ -343,22 +322,6 @@ hour; `systemctl stop hermes-gateway.service hermes-serve.service` stops them), 
 the `Wants=`
 and `After=` lines, `GH_CONFIG_DIR` and the `InaccessiblePaths=` line from the drop-in. CI proof: `tests/test_worker_github_token.py`, which `ci.yml` already runs, starts
 this unit under systemd against `tests/github_app_stub.py` and checks the `hosts.yml` it writes.
-
-`CI_RUNNER` is absent by default and only exists while CI runs on Blacksmith. Set it by hand
-(fleet-ops#9670 retired the hourly auto-flip, and deleted the variable it left behind):
-
-    gh variable set CI_RUNNER --org Nishfleet --body blacksmith-4vcpu-ubuntu-2404 -v all
-
-`-v all` keeps the public repos on it; the default is private-only. While it is set, read
-`blacksmith usage` and take the largest of its `billable_minutes`, `billing_minutes` and
-`runtime_minutes` columns (4-vCPU minutes count double). At 2,850 minutes (95% of the 3,000 free)
-or more, delete it again: `gh variable delete CI_RUNNER --org Nishfleet`. Nish owns this call -
-check `blacksmith usage` when a month's CI load is heavy, and set the variable again at the start
-of a month if CI should run on Blacksmith. There is no automatic guard: the vendor bills past the
-3,000 free minutes even with no card on file (fleet-ops#8935), and ships no usage webhook or
-alert to trip on (fleet-ops#8936), so a person catches the crossing or nobody does. The retirement
-leaves the variable deleted, so CI runs on GitHub-hosted runners until someone sets it again;
-that changed nothing running, because nothing read it (fleet-ops#9670).
 
 ## Sentry monitors (org 0509-gg)
 
@@ -760,14 +723,6 @@ plan now fixes. Data restore is that vault's
 - Ruleset 23692529 has an empty `bypass_actors`. Check: `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 --jq '.bypass_actors, .current_user_can_bypass'` prints `[]` and `"never"`.
 - Repository admins, including every session acting as `nish3451`, merge only through the required checks and the merge queue: `gh pr merge <PR> --auto`.
 - Warning: the emergency path removes the merge guard. Only Nish takes it, as org owner, and restores the state after. Restore the admin role (actor 5) with `echo '{"bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`. Remove it again with `echo '{"bypass_actors":[]}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`.
-
-## The ratchet runs from main (2026-10-12)
-
-- Before: ruleset 23692529 required `ratchet`, an inline job in `ci.yml`, so a PR judged itself by its own copy (#9627). After: `ci.yml` calls `.github/workflows/ratchet.yml` and the ruleset requires `ratchet / ratchet`. 0509 and drive call the same file at `@main` and require the same context. Nothing else in the ruleset changed.
-- Order, because the PR's own head cannot report the old name: remove `ratchet` from the required list, merge, add `ratchet / ratchet`. `ci` kept `ratchet` in its `needs` the whole time.
-- A reusable workflow can be required from another repo: the organization ruleset `org-required-workflows` (`config/org-ruleset.json`, fleet-ops#10554) runs `Nishfleet/fleet-ops` `.github/workflows/ratchet.yml@main` in every repo. The 403 on `gh api orgs/Nishfleet/rulesets` was the token's missing org-owner scope, not the plan. The caller file still lives in the PR. The reusable job fails a PR that edits the caller's `ratchet` job; a PR that repoints the caller's `uses:` is caught by the ruleset's own run once the rule is active.
-- Check: `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 --jq '[.rules[]|select(.type=="required_status_checks").parameters.required_status_checks[].context]'`.
-- Undo (switch the ratchet off, as the Nish-only emergency path): `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 | jq '{name,target,enforcement,bypass_actors,conditions,rules:(.rules|map(if .type=="required_status_checks" then .parameters.required_status_checks|=map(select(.context!="ratchet / ratchet")) else . end))}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`.
 
 ## Only require a status context that a run reports (2026-10-25)
 
