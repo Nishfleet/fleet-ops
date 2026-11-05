@@ -235,6 +235,8 @@
       - /etc/systemd/system/paths.target.wants/fleet-deploy.path
       - /etc/tmpfiles.d/fleet-deploy.conf
       - /var/lib/fleet-deploy
+      # Read only by agent-dispatch.yml, deleted 2026-11-01 (fleet-ops#10935).
+      - "{{ nish_home }}/.config/fleet-ops/intake-repos.json"
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"
