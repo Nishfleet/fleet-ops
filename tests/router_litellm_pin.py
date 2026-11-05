@@ -1,7 +1,7 @@
 """The litellm release every router test must run on, read from the proxy image.
 
 The host venv and the image drift. On 2026-10-28 the venv held litellm 1.98.0
-while containers/quadlet/fleet-litellm-proxy.container pinned v1.105.0, so a
+while containers/quadlet/fleet-litellm-proxy@.container pinned v1.105.0, so a
 router test that imported the venv's litellm measured a release the proxy never
 serves (fleet-ops#10710). 1.98.0 holds no slot for a stream and cannot show the
 v1.105.0 stream-slot leak (fleet-ops#10694), so the two versions do not answer
@@ -27,7 +27,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PROXY_CONTAINER = ROOT / "containers/quadlet/fleet-litellm-proxy.container"
+PROXY_CONTAINER = ROOT / "containers/quadlet/fleet-litellm-proxy@.container"
 
 ROUTER_TESTS_WITHOUT_LITELLM = frozenset({"test_router_consumer_groups"})
 

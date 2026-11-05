@@ -723,20 +723,20 @@ def test_pin_survives_a_failed_then_fallback_success():
     assert pin == {"model_id": "seat-a"}
 
 
-def test_the_migration_pre_start_names_the_same_image_as_the_proxy():
-    # fleet-litellm-proxy.container names the image twice: Image= and the ExecStartPre= that
-    # runs the migration job. A bump that edits only one would migrate the schema with one
-    # release and serve with another, so the two references must be identical.
+def test_the_migration_runs_the_proxy_image_from_the_deploy_not_on_every_start():
     import re
     from pathlib import Path
-    text = (Path(__file__).resolve().parents[1] / "containers/quadlet/fleet-litellm-proxy.container").read_text()
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "containers/quadlet/fleet-litellm-proxy@.container").read_text()
     image = re.findall(r"^Image=(\S+)$", text, re.MULTILINE)
-    migrate = [m for m in re.findall(r"^ExecStartPre=.*podman run .*--skip_server_startup.*$", text, re.MULTILINE)]
-    assert len(image) == 1 and len(migrate) == 1, (image, migrate)
+    assert len(image) == 1, image
     assert re.search(r"@sha256:[0-9a-f]{64}$", image[0]), image[0]
-    assert f" {image[0]} --skip_server_startup " in migrate[0], (image[0], migrate[0])
-    assert "--config" not in migrate[0]
     assert f":v{PINNED_LITELLM}@" in image[0], (image[0], PINNED_LITELLM)
+    assert "--skip_server_startup" not in text and "ExecStartPre=" not in text
+    play = (root / "ansible/host.yml").read_text()
+    assert "fleet-litellm-proxy@.container') | regex_search('^Image=" in play
+    assert "--skip_server_startup" in play
+    assert play.index("- name: Migrate the litellm database") < play.index("- name: Restart litellm proxy")
 
 
 def test_a_404_gets_one_in_group_retry_on_litellm_1_105_0():
@@ -909,7 +909,7 @@ if __name__ == "__main__":
         test_a_404_lane_retries_onto_the_peer_and_then_parks,
         test_a_401_lane_retries_onto_the_peer_and_then_parks,
         test_pin_survives_a_failed_then_fallback_success,
-        test_the_migration_pre_start_names_the_same_image_as_the_proxy,
+        test_the_migration_runs_the_proxy_image_from_the_deploy_not_on_every_start,
     ]
     failures = 0
     for fn in fns:

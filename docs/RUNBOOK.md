@@ -482,17 +482,21 @@ raise the second to 10, then put both back to 300 and 3.
 ## LiteLLM stack (rebuild reference)
 
 Postgres, Redis and the proxy are Podman Quadlet containers defined in
-`containers/quadlet/fleet-litellm-{postgres,redis,proxy}.container` (images
+The proxy runs as two instances on 127.0.0.1:4001 and :4002 behind HAProxy on 127.0.0.1:4000
+(`rootfs/etc/haproxy/haproxy.cfg`); a deploy restarts them one at a time. `echo "show stat" |
+sudo socat - /run/haproxy/admin.sock` shows which instance HAProxy counts as up.
+
+`containers/quadlet/fleet-litellm-{postgres,redis}.container` and `fleet-litellm-proxy@.container` (images
 `postgres:16`, `redis:7`, `ghcr.io/berriai/litellm:v1.98.0`, all
 `Network=host`), run as `fleet-litellm-postgres.service`,
-`fleet-litellm-redis.service` and `fleet-litellm-proxy.service`. Healthy
+`fleet-litellm-redis.service` and `fleet-litellm-proxy@4001.service fleet-litellm-proxy@4002.service`. Healthy
 check: `systemctl --user is-active fleet-litellm-postgres.service
-fleet-litellm-redis.service fleet-litellm-proxy.service` prints `active`
+fleet-litellm-redis.service fleet-litellm-proxy@4001.service fleet-litellm-proxy@4002.service` prints `active`
 three times. Host data directories stay at
 `~/.local/share/fleet-litellm-postgres` and
 `~/.local/share/fleet-litellm-redis`.
 
-The proxy version is the image tag in `fleet-litellm-proxy.container`,
+The proxy version is the image tag in `fleet-litellm-proxy@.container`,
 bumped in its own PR.
 
 The live config `~/.config/fleet-ops/litellm-proxy.yaml` is a copy of
@@ -500,10 +504,10 @@ The live config `~/.config/fleet-ops/litellm-proxy.yaml` is a copy of
 which overwrites a hand edit, and `fleet-litellm-proxy-config.path` restarts the
 proxy only when the bytes change. Edit the repo file and nothing else; CI checks
 it against `config/litellm-proxy.schema.json` (fleet-ops#8724). Keys resolve as `os.environ/<NAME>` from the three
-`EnvironmentFile=` entries in `fleet-litellm-proxy.container`: the optional `-%h/.config/fleet-ops/seats/*.env`,
+`EnvironmentFile=` entries in `fleet-litellm-proxy@.container`: the optional `-%h/.config/fleet-ops/seats/*.env`,
 and `-%h/.config/straitly/straitly.env` (the leading `-` marks an optional file), and the
 required `%h/.config/fleet-ops/litellm-master-key.env`. The container receives only the names that have a `PodmanArgs=--env=<NAME>` line in
-`fleet-litellm-proxy.container` (fleet-ops#9020), so a new `os.environ/<NAME>` in the yaml needs a
+`fleet-litellm-proxy@.container` (fleet-ops#9020), so a new `os.environ/<NAME>` in the yaml needs a
 matching `PodmanArgs=--env=<NAME>` line; `disable_prisma_schema_update: true` stays under `general_settings`
 (startup `prisma migrate deploy` stalls every restart without it), and
 `DATABASE_URL` is a unit `Environment=` in host-qualified form (the
@@ -521,7 +525,7 @@ back in argv.
 
 Edits to that file are applied automatically. `fleet-litellm-proxy-config.path`
 (`PathChanged=`) triggers `fleet-litellm-proxy-config.service`, which runs
-`systemctl --user try-restart fleet-litellm-proxy.service` — the proxy reads
+`systemctl --user try-restart fleet-litellm-proxy@4001.service fleet-litellm-proxy@4002.service` — the proxy reads
 its config only at start, so the restart is the apply step, and `try-restart`
 means an edit never starts a proxy that was stopped on purpose. Every save
 restarts the proxy (~38 s), so batch edits into one write. Install it with
@@ -551,7 +555,7 @@ LiteLLM dump). Credentials and heartbeat URLs stay in the box-only env files
 they name.
 
 Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service
-fleet-litellm-redis.service fleet-litellm-proxy.service`, then `rm -rf` the
+fleet-litellm-redis.service fleet-litellm-proxy@4001.service fleet-litellm-proxy@4002.service`, then `rm -rf` the
 two `Volume=` data dirs named in
 `containers/quadlet/fleet-litellm-postgres.container` and
 `containers/quadlet/fleet-litellm-redis.container`
@@ -624,7 +628,7 @@ single-name file of its own instead (fleet-ops#10222):
   system units (`runs-on: [self-hosted, agent]`), so they did not inherit the
   user manager either. The pi worker reads its own credentials: the `litellm`
   provider with per-group keys plus `seats/mobbin-mcp.env`.
-- `fleet-litellm-proxy.container` took the whole manager environment through
+- `fleet-litellm-proxy@.container` took the whole manager environment through
   `--env-host` until #9020; it now passes the named `PodmanArgs=--env=` list.
   Its `anthropic/` rows set `api_base` explicitly and take `MINIMAX_API_KEY`,
   so `ANTHROPIC_BASE_URL` is not read.

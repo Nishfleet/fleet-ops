@@ -1,0 +1,11 @@
+# One instance of the rolling router restart (the "Restart litellm proxy" handler in host.yml).
+- name: Restart router instance {{ litellm_proxy_port }}  # noqa: command-instead-of-module no-changed-when
+  ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-litellm-proxy@{{ litellm_proxy_port }}.service
+
+- name: Wait until router instance {{ litellm_proxy_port }} is ready
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ litellm_proxy_port }}/health/readiness"
+  register: litellm_ready
+  until: litellm_ready.status == 200
+  retries: 60
+  delay: 5

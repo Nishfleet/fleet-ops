@@ -33,11 +33,51 @@
   loop:
     - fleet-grafana.container
     - fleet-litellm-postgres.container
-    - fleet-litellm-proxy.container
     - fleet-litellm-redis.container
   notify:
     - Reload nish's user manager
     - Restart fleet-grafana
+
+# Its own task, so only a change of this file (in practice the Image= line) runs LiteLLM's
+# migration job and then the rolling restart, in the order host.yml lists the handlers.
+# https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_handlers.html
+# One copy per instance: podman 4.9 Quadlet has no template units, and the @<port> file name
+# gives systemd the %i the quadlet uses for the port.
+- name: Install the router quadlets
+  become: true
+  become_user: nish
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/containers/quadlet/fleet-litellm-proxy@.container"
+    dest: "{{ nish_home }}/.config/containers/systemd/fleet-litellm-proxy@{{ item }}.container"
+    mode: '0644'
+  loop: "{{ litellm_proxy_ports }}"
+  notify:
+    - Reload nish's user manager
+    - Migrate the litellm database
+    - Restart litellm proxy
+
+# The router's load balancer on 127.0.0.1:4000. After the retired-units step, which stops the old
+# single router that held the port. Ubuntu's package, its own unit and reload.
+- name: Install HAProxy
+  ansible.builtin.apt:
+    name: haproxy
+    state: present
+
+- name: Install the HAProxy config
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/haproxy/haproxy.cfg"
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: '0644'
+    validate: /usr/sbin/haproxy -c -f %s
+  notify: Reload haproxy
+
+- name: Run HAProxy
+  ansible.builtin.systemd_service:
+    name: haproxy.service
+    enabled: true
+    state: started
 
 - name: Install nish's agent and tool config files
   become: true

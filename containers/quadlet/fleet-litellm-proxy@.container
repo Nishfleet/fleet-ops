@@ -1,0 +1,123 @@
+# Fleet LiteLLM proxy, containerized (fleet-ops#8435, cutover #8494). Two instances run from this
+# one file: the deploy copies it to fleet-litellm-proxy@4001.container and @4002.container, so %i is
+# the instance's loopback port. HAProxy on 127.0.0.1:4000 (rootfs/etc/haproxy/haproxy.cfg) sends each
+# call to a ready instance, and the deploy restarts them one at a time. LiteLLM's deploy doc: the
+# proxy is stateless, run 2+ replicas behind a load balancer, with Redis shared
+# (https://docs.litellm.ai/docs/proxy/deploy). Podman 4.9 Quadlet has no template units, so the
+# deploy writes two real files; the @ name is what gives systemd the %i.
+# The image is pinned by tag and digest (v1.105.0, cosign-verified outside CI). A bump edits the
+# Image= line only. The deploy then runs this image's own migration job and restarts the proxy, in
+# that order (ansible/host.yml handlers, notified when this file changes): the upgrade guide's
+# "run migrations before rollout", which Helm does with a pre-upgrade hook
+# (https://docs.litellm.ai/docs/proxy/upgrade_guide). A plain restart (crash, config change,
+# reboot) does not migrate, so it does not keep the router down for the job's 25-150 s
+# (fleet-ops#11739).
+
+[Unit]
+Description=Fleet LiteLLM proxy on 127.0.0.1:%i (Quadlet, fleet-ops#8435)
+Requires=fleet-litellm-postgres.service fleet-litellm-redis.service
+After=fleet-litellm-postgres.service fleet-litellm-redis.service
+# Keep restarting for a few minutes, then enter failed and page
+# (OnFailure=, fleet-ops#9033). Measured 2026-10-01: podman exit 125
+# dies in ~2s; a healthy start reaches uvicorn in ~38s and readiness
+# in ~75s. Measured 2026-10-23 on v1.105.0: about 30 s to readiness.
+# Burst 20 × (RestartSec 10s + about 2 min) = 2600s, so the window must be 1h or the burst never
+# fills and OnFailure never fires.
+StartLimitIntervalSec=1h
+StartLimitBurst=20
+
+[Container]
+Image=ghcr.io/berriai/litellm:v1.105.0@sha256:60947db020b57e204823d3fbc8bb295c85be890d7c9adcc77fb4f5fc2fe410b2
+# general_settings.disable_prisma_schema_update stays true: the proxy itself never migrates, it only
+# logs "prisma schema out of sync". The migration is the deploy's handler (see the header).
+# Podman container names cannot hold the @ of the default systemd-%N name.
+ContainerName=fleet-litellm-proxy-%i
+Network=host
+Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
+# DATABASE_URL carries the database password, so it comes from a 0600 file, not this
+# repo (the database requires scram-sha-256). general_settings.database_url in
+# config/litellm-proxy.yaml is os.environ/DATABASE_URL (fleet-ops#10020), so this variable is the
+# one the proxy uses. The env file has no `-` prefix on purpose: if it is missing the proxy does
+# not start (loud, OnFailure=) rather than start with a URL the database refuses. The password
+# is hex, so the URL needs no escaping. LITELLM_LOG=INFO does not print the URL.
+PodmanArgs=--env=DATABASE_URL
+# INFO, not DEBUG: DEBUG dumps full prompts into the journal (fleet-ops#4449).
+Environment=LITELLM_LOG=INFO
+# A stop drains: uvicorn stops accepting (HAProxy then sends new calls to the other instance), waits for
+# open calls to finish, and exits. Podman SIGKILLs at this timeout
+# (https://docs.podman.io/en/v4.9.3/markdown/podman-run.1.html#stop-timeout-seconds; podman 4.9
+# Quadlet has no StopTimeout= key). 300 s covers the p99.9 call: 99,912 calls in the 7 days to
+# 2026-11-04 took p50 4.8 s, p99 131 s, p99.9 298 s (fleet-ops#11739). The value is fixed when the
+# container is created. tests/test_litellm_proxy_stop_window.py keeps it below TimeoutStopSec.
+PodmanArgs=--stop-timeout=300
+# Bytecode cache that outlives the --rm container. Each start re-compiled
+# litellm+prisma into a throwaway layer; measured 2026-10-02 on the pinned
+# image, `import litellm.proxy.proxy_server` 24.6/26.0 s cold vs 20.4/18.2 s
+# warm, paid by the parent and each worker. Python revalidates every .pyc
+# against its source mtime, so an image bump just recompiles.
+Volume=fleet-litellm-pycache:/pycache
+Environment=PYTHONPYCACHEPREFIX=/pycache
+# Named pass-through, not --env-host (fleet-ops#9020): --env-host copied the whole
+# systemd --user manager environment into the container. Podman 4.9.3 (Ubuntu 24.04)
+# drops a bare `Environment=NAME` line, so each name is its own PodmanArgs=--env=NAME:
+# podman reads that one variable from its own environment, which the [Service]
+# EnvironmentFile= lines below fill. One line per os.environ/NAME in litellm-proxy.yaml.
+# Alibaba Model Studio Token Plan (fleet-ops#9220, judge row only): os.environ/ALIBABA_CODING_API_KEY in
+# config/litellm-proxy.yaml needs its own line, and the seat file ~/.config/fleet-ops/seats/alibaba-coding.env
+# is already covered by the seat EnvironmentFile lines below.
+PodmanArgs=--env=ALIBABA_CODING_API_KEY
+# Anthropic Claude API (the tether group's Sonnet 5.5 row, Nish 2026-10-22): the prepaid key sits in a
+# seat file that the seat EnvironmentFile lines below already cover.
+PodmanArgs=--env=ANTHROPIC_API_KEY
+PodmanArgs=--env=COMMANDCODE_API_KEY
+PodmanArgs=--env=LITELLM_MASTER_KEY
+PodmanArgs=--env=MINIMAX_API_KEY
+PodmanArgs=--env=OPENCODE_API_KEY
+# Redis cache password (router_settings.redis_password): filled from litellm-keys/redis.env below.
+PodmanArgs=--env=REDIS_PASSWORD
+PodmanArgs=--env=VERCEL_AI_GATEWAY_JEV_KEY
+PodmanArgs=--env=ZAI_API_KEY
+# One uvicorn process per instance, as LiteLLM's production guide says
+# (https://docs.litellm.ai/docs/proxy/prod): scale with instances, not workers. With --num_workers 2
+# one worker hung on every stop and podman SIGKILLed it (journal 2026-11-04 18:30, 20:23, 22:50 IST).
+# Busy-loop health (fleet-ops#8827) is now HAProxy's job: it checks each instance's
+# /health/readiness and sends calls to the other one.
+Exec=--config /app/config.yaml --port %i --host 127.0.0.1 --num_workers 1
+
+[Service]
+# One line per seat file whose key the PodmanArgs=--env=NAME lines above pass on (a test checks
+# the config's os.environ/NAME vars are all passed); a glob would hand the router every other seat's key.
+EnvironmentFile=-%h/.config/fleet-ops/seats/alibaba-coding.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/anthropic-api.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/commandcode.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/minimax.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/opencode.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/typesafe-jev.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/zai.env
+EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
+EnvironmentFile=%h/.config/fleet-ops/litellm-db.env
+# No `-` prefix on purpose: without this file the proxy fails to start (loud, via OnFailure=)
+# instead of running with a cache it cannot authenticate to. ansible/host.yml renders it.
+EnvironmentFile=%h/.config/fleet-ops/litellm-keys/redis.env
+Slice=app-litellm.slice
+# The router's own cap, equal to app-litellm.slice's MemoryMax; the slice test below asserts the two
+# stay equal. The slice still bounds the whole tree at the same 5G, so this is not a tighter limit.
+# It gives the unit a cap of its own instead of `infinity` in `systemctl show -p MemoryMax`, and
+# makes the proxy's cgroup the one that hits its wall at 5G rather than the shared slice.
+MemoryMax=5G
+# systemd's 90 s default would not cover a first pull of a new image; Type=notify ends the wait at
+# container start.
+TimeoutStartSec=15min
+ManagedOOMPreference=avoid
+Restart=on-failure
+RestartSec=10s
+# Above the 300 s --stop-timeout, so podman's own SIGKILL fires first and the unit still has time
+# to remove the container.
+TimeoutStopSec=320
+# No SuccessExitStatus=137: with one process a planned stop exits 0, so a SIGKILL (podman's
+# timeout, an external kill -9) fails the unit, Restart=on-failure restarts it, and a kernel OOM
+# kill ends it as oom-kill (OOMPolicy=stop, the default, written here).
+OOMPolicy=stop
+
+[Install]
+WantedBy=default.target

@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-QUADLET = ROOT / "containers/quadlet/fleet-litellm-proxy.container"
+QUADLET = ROOT / "containers/quadlet/fleet-litellm-proxy@.container"
 
 
 def test_the_stop_window_is_bounded_by_podman_inside_systemd() -> None:
@@ -19,5 +19,5 @@ def test_the_stop_window_is_bounded_by_podman_inside_systemd() -> None:
     stop = [int(x) for x in re.findall(r"^PodmanArgs=--stop-timeout=(\d+)$", text, re.MULTILINE)]
     unit = [int(x) for x in re.findall(r"^TimeoutStopSec=(\d+)$", text, re.MULTILINE)]
     assert len(stop) == 1 and len(unit) == 1, (stop, unit)
-    assert stop[0] <= 45, "a restart must not stall longer than 45 s"
+    assert stop[0] >= 300, "the drain must cover the p99.9 call (298 s, fleet-ops#11739)"
     assert stop[0] + 10 <= unit[0], "systemd's timeout must leave room after podman's SIGKILL"

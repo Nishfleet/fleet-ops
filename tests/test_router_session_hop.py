@@ -5,7 +5,7 @@ starts 429ing, the router cools it, and the session sends 100 more calls. How
 many of those calls land on a row other than the one the call before used?
 
 Measured on litellm 1.105.0, the pin in
-containers/quadlet/fleet-litellm-proxy.container, with the router settings
+containers/quadlet/fleet-litellm-proxy@.container, with the router settings
 config/litellm-proxy.yaml ships (session_affinity, cooldown_time 60,
 allowed_fails 1, deployment_affinity_ttl_seconds 600): 62 of 99 hops, across 3 distinct
 rows. Re-claim the pin to a healthy row - which is what the #9411 fix does - and the

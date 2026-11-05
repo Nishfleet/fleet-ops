@@ -40,6 +40,9 @@
     fleet_reviewer_runner_sha256: baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
     # netcup-reviewer-1 to 3, so reviews of different pull requests run side by side.
     fleet_reviewer_runner_ids: [1, 2, 3]
+    # The two router instances' loopback ports, behind HAProxy on 127.0.0.1:4000
+    # (containers/quadlet/fleet-litellm-proxy@.container, rootfs/etc/haproxy/haproxy.cfg).
+    litellm_proxy_ports: [4001, 4002]
     fleet_reviewer_pi_packages: "{{ (lookup('ansible.builtin.file', repo_root ~ '/config/pi-packages.json') | from_json).packages | select('search', 'pi-grok') | list }}"
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
@@ -115,6 +118,8 @@
     retired_user_units:
       - fleet-sync.service
       - fleet-litellm-proxy-config.path
+      # The single router on :4000; two instances behind HAProxy replace it.
+      - fleet-litellm-proxy.service
       - fleet-grafana-provisioning.path
       # The VNC desktop; the box has no graphical desktop (fleet-ops#10935).
       - tigervnc.service
@@ -195,6 +200,8 @@
       # The dead Max login's agents link and the tmpfiles line that made it (fleet-ops#11674).
       - "{{ nish_home }}/.config/user-tmpfiles.d/claude-max-agents.conf"
       - "{{ nish_home }}/.claude-max"
+      # The single router on :4000; fleet-litellm-proxy@4001 and @4002 replace it.
+      - "{{ nish_home }}/.config/containers/systemd/fleet-litellm-proxy.container"
       # The VNC desktop unit and its enable link (fleet-ops#10935).
       - "{{ nish_home }}/.config/systemd/user/tigervnc.service"
       - "{{ nish_home }}/.config/systemd/user/default.target.wants/tigervnc.service"
@@ -375,15 +382,49 @@
     - name: Reload nish's user manager  # noqa: command-instead-of-module no-changed-when
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host daemon-reload
 
-    # One systemctl call, so one transaction: Redis first (the proxy is After= and Requires= it),
-    # then the proxy, restarted once. Fires only when a rendered Redis file changed (first
-    # creation, or the password file was deleted and re-minted), never in steady state.
-    # The proxy needs up to ~10 minutes to be healthy again after this.
-    - name: Restart litellm proxy  # noqa: command-instead-of-module no-changed-when
-      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host try-restart fleet-litellm-proxy.service
+    # LiteLLM's own migration job, before the proxy restarts onto a new image: the upgrade guide's
+    # "Custom deployments" command, run where Helm runs its pre-upgrade hook
+    # (https://docs.litellm.ai/docs/proxy/upgrade_guide). The image is the quadlet's Image= line,
+    # so a bump edits one line. The old proxy keeps serving while it runs. A failure fails the
+    # deploy before the restart, so the proxy never starts on a schema the job did not migrate.
+    - name: Migrate the litellm database  # noqa: no-changed-when
+      become: true
+      become_user: nish
+      environment: "{{ nish_env }}"
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/podman
+          - run
+          - --rm
+          - --network=host
+          - --env-file={{ nish_config }}/fleet-ops/litellm-db.env
+          - --env=DISABLE_SCHEMA_UPDATE=false
+          - --env=LITELLM_LOG=INFO
+          - "{{ lookup('ansible.builtin.file', repo_root ~ '/containers/quadlet/fleet-litellm-proxy@.container') | regex_search('^Image=(\\S+)$', '\\1', multiline=True) | first }}"
+          - --skip_server_startup
 
+    # A rolling restart: one instance at a time, the next only once the last answers
+    # /health/readiness, so HAProxy always has one ready instance and no call is refused
+    # (https://docs.litellm.ai/docs/proxy/prod). `systemctl restart` returns after the stop's drain
+    # and the container start.
+    - name: Restart litellm proxy
+      ansible.builtin.include_tasks: tasks/litellm-proxy-restart.yml
+      loop: "{{ litellm_proxy_ports }}"
+      loop_control:
+        loop_var: litellm_proxy_port
+
+    # Redis first; the instances are After= and Requires= it, so systemd restarts them with it.
+    # Fires only when a rendered Redis file changed (first creation, or the password file was
+    # deleted and re-minted), never in steady state, and that one restart is not hitless.
     - name: Restart litellm redis then proxy  # noqa: command-instead-of-module no-changed-when
-      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-litellm-redis.service fleet-litellm-proxy.service
+      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-litellm-redis.service {{ litellm_proxy_ports | map('string') | map('regex_replace', '^(.*)$', 'fleet-litellm-proxy@\\1.service') | join(' ') }}
+
+    # HAProxy's master re-execs its worker on reload and the old worker finishes its open
+    # connections (https://docs.haproxy.org/2.8/management.html, "Stopping and restarting").
+    - name: Reload haproxy
+      ansible.builtin.systemd_service:
+        name: haproxy.service
+        state: reloaded
 
     - name: Restart systemd-oomd
       ansible.builtin.systemd_service:
