@@ -28,7 +28,7 @@ jobs:
         run: |
           shopt -s nullglob
           # Host-only binaries the units name; a stub is enough for verify.
-          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/claude /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /home/runner/.local/bin/tofu /opt/node-v22.23.3/bin/node /usr/bin/restic /usr/bin/rootlesskit /usr/bin/syncthing /usr/bin/tigervncserver /var/lib/fleet-runner/test_instance/runsvc.sh /var/lib/fleet-reviewer/test_instance/bin/runsvc.sh /var/lib/fleet-ci/runner/runsvc.sh; do sudo install -D -m755 /bin/true "$b"; done; sudo chown -R "$USER" "$HOME/.local"
+          for b in /home/nish/.local/bin/tincan /home/nish/.local/bin/claude /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /opt/node-v22.23.3/bin/node /usr/bin/restic /usr/bin/rootlesskit /usr/bin/syncthing /var/lib/fleet-runner/test_instance/runsvc.sh /var/lib/fleet-reviewer/test_instance/bin/runsvc.sh /var/lib/fleet-ci/runner/runsvc.sh; do sudo install -D -m755 /bin/true "$b"; done
           systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path rootfs/etc/systemd/system/*.service rootfs/etc/systemd/system/*.timer rootfs/etc/systemd/user/*.service rootfs/etc/systemd/user/*.timer
       - name: Python lint (fleet-ops#11692)
         uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
