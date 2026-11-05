@@ -31,10 +31,10 @@ into a repo, PR or issue.
 IPs, minted and rotated by `infra/cloudflare-tokens` (token key `vps-grafana`,
 45-day expiry, weekly apply). The file is written 0600 by that config and read
 by `ansible/host.yml` into the `grafana-cloudflare-api-token` Podman secret, so
-Grafana's Cloudflare data source is the only consumer. The apply's
-`ExecStartPost` starts `fleet-host-config.service`, whose `ansible/tasks/secrets.yml`
-replaces that secret when the value changes, so a rotation does not wait for the
-next host-config run.
+Grafana's Cloudflare data source is the only consumer. `ansible/tasks/secrets.yml`
+replaces that secret when the value changes, so a rotation reaches Grafana on the
+next host-config run (a merge or a boot); the weekly apply starts nothing after
+the run (systemd.service(5) `ExecStartPost=`, polkit(8)).
 
 It replaced the hand-made `deploy-ci` user token (Workers scripts, D1, KV, Zone
 read, GraphQL analytics, no expiry, no IP lock), which Nish approved retiring on

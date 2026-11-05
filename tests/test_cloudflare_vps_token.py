@@ -83,20 +83,21 @@ def test_the_apply_fails_when_the_address_file_does_not_match_the_host():
     assert "ExecStartPre=" in UNIT.read_text().split("[Service]")[1], "the check runs inside the apply unit"
 
 
-def test_the_apply_hands_the_rotation_to_the_existing_writer():
-    """Grafana mounts a copy, so a rotation that only rewrites the file blinds it.
+def test_the_apply_leaves_grafana_refresh_to_the_next_host_config_run():
+    """Grafana mounts a copy, so a rotation only reaches it on a host-config run.
 
-    The Cloudflare spend watch reads through that secret. One writer already
-    refreshes it from this file, so the apply starts that writer instead of
-    writing the secret a second time and drifting from it.
+    The apply does not start `fleet-host-config.service` itself: a user unit
+    cannot reliably start a system unit (polkit(8), systemd.service(5)
+    `ExecStartPost=`), and a refusal failed the whole run after a green apply.
+    The next host-config run -- a merge (deploy-box.yml) or a boot
+    (fleet-host-config-boot.timer) -- refreshes the copied secret.
     """
     text = UNIT.read_text()
-    post = next(line for line in text.splitlines() if line.startswith("ExecStartPost="))
-    assert post == "ExecStartPost=/usr/bin/systemctl start --no-block fleet-host-config.service"
-    assert "polkit" in text, "the unit must say why a user unit may start a system unit"
+    assert not [line for line in text.splitlines() if line.startswith("ExecStartPost=")], (
+        "the apply must not start a system unit after the run"
+    )
     assert "grafana-cloudflare-api-token" in HOST.read_text()
-    assert "--no-block" in post, "a long playbook must not hold the apply"
-    assert not [line for line in text.splitlines() if line.startswith(("ExecStart=", "ExecStartPost=")) and "/bin/sh" in line and "TF_VAR_github_app_pem" not in line], (
+    assert not [line for line in text.splitlines() if line.startswith("ExecStart=") and "/bin/sh" in line and "TF_VAR_github_app_pem" not in line], (
         "no second writer in shell: ansible/tasks/secrets.yml already does this"
     )
 
