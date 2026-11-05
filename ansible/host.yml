@@ -232,6 +232,8 @@
       - /etc/systemd/system/paths.target.wants/fleet-deploy.path
       - /etc/tmpfiles.d/fleet-deploy.conf
       - /var/lib/fleet-deploy
+      # The 0509 runner's lock tree; nothing uses /run/lock/0509 any more (fleet-ops#11714).
+      - /etc/tmpfiles.d/github-runner-0509.conf
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"
