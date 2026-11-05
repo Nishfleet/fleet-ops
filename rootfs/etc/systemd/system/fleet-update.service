@@ -14,8 +14,8 @@ After=network-online.target
 # auto-restart forever. systemd counts starts from the first one, so the 4th
 # start comes burst * (run + RestartSec) later; the interval must be longer than
 # 3 * (TimeoutStartSec + RestartSec) or a slow failure resets the count and retries
-# forever (tests/test_oneshot_restart.py checks this).
-StartLimitIntervalSec=20h
+# forever (tests/test_oneshot_restart.py checks this): 3 * (45 + 30) min < 4h.
+StartLimitIntervalSec=4h
 StartLimitBurst=3
 
 [Service]
@@ -28,8 +28,8 @@ Environment=ANSIBLE_NOCOLOR=1
 # become_user nish with pipelining needs no world-readable temp files.
 Environment=ANSIBLE_PIPELINING=1
 # Ansible's own log of the run, because the journal cannot hold this one:
-# journald.conf.d/99-cap.conf caps the journal at 300M, and on 2026-10-05 the
-# 6h run's log rotated out before anyone read why it exited 2 (fleet-ops#9334).
+# journald.conf.d/99-cap.conf caps the journal at 300M, and on 2026-10-05 a
+# long run's log rotated out before anyone read why it exited 2 (fleet-ops#9334).
 # StateDirectory=fleet-ops above creates the directory, so the path is always
 # writable; a missing parent makes ansible warn and write no log, not fail.
 # This is in addition to stdout, so the journal keeps its own record too.
@@ -43,5 +43,6 @@ ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git
 # makes curl fail and the - prefix ignores it; an unreachable healthchecks.io does not fail the update, a stale check is
 # the alert.
 ExecStartPost=-/usr/bin/curl -fsS -m 10 --retry 3 -o /dev/null --config /etc/fleet-ops/update-hc.curl
-# Drain (up to 150 min) + backup (up to 60) + apt (up to 60) + tools + resume checks.
-TimeoutStartSec=6h
+# The play runs two tool updaters, each capped at 900 s (ansible/update.yml), plus
+# the clone. A hung run fails at 45 min instead of hiding for hours.
+TimeoutStartSec=45min
