@@ -276,8 +276,10 @@ jobs:
           if [ -n "$PR" ]; then gh pr comment "$PR" -R "$REPO" --body "agent: pushed the answer; CI and the re-review run next"; exit 0; fi
           title=$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)
           pr=$(gh pr create -R "$REPO" --head "agent/issue-$ISSUE" --title "$title" --body "Closes #$ISSUE"$'\n\n'"Built by the agent lane: $run"$'\n\n'"$proof")
-          gh pr merge "$pr" -R "$REPO" --auto || true
           gh issue comment "$ISSUE" -R "$REPO" --body "agent: PR $pr"
+          # https://cli.github.com/manual/gh_pr_merge: with a merge queue --auto queues the PR.
+          # A failure fails the job, so park labels the issue agent-blocked.
+          gh pr merge "$pr" -R "$REPO" --auto
   park:
     needs: [claim, work, push]
     if: failure()
@@ -296,5 +298,5 @@ jobs:
       - name: Park on failure
         env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
         run: |
-          gh issue edit "$ISSUE" -R "$REPO" --add-label agent-blocked --remove-label agent-in-progress || true
-          gh issue comment "$ISSUE" -R "$REPO" --body "agent: run failed, see $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID; add agent-ready to retry" || true
+          gh issue edit "$ISSUE" -R "$REPO" --add-label agent-blocked --remove-label agent-in-progress
+          gh issue comment "$ISSUE" -R "$REPO" --body "agent: run failed, see $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID; add agent-ready to retry"
