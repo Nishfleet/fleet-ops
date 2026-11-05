@@ -123,6 +123,46 @@
 # A mint or a proof that fails, fails the play, so the deploy goes red and
 # Hermes is never restarted onto a login nothing has proven
 # (docs.ansible.com/ansible/latest/playbook_guide/playbooks_error_handling.html).
+- name: Create the GitHub App token minter directory
+  become: true
+  become_user: nish
+  ansible.builtin.file:
+    path: "{{ github_app_token_dir }}"
+    state: directory
+    mode: "0755"
+
+# GitHub's Octokit SDK mints both App tokens (Hermes and Grafana), pinned by the
+# lockfile (docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
+- name: Copy the GitHub App token minter and its lockfile
+  become: true
+  become_user: nish
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../config/github-app-token/{{ item }}"
+    dest: "{{ github_app_token_dir }}/{{ item }}"
+    mode: "0644"
+  loop:
+    - package.json
+    - package-lock.json
+    - mint.mjs
+  register: github_app_token_pins
+
+- name: Look for the installed Octokit auth-app package
+  become: true
+  become_user: nish
+  ansible.builtin.stat:
+    path: "{{ github_app_token_dir }}/node_modules/@octokit/auth-app/package.json"
+  register: github_app_token_installed
+
+- name: Install the pinned Octokit packages from the lockfile  # noqa: no-changed-when
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: ["{{ nish_home }}/.local/bin/npm", ci, --ignore-scripts, --no-audit, --no-fund]
+    chdir: "{{ github_app_token_dir }}"
+  timeout: 300
+  when: github_app_token_pins.changed or not github_app_token_installed.stat.exists
+
 - name: Enable the Hermes GitHub login refresh
   ansible.builtin.systemd_service:
     name: fleet-hermes-github-token.timer

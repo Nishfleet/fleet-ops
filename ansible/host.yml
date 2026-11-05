@@ -267,6 +267,7 @@
       - fc1c6a815b80
       - 7eda90c8dd97
     chrome_devtools_mcp_dir: "{{ nish_home }}/.local/share/chrome-devtools-mcp"
+    github_app_token_dir: "{{ nish_home }}/.local/share/github-app-token"
     chrome_devtools_mcp_bin: "{{ nish_home }}/.local/bin/chrome-devtools-mcp"
     chrome_devtools_mcp_args:
       - --headless

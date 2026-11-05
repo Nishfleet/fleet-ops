@@ -26,3 +26,4 @@ crash.log
 
 # Pi extension test dependencies, installed by `npm ci`; the lockfile is the record.
 pi-extensions/*/node_modules/
+config/github-app-token/node_modules/
