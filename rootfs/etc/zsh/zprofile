@@ -12,6 +12,11 @@
 # read needs its mode set, which the playbook does for every file it installs.
 umask 077
 
+# The skills' Python environment (ansible/tasks/mcp-and-agent-clis.yml), ahead
+# of /usr/bin so `python3` and `python` find the libraries Ubuntu does not
+# package. ~/.zshrc then puts ~/.local/bin in front of it.
+PATH="$HOME/.local/share/skill-python/bin:$PATH"
+
 # fleet-ops#11320: an interactive Claude session runs as nish, so the seats'
 # file mode binds only readers of other uids and the deny rules bind only the
 # command text (fleet-ops#11114). A login shell starts claude inside the seats

@@ -19,6 +19,33 @@
     - pipx
   timeout: 600
 
+# Python libraries the pdf and pptx skills import that Ubuntu 24.04 does not
+# package: python-pptx (pptx), pdfplumber, pdf2image and pytesseract (pdf). The
+# system Python is externally managed (https://peps.python.org/pep-0668/), so
+# they go in one virtual environment, the way PEP 668 and the venv docs say
+# (https://docs.python.org/3/library/venv.html). --system-site-packages keeps
+# the apt libraries in system.yml importable from it, so its python3 replaces
+# /usr/bin/python3 without losing any of them. /etc/zsh/zprofile and the
+# Remote Control unit put its bin on PATH, which also gives skills the `python`
+# command they call. uv: https://docs.astral.sh/uv/pip/environments/.
+- name: Create the skill Python environment
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: ["{{ nish_home }}/.local/bin/uv", venv, --system-site-packages, --python, /usr/bin/python3, "{{ skill_python_dir }}"]
+    creates: "{{ skill_python_dir }}/pyvenv.cfg"
+
+- name: Install the Python libraries skills import
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: ["{{ nish_home }}/.local/bin/uv", pip, install, --python, "{{ skill_python_dir }}/bin/python", python-pptx, pdfplumber, pdf2image, pytesseract]
+  register: skill_python_install
+  changed_when: "'Installed' in skill_python_install.stderr"
+  timeout: 600
+
 - name: Create the Chrome DevTools MCP install directory
   become: true
   become_user: nish

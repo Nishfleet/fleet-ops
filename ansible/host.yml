@@ -248,6 +248,7 @@
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: "{{ nish_home }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
     agent_runner_root: "{{ nish_env.HOME }}/.local/share/agent-runner"
+    skill_python_dir: "{{ nish_home }}/.local/share/skill-python"
     # Hermes jobs whose prompt lives in config/hermes/<name>.md and is applied on every run.
     digest_prompts:
       - digest-morning

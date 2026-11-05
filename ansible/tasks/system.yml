@@ -162,6 +162,9 @@
 # - libreoffice-*-nogui (soffice), poppler-utils (pdftoppm), qpdf, pandoc: the
 #   document skills, headless builds so no desktop comes back.
 # - ffmpeg: hyperframes-*, media-use, last30days, product-launch-video.
+# - python3-pandas, python3-reportlab, tesseract-ocr: the pdf skill's table,
+#   PDF-writing and OCR examples. Its other imports have no Ubuntu package and
+#   live in the skill Python environment (tasks/mcp-and-agent-clis.yml).
 - name: Install the Postgres client, file and the tools agent skills call
   ansible.builtin.apt:
     name:
@@ -174,6 +177,9 @@
       - python3-pypdf
       - python3-pil
       - python3-numpy
+      - python3-pandas
+      - python3-reportlab
+      - tesseract-ocr
       - libreoffice-writer-nogui
       - libreoffice-calc-nogui
       - libreoffice-impress-nogui
