@@ -344,22 +344,6 @@ the `Wants=`
 and `After=` lines, `GH_CONFIG_DIR` and the `InaccessiblePaths=` line from the drop-in. CI proof: `tests/test_worker_github_token.py`, which `ci.yml` already runs, starts
 this unit under systemd against `tests/github_app_stub.py` and checks the `hosts.yml` it writes.
 
-`CI_RUNNER` is absent by default and only exists while CI runs on Blacksmith. Set it by hand
-(fleet-ops#9670 retired the hourly auto-flip, and deleted the variable it left behind):
-
-    gh variable set CI_RUNNER --org Nishfleet --body blacksmith-4vcpu-ubuntu-2404 -v all
-
-`-v all` keeps the public repos on it; the default is private-only. While it is set, read
-`blacksmith usage` and take the largest of its `billable_minutes`, `billing_minutes` and
-`runtime_minutes` columns (4-vCPU minutes count double). At 2,850 minutes (95% of the 3,000 free)
-or more, delete it again: `gh variable delete CI_RUNNER --org Nishfleet`. Nish owns this call -
-check `blacksmith usage` when a month's CI load is heavy, and set the variable again at the start
-of a month if CI should run on Blacksmith. There is no automatic guard: the vendor bills past the
-3,000 free minutes even with no card on file (fleet-ops#8935), and ships no usage webhook or
-alert to trip on (fleet-ops#8936), so a person catches the crossing or nobody does. The retirement
-leaves the variable deleted, so CI runs on GitHub-hosted runners until someone sets it again;
-that changed nothing running, because nothing read it (fleet-ops#9670).
-
 ## Sentry monitors (org 0509-gg)
 
 Warning: a green drive monitor does not mean drive works. The site sits behind Cloudflare
