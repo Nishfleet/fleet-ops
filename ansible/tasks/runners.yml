@@ -183,8 +183,8 @@
 # fleet-ops review.yml@main may use, as its own user fleet-reviewer. It shares no user or
 # group with fleet-runner or nish, so a worker job cannot read or change the pi that writes
 # the verdict, and fleet-reviewer cannot read the worker's home or the App key. Its home holds
-# the runner, pi, pi-grok and pi-grok's own login, and a router key that reaches the review
-# groups only (below): no git credential, no App key.
+# the runner, pi, and a router key that reaches the review groups only (below): no git
+# credential, no App key.
 # GitHub's "Hardening for self-hosted runners" and "Managing access to self-hosted runners":
 # https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
 # https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access
@@ -300,8 +300,7 @@
     group: fleet-reviewer
     mode: '0600'
 
-# Its own model file with the router's review groups alone, so the shared pi-models.json
-# cannot shadow pi-grok's models (pi docs/models.md: a models entry replaces the same ID).
+# Its own model file with the router's review groups alone (pi docs/models.md).
 - name: Install pi's router model for fleet-reviewer
   ansible.builtin.copy:
     content: "{{ {'providers': {'litellm': {'baseUrl': 'http://127.0.0.1:4000', 'api': 'openai-completions', 'apiKey': '!cut -d= -f2- $HOME/.config/fleet-ops/seats/litellm-reviewer.env', 'models': [{'id': 'review-claude', 'name': 'Claude Sonnet 5.5 (router review-claude)'}, {'id': 'review-qwen', 'name': 'Qwen 3.8 Max (router review-qwen)'}, {'id': 'review-any', 'name': 'Qwen, GLM or DeepSeek (router review-any)'}]}}} | to_nice_json }}"
@@ -309,28 +308,6 @@
     owner: fleet-reviewer
     group: fleet-reviewer
     mode: '0600'
-
-- name: Install pi's settings for fleet-reviewer
-  ansible.builtin.copy:
-    content: "{{ {'packages': fleet_reviewer_pi_packages} | to_nice_json }}"
-    dest: /var/lib/fleet-reviewer/.pi/agent/settings.json
-    owner: fleet-reviewer
-    group: fleet-reviewer
-    mode: '0600'
-
-# pi-grok, at the pin nish's pi uses, is the review job's Grok seat. `pi install` is pi's
-# documented install; the owner's one device-code `/login` as fleet-reviewer writes its own
-# auth.json, because pi-grok rotates refresh tokens and a copied login would log one copy out.
-# https://github.com/stnly/pi-grok#quick-start
-- name: Install pi-grok for fleet-reviewer
-  become: true
-  become_user: fleet-reviewer
-  ansible.builtin.command:
-    argv: [/var/lib/fleet-reviewer/.local/bin/pi, install, "{{ fleet_reviewer_pi_packages[0] }}"]
-    creates: /var/lib/fleet-reviewer/.pi/agent/git/github.com/stnly/pi-grok/package.json
-  environment:
-    HOME: /var/lib/fleet-reviewer
-    PATH: "{{ tether_node_dir }}/bin:/usr/bin:/bin"
 
 - name: Start the review runners
   ansible.builtin.systemd_service:

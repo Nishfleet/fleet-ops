@@ -3,10 +3,9 @@
 Runs the review steps' real shell with a fake `gh` and `pi` over the records GitHub keeps (the
 branch's push log and the agent.yml run names), and checks the router rows, the one review
 fallback and the schema guards that keep a review away from a builder's row. A pi build reaches
-Claude then Qwen, any other build reaches Qwen, GLM or DeepSeek, and Grok answers only when the
-router step failed (owner 2026-11-04: "need the others as backup", never MiniMax).
+Claude then Qwen, and any other build reaches Qwen, GLM or DeepSeek (owner 2026-11-04: "need the
+others as backup", never MiniMax). The router's fallbacks are the only fallback.
 https://docs.litellm.ai/docs/proxy/reliability#fallbacks
-https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepscontinue-on-error
 """
 import json
 import os
@@ -22,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ROUTER = yaml.safe_load((ROOT / "config/litellm-proxy.yaml").read_text())
 SCHEMA = ROOT / "config/litellm-proxy.schema.json"
 JOB = yaml.safe_load((ROOT / ".github/workflows/review.yml").read_text())["jobs"]["review"]
-STEP, GROK = JOB["steps"]
+(STEP,) = JOB["steps"]
 SHA = "0cd15f0bcd48220494314db680061c143bd641b1"
 LANE_APP = "nishfleet-worker[bot]"
 
@@ -34,8 +33,6 @@ if args[:2] == ["run", "list"]:
     data = [{"displayTitle": t} for t in json.loads(os.environ["RUNS"])]
 elif any("/activity" in a for a in args):
     data = json.loads(os.environ["PUSHES"])
-elif os.environ.get("GH_FAIL") and any("github.diff" in a for a in args):
-    sys.exit(1)
 elif args[:2] == ["pr", "view"]:
     data = {"title": "t", "body": "b", "author": {"login": "a"}, "reviews": [], "comments": []}
 else:
@@ -68,9 +65,6 @@ def run_job(tmp_path, branch, pushes=(), runs=(), **fail):
            "REPO": "o/r", "PR": "9", "SHA": SHA, "BRANCH": branch, "PR_TEXT": STEP["env"]["PR_TEXT"],
            "PUSHES": json.dumps(list(pushes)), "RUNS": json.dumps([f"agent #{i} engine={e}" for i, e in runs]), **fail}
     outcome = "success" if subprocess.run(["bash", "-c", STEP["run"]], check=False, env=env, capture_output=True).returncode == 0 else "failure"
-    assert STEP["continue-on-error"] is True and GROK["if"] == "steps.ai.outcome == 'failure'"
-    if outcome == "failure":
-        outcome = "success" if subprocess.run(["bash", "-c", GROK["run"]], check=False, env=env, capture_output=True).returncode == 0 else "failure"
     called = (tmp_path / "model").read_text().split() if (tmp_path / "model").exists() else []
     return outcome, called, (tmp_path / "out").read_text()
 
@@ -98,26 +92,11 @@ def test_anything_but_a_proven_pi_build_goes_to_review_any(tmp_path, branch, pus
     assert reviewer(tmp_path, branch, pushes, runs) == "review-any"
 
 
-def test_grok_does_not_run_when_the_router_answered(tmp_path):
-    outcome, called, out = run_job(tmp_path, "lead/x")
-    assert (outcome, called) == ("success", ["litellm/review-any"])
-    assert "Review (review-any," in out
-
-
-@pytest.mark.parametrize("branch, runs, first", [
-    ("agent/issue-7", [(7, "pi")], "litellm/review-claude"),
-    ("lead/x", [], "litellm/review-any"),
-], ids=["pi-build", "other-build"])
-def test_grok_reviews_every_build_when_the_router_step_failed(tmp_path, branch, runs, first):
-    outcome, called, out = run_job(tmp_path, branch, [push()], runs, PI_FAIL="litellm")
-    assert (outcome, called) == ("success", [first, "xai-oauth/grok-4.7"])
-    assert "Review (grok-4.7," in out and "VERDICT: APPROVE" in out
-    assert JOB["outputs"]["review"] == "${{ steps.ai.outputs.review || steps.grok.outputs.review }}"
-
-
-def test_grok_never_reviews_half_a_diff(tmp_path):
-    outcome, called, out = run_job(tmp_path, "lead/x", GH_FAIL="1")
-    assert (outcome, called, out) == ("failure", [], "")
+def test_a_router_failure_fails_the_review(tmp_path):
+    assert "continue-on-error" not in STEP
+    outcome, called, out = run_job(tmp_path, "lead/x", PI_FAIL="litellm")
+    assert (outcome, called, out) == ("failure", ["litellm/review-any"], "")
+    assert JOB["outputs"]["review"] == "${{ steps.ai.outputs.review }}"
 
 
 def test_agent_run_names_carry_the_issue_and_engine_the_review_reads():

@@ -34,13 +34,10 @@ jobs:
     timeout-minutes: 30
     permissions: {contents: read, pull-requests: read}
     outputs:
-      review: ${{ steps.ai.outputs.review || steps.grok.outputs.review }}
+      review: ${{ steps.ai.outputs.review }}
     steps:
       - name: Review with an AI from another family than the builder's
         id: ai
-        # A failed router call leaves the job to the Grok step below.
-        # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepscontinue-on-error
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           # Only the author's comments: anyone can comment on a public pull request.
@@ -49,7 +46,8 @@ jobs:
         # Claude reviews only a head the lane App pushed from a pi run (GLM, DeepSeek or MiniMax),
         # and review-claude falls back to review-qwen in the router. Anything else goes to
         # review-any (Qwen, GLM, DeepSeek; never Claude or MiniMax), whose failed row cools while
-        # another row answers. https://docs.litellm.ai/docs/proxy/reliability#fallbacks
+        # another row answers. The router's fallbacks are the only fallback: a router outage fails
+        # this job, and the next CI run reviews again. https://docs.litellm.ai/docs/proxy/reliability#fallbacks
         # https://docs.litellm.ai/docs/routing
         # https://docs.github.com/en/rest/repos/repos#list-repository-activities
         run: |
@@ -63,22 +61,10 @@ jobs:
           esac
           gh api -H 'Accept: application/vnd.github.raw' 'repos/Nishfleet/fleet-ops/contents/docs/review-bar.md?ref=main' > "$RUNNER_TEMP/bar.md"
           { gh pr view "$PR" -R "$REPO" --json title,body,author,reviews,comments --jq "$PR_TEXT"
-            echo '# Diff'; echo '```diff'; gh api "repos/$REPO/pulls/$PR" -H 'Accept: application/vnd.github.diff'; echo '```'; } > "$RUNNER_TEMP/prompt.part"
-          # Renamed only when complete, so Grok never reviews half a diff.
-          mv "$RUNNER_TEMP/prompt.part" "$RUNNER_TEMP/prompt.md"
+            echo '# Diff'; echo '```diff'; gh api "repos/$REPO/pulls/$PR" -H 'Accept: application/vnd.github.diff'; echo '```'; } > "$RUNNER_TEMP/prompt.md"
           pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
               --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider litellm --model "$model" < "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/review.md" 2> "$RUNNER_TEMP/pi.err"
           { echo 'review<<REVIEW_END'; echo "Review ($model, fleet-ops review.yml):"; echo; cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
-      # The last resort for every build: Grok builds nothing, and pi-grok's own login on this
-      # runner reaches it without the router. https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepsif
-      - name: Review with Grok when the router could not
-        id: grok
-        if: steps.ai.outcome == 'failure'
-        run: |
-          set -euo pipefail
-          pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
-            --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider xai-oauth --model grok-4.7 < "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/review.md"
-          { echo 'review<<REVIEW_END'; echo "Review (grok-4.7, fleet-ops review.yml):"; echo; cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
   verdict:
     # A hosted runner and environment `approver` (main only), so the bot token never sits on the box.
     # https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
