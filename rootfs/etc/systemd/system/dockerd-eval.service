@@ -58,11 +58,10 @@
 # (read-only; the eval's compose file bind-mounts it). The compose file mounts
 # nothing else from the host, so the runner's _work directory needs no access
 # from here, and no other runner's directory, session store or workspace is
-# visible. Under /home/nish nothing is listed by hand: a path that is not bound
-# back in does not exist here, so a new credential file is hidden by default
-# (systemd.exec, TemporaryFileSystem= and BindReadOnlyPaths=). Outside /home the
-# InaccessiblePaths below hide the host docker sockets, the user bus directory
-# and the restic config.
+# visible. The InaccessiblePaths below also hide credentials, the host docker
+# sockets, the user bus directory, the fleet's container store and the old podman
+# store (the /home/nish entries are redundant under the tmpfs and stay as a
+# second layer).
 # A `-` before a path means a missing path never stops the unit from starting.
 # Rollback: stop and disable this unit, delete this file, dockerd-eval.json and
 # the tmpfiles entry, delete 30-eval.conf, `systemctl daemon-reload`, restart the runner.
@@ -106,8 +105,19 @@ IPAddressAllow=127.0.0.1/32 127.0.0.53/32 10.0.2.0/24
 TemporaryFileSystem=/home/nish:mode=0700,uid=1000,gid=1000,size=64M
 BindPaths=/home/nish/.local/share/dockerd-eval
 BindReadOnlyPaths=-/home/nish/.local/bin/rclone
-InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock -/run/user/1000
+InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock -/home/nish/.docker -/run/user/1000 -/home/nish/.local/share/containers/storage -/home/nish/.local/share/podman-eval
+InaccessiblePaths=-/home/nish/.ssh -/home/nish/.gnupg -/home/nish/.config/cloudflare -/home/nish/.cloudflare -/home/nish/.wrangler
+InaccessiblePaths=-/home/nish/.config/rclone -/home/nish/.codex -/home/nish/.netrc -/home/nish/.git-credentials -/home/nish/.aws
+InaccessiblePaths=-/home/nish/.oci -/home/nish/.minio -/home/nish/.config/tailscale -/home/nish/.config/glab-cli -/home/nish/.hermes
 InaccessiblePaths=-/etc/restic
+InaccessiblePaths=-/home/nish/.config/gh -/home/nish/.config/fleet-worker
+InaccessiblePaths=-/home/nish/.claude/.credentials.json -/home/nish/.claude.json -/home/nish/.claude-vps
+InaccessiblePaths=-/home/nish/.claude-auth-backup-max-2026-10-10
+InaccessiblePaths=-/home/nish/.local/share/claude-seat-backup
+InaccessiblePaths=-/home/nish/.claude/.credentials.json.bak-alert-repair-20260909T055545Z -/home/nish/.claude/.credentials.json.bak-issue-4670-20260909T122627 -/home/nish/.claude/.credentials.json.blanked.20260821T233543
+InaccessiblePaths=-/home/nish/.pi/agent/auth.json -/home/nish/.pi/agent/mcp-adapter.json -/home/nish/.pi/agent/mcp-adapter.json.bak-executor -/home/nish/.pi/agent/models-store.json -/home/nish/.pi/agent/mcp-oauth-encrypted
+InaccessiblePaths=-/home/nish/workspaces/tooling/nish-vault -/home/nish/nish-vault
+InaccessiblePaths=-/home/nish/.config/fleet-ops -/home/nish/.local/share/drive
 
 [Install]
 WantedBy=multi-user.target
