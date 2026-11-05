@@ -177,6 +177,12 @@
         state: absent
       when: grafana_ro_probe_pgpass.path is defined
 
+- name: Fail when the pinned Cua Spaces release could not be installed
+  tags: [cua-spaces]
+  ansible.builtin.fail:
+    msg: "Cua Spaces {{ cua_spaces_version }} was not installed: {{ cua_spaces_install_failure }}. The installed version was left as it was and the rest of this run completed."
+  when: cua_spaces_install_failure is defined and not ansible_check_mode
+
 # A Cua Space that did not come up fails the run here, before the last two
 # tasks; force_handlers still runs the pending handlers.
 - name: Fail when tether's Cua Space could not be readied
