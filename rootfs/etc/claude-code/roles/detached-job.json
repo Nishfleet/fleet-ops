@@ -5,6 +5,8 @@
       "Bash",
       "Edit(~/workspaces/**)",
       "Edit(//tmp/**)",
+      "Write(~/workspaces/**)",
+      "Write(//tmp/**)",
       "Glob",
       "Grep",
       "Read",
@@ -40,11 +42,9 @@
         "registry.npmjs.org",
         "pypi.org",
         "files.pythonhosted.org",
+        "litellm.fleet.local:4000",
         "127.0.0.1:4000"
       ]
     }
-  },
-  "env": {
-    "XDG_RUNTIME_DIR": "/run/user/1000"
   }
 }
