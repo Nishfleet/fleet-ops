@@ -11,7 +11,7 @@ read from memory. Vault files cited below live under
 `nish-vault/_system/shared-memory/`.
 
 **No clock is added on this box.** No task moves to a VPS timer, so nothing is
-built here (the GLUE-ZERO rule in `docs/ARCHITECTURE.md`). All 11 leave the
+built here (the stock-features rule in `AGENTS.md`). All 11 leave the
 Mac, and all 11 are retired. Ten were retired outright, one of those ten — the
 weekly gardener — earlier than the rest. The last one, the weekly `seofixkit`
 database export, is retired too, by the product repo itself: that repo deleted

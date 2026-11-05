@@ -3,9 +3,7 @@
 The D1 rules live in `AGENTS.md` → "D1" as one-line pointers. This file holds the
 reasoning and the exact wording, so `AGENTS.md` stays short. The four rules named
 there expand/contract, a real integration test, no stale API names, and the
-Nish-gate on production migrations are covered below in full;
-`config/risky-paths.json` holds all four files that carry them, so a later PR that
-loosens one needs the coordinator's approval, not a silent docs edit. Issue:
+Nish-gate on production migrations are covered below in full. Issue:
 nish-vault#46 item 4.
 
 ## Expand/contract, one phase per PR
