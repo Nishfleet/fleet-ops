@@ -55,6 +55,12 @@ scrape_configs:
     static_configs:
       - targets: ['127.0.0.1:4001', '127.0.0.1:4002']
 
+  # HAProxy's built-in exporter (rootfs/etc/haproxy/haproxy.cfg, frontend prometheus):
+  # RouterCopyDown (fleet_rules.yml) reads haproxy_backend_active_servers from it.
+  - job_name: haproxy
+    static_configs:
+      - targets: ['127.0.0.1:8405']
+
   # fleet-ops#9355: Grafana's own /metrics (anonymous, loopback), so the
   # cost-alarm delivery rule can read grafana_alerting_notifications_failed_total
   # and page hermes-urgent when the GitHub-issue webhook fails.

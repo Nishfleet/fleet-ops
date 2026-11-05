@@ -10,7 +10,8 @@
 #
 # Stock sources only: node_exporter's systemd collector (node_systemd_unit_state,
 # unit-include covers .service and .timer), the blackbox exporter's
-# probe_success, the fleet-sync textfile metric and Prometheus' own vector().
+# probe_success, HAProxy's built-in exporter, the fleet-sync textfile metric and
+# Prometheus' own vector().
 #
 # Routing lives in rootfs/etc/alertmanager/alertmanager.yml:
 #   Watchdog          -> the outside dead-man (healthchecks.io), every 5m
@@ -160,6 +161,26 @@ groups:
         annotations:
           summary: "{{ $labels.instance }} has not answered for 3 minutes"
           description: "Every blackbox probe of {{ $labels.instance }} (job {{ $labels.job }}) failed, or could not run, for 3 minutes."
+
+  - name: fleet_router
+    rules:
+      # The router runs as two LiteLLM instances behind HAProxy, so one that dies breaks
+      # nothing anyone sees, and nothing else would say so: the instances are user units,
+      # which SystemUnitFailed does not read. HAProxy's own exporter counts the instances
+      # that pass its health check (haproxy_backend_active_servers, "Total number of active
+      # UP servers with a non-zero weight", the exporter's own HELP text; exporter doc:
+      # https://www.haproxy.com/documentation/haproxy-configuration-tutorials/alerts-and-monitoring/prometheus/).
+      # 15 minutes keeps a rolling restart quiet: one instance is out for up
+      # to its 300 s drain plus its start. Warning, routed like SystemUnitFailed: it files
+      # the issue the self-repair loop fixes, because the router still answers.
+      - alert: RouterCopyDown
+        expr: haproxy_backend_active_servers{proxy="litellm"} < 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "the router has fewer than 2 healthy copies"
+          description: "HAProxy has seen {{ $value }} of 2 router instances pass its health check for 15 minutes."
 
   - name: fleet_router_downgrade
     interval: 5m

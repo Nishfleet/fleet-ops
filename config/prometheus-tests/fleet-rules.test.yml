@@ -316,3 +316,28 @@ tests:
             exp_annotations:
               summary: "claude-remote-control.service has not been active for 15 minutes"
               description: "node_systemd_unit_state{name=\"claude-remote-control.service\",state=\"active\"} has no active sample in the last 15 minutes, or the series is missing."
+
+
+  # RouterCopyDown: a dip shorter than 15 minutes (a rolling restart) stays
+  # silent; one copy left for 15 minutes files the issue.
+  - interval: 30s
+    input_series:
+      - series: 'haproxy_backend_active_servers{proxy="litellm"}'
+        values: '2x10 1x10 2x10 1x40'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: RouterCopyDown
+        exp_alerts: []
+      # one copy from t=16m30s; pending 15 minutes, so firing from t=31m30s
+      - eval_time: 31m
+        alertname: RouterCopyDown
+        exp_alerts: []
+      - eval_time: 32m
+        alertname: RouterCopyDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              proxy: litellm
+            exp_annotations:
+              summary: "the router has fewer than 2 healthy copies"
+              description: "HAProxy has seen 1 of 2 router instances pass its health check for 15 minutes."
