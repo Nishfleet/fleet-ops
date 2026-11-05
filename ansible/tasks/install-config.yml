@@ -73,6 +73,9 @@
 # claude remote-control refuses --settings; spawned sessions read
 # ~/.claude/settings.json. The remote-control.json file here is the list in
 # the repo, not a path that unit loads.
+# detached-job.json is the list for detached `claude -p` jobs: the vault's
+# "Detached work" recipe passes it with --permission-mode dontAsk in place of
+# --dangerously-skip-permissions (https://code.claude.com/docs/en/permissions).
 - name: Install the per-role Claude permission allow lists
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/claude-code/roles/"

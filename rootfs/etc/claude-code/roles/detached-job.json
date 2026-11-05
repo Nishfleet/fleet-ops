@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Agent",
+      "Bash",
+      "Edit(~/workspaces/**)",
+      "Edit(//tmp/**)",
+      "Glob",
+      "Grep",
+      "Read",
+      "Skill",
+      "TodoWrite",
+      "WebFetch",
+      "WebSearch"
+    ]
+  }
+}
