@@ -293,7 +293,7 @@ unit's real ExecStart under systemd against a stub that checks the JWT the way G
 
 Hermes' GitHub login (fleet-ops#10267). The chat agent runs `gh` for this repo's issues and
 pull requests, and until this unit it did that with nish's admin login in `~/.config/gh`. The
-Hermes units now hide that path (`InaccessiblePaths=` in `hermes-.service.d/sandbox.conf`) and
+Hermes units now see an empty home (`ProtectHome=tmpfs` in `hermes-.service.d/sandbox.conf`), so that path is not there, and
 read `GH_CONFIG_DIR=/run/fleet-hermes-github-token` instead, which
 `fleet-hermes-github-token.timer` (every 20 min, 2 min after boot) fills through
 `fleet-hermes-github-token.service`: an RS256 App JWT with the same nishfleet-worker key, then
