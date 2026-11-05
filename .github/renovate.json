@@ -1,0 +1,12 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "enabledManagers": ["quadlet"],
+  "packageRules": [
+    {
+      "description": "A Postgres major needs a dump and restore, not an Image= bump.",
+      "matchPackageNames": ["/(^|/)postgres$/"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    }
+  ]
+}

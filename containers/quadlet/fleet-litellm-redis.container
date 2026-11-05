@@ -13,8 +13,7 @@ StartLimitIntervalSec=10min
 StartLimitBurst=5
 
 [Container]
-# Pinned by digest, so it carries no AutoUpdate=registry: a pinned image must not carry that
-# line (fleet-ops#9254). Bump the digest in its own PR.
+# Pinned by digest; Renovate's quadlet manager opens the bump PR (.github/renovate.json).
 Image=docker.io/library/redis:7@sha256:44960b3100c48159a66d28c18b0588c193492e25f7551d60e51dd464fc3eca5b
 Network=host
 Volume=%h/.local/share/fleet-litellm-redis:%h/.local/share/fleet-litellm-redis:ro

@@ -127,6 +127,9 @@
       # (https://developers.cloudflare.com/d1/reference/time-travel/).
       - fleet-d1-restore-drill.timer
       - fleet-d1-restore-drill.service
+      # Every image is digest-pinned and moves only by Renovate PR, so podman's
+      # auto-update timer has nothing to pull (podman-auto-update(1)).
+      - podman-auto-update.timer
     retired:
       - /etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service
       - /etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service.d
