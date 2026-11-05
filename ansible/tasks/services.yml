@@ -241,9 +241,62 @@
     - hermes_installed_sandbox_dropin.stat.exists
     - "hermes_installed_sandbox_dropin.stat.mtime | int > ([hermes_gateway_start.stdout | int, hermes_serve_start.stdout | int] | min)"
 
+# hermes-serve binds 127.0.0.1 and Tailscale Serve publishes it on this node's
+# tailnet name, port 10000 (https://tailscale.com/kb/1312/serve). Hermes takes
+# the proxied Host only when dashboard.public_url names it, and that URL keeps
+# its login gate on (Hermes web-dashboard.md, "Public URL override"). The name
+# is read from the node, so the repo names no host.
+- name: Read this node's tailnet name
+  ansible.builtin.command:
+    argv: [tailscale, status, --json, --peers=false]
+  register: tailscale_self
+  changed_when: false
+  check_mode: false
+
+- name: Set the hermes-serve tailnet URL
+  ansible.builtin.set_fact:
+    hermes_serve_host: "{{ (tailscale_self.stdout | from_json).Self.DNSName | regex_replace('\\.$', '') }}"
+
+- name: Read hermes-serve's public URL
+  become: true
+  become_user: nish
+  environment: "{{ nish_env | combine({'HERMES_HOME': nish_home ~ '/.hermes'}) }}"
+  ansible.builtin.command:
+    argv: ["{{ nish_home }}/.local/bin/hermes", config, get, dashboard.public_url]
+  register: hermes_public_url
+  changed_when: false
+  check_mode: false
+
+- name: Point hermes-serve's public URL at its tailnet URL
+  become: true
+  become_user: nish
+  environment: "{{ nish_env | combine({'HERMES_HOME': nish_home ~ '/.hermes'}) }}"
+  ansible.builtin.command:
+    argv: ["{{ nish_home }}/.local/bin/hermes", config, set, dashboard.public_url, "https://{{ hermes_serve_host }}:10000"]
+  register: hermes_public_url_set
+  changed_when: true
+  when: hermes_public_url.stdout | trim != 'https://' ~ hermes_serve_host ~ ':10000'
+
+# Adds this one handler; the node's other Serve handlers stay as they are.
+- name: Read the Tailscale Serve config
+  ansible.builtin.command:
+    argv: [tailscale, serve, status, --json]
+  register: tailscale_serve
+  changed_when: false
+  check_mode: false
+
+- name: Publish hermes-serve on the tailnet with Tailscale Serve
+  ansible.builtin.command:
+    argv: [tailscale, serve, --bg, --https=10000, "http://127.0.0.1:9119"]
+  changed_when: true
+  when: >-
+    ((tailscale_serve.stdout | from_json).Web | default({})).get(hermes_serve_host ~ ':10000', {}).get('Handlers', {}).get('/', {}).get('Proxy', '')
+    != 'http://127.0.0.1:9119'
+
 # hermes-serve reads its unit (its PATH pins the managed Node) only at start, and
 # the unit tree copy only reloads systemd, so a changed unit restarts serve here
-# by the same mtime-against-start comparison as the drop-in above.
+# by the same mtime-against-start comparison as the drop-in above. Serve reads
+# dashboard.public_url only at start too, so a changed URL restarts it as well.
 - name: Read the installed hermes-serve unit
   ansible.builtin.stat:
     path: /etc/systemd/system/hermes-serve.service
@@ -254,7 +307,9 @@
     name: hermes-serve.service
     state: restarted
     daemon_reload: true
-  when: "hermes_serve_unit.stat.mtime | int > hermes_serve_start.stdout | int"
+  when: >-
+    hermes_serve_unit.stat.mtime | int > hermes_serve_start.stdout | int
+    or hermes_public_url_set is changed
 
 # The router container mounts this copy. A changed file restarts the router.
 - name: Install the router config
