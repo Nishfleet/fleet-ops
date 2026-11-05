@@ -422,11 +422,10 @@
         name: htpdate.service
         state: restarted
 
-    # Reported when it fails, but it never stops the rest of the play. A running Grafana
-    # keeps the secret files it was started with, so it is restarted only after a change.
-    - name: Restart fleet-grafana  # noqa: command-instead-of-module ignore-errors no-changed-when
+    # A running Grafana keeps the secret files it was started with, so it is restarted
+    # only after a change. A failed restart fails the play.
+    - name: Restart fleet-grafana  # noqa: command-instead-of-module no-changed-when
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-grafana.service
-      ignore_errors: true
 
     - name: Reload prometheus
       ansible.builtin.systemd_service:

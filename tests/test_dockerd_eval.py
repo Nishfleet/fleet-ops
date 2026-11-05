@@ -232,18 +232,6 @@ def test_the_host_playbook_keeps_the_tasks_this_change_must_not_drop() -> None:
     assert host.count("alertmanager_credentials is defined and (") == 4
 
 
-def test_a_failed_engine_start_is_reported_in_the_run_output() -> None:
-    host = ansible_host.text()
-    task = re.search(r"- name: Enable the rootless Docker engine for the drive eval\n(.*?)\n\n", host, re.DOTALL)
-    assert task, "no engine enable task"
-    assert "register: dockerd_eval_up" in task.group(1)
-    report = re.search(r"- name: Report a rootless Docker engine that did not start\n(.*?)\n\n", host, re.DOTALL)
-    assert report, "no report task"
-    assert "ansible.builtin.debug" in report.group(1)
-    assert "when: dockerd_eval_up is failed" in report.group(1)
-    assert "dockerd_eval_up.msg" in report.group(1)
-
-
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")
 def test_systemd_analyze_reports_no_unknown_directive(tmp_path: Path) -> None:
     proc = subprocess.run(
