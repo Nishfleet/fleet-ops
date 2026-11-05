@@ -29,7 +29,7 @@
 # a fresh MemoryPeak cited; lowering it back to 1G re-arms the crash loop.
 #
 # MemoryMax 2G -> 3.5G, 2026-09-29 (fleet-ops#8827): the proxy moved to
-# --num_workers 2 (see containers/quadlet/fleet-litellm-proxy.container),
+# --num_workers 2 (see containers/quadlet/fleet-litellm-proxy@.container),
 # and each uvicorn worker is a separate process that opens its own Prisma
 # query-engine, so the second worker is not free. Measured on this host
 # with the pinned 1.98.0 and the live config, same cold-start conditions

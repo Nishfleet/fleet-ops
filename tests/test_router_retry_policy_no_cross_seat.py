@@ -727,14 +727,14 @@ def test_the_migration_runs_the_proxy_image_from_the_deploy_not_on_every_start()
     import re
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
-    text = (root / "containers/quadlet/fleet-litellm-proxy.container").read_text()
+    text = (root / "containers/quadlet/fleet-litellm-proxy@.container").read_text()
     image = re.findall(r"^Image=(\S+)$", text, re.MULTILINE)
     assert len(image) == 1, image
     assert re.search(r"@sha256:[0-9a-f]{64}$", image[0]), image[0]
     assert f":v{PINNED_LITELLM}@" in image[0], (image[0], PINNED_LITELLM)
     assert "--skip_server_startup" not in text and "ExecStartPre=" not in text
     play = (root / "ansible/host.yml").read_text()
-    assert "fleet-litellm-proxy.container') | regex_search('^Image=" in play
+    assert "fleet-litellm-proxy@.container') | regex_search('^Image=" in play
     assert "--skip_server_startup" in play
     assert play.index("- name: Migrate the litellm database") < play.index("- name: Restart litellm proxy")
 

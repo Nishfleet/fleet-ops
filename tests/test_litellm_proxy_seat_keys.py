@@ -4,7 +4,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-QUADLET = (ROOT / "containers/quadlet/fleet-litellm-proxy.container").read_text()
+QUADLET = (ROOT / "containers/quadlet/fleet-litellm-proxy@.container").read_text()
 CONFIG = (ROOT / "config/litellm-proxy.yaml").read_text()
 
 

@@ -1,4 +1,10 @@
-# Fleet LiteLLM proxy, containerized (fleet-ops#8435, cutover #8494).
+# Fleet LiteLLM proxy, containerized (fleet-ops#8435, cutover #8494). Two instances run from this
+# one file: the deploy copies it to fleet-litellm-proxy@4001.container and @4002.container, so %i is
+# the instance's loopback port. HAProxy on 127.0.0.1:4000 (rootfs/etc/haproxy/haproxy.cfg) sends each
+# call to a ready instance, and the deploy restarts them one at a time. LiteLLM's deploy doc: the
+# proxy is stateless, run 2+ replicas behind a load balancer, with Redis shared
+# (https://docs.litellm.ai/docs/proxy/deploy). Podman 4.9 Quadlet has no template units, so the
+# deploy writes two real files; the @ name is what gives systemd the %i.
 # The image is pinned by tag and digest (v1.105.0, cosign-verified outside CI). A bump edits the
 # Image= line only. The deploy then runs this image's own migration job and restarts the proxy, in
 # that order (ansible/host.yml handlers, notified when this file changes): the upgrade guide's
@@ -8,7 +14,7 @@
 # (fleet-ops#11739).
 
 [Unit]
-Description=Fleet LiteLLM proxy (Quadlet, fleet-ops#8435)
+Description=Fleet LiteLLM proxy on 127.0.0.1:%i (Quadlet, fleet-ops#8435)
 Requires=fleet-litellm-postgres.service fleet-litellm-redis.service
 After=fleet-litellm-postgres.service fleet-litellm-redis.service
 # Keep restarting for a few minutes, then enter failed and page
@@ -24,6 +30,8 @@ StartLimitBurst=20
 Image=ghcr.io/berriai/litellm:v1.105.0@sha256:60947db020b57e204823d3fbc8bb295c85be890d7c9adcc77fb4f5fc2fe410b2
 # general_settings.disable_prisma_schema_update stays true: the proxy itself never migrates, it only
 # logs "prisma schema out of sync". The migration is the deploy's handler (see the header).
+# Podman container names cannot hold the @ of the default systemd-%N name.
+ContainerName=fleet-litellm-proxy-%i
 Network=host
 Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
 # DATABASE_URL carries the database password, so it comes from a 0600 file, not this
@@ -35,22 +43,13 @@ Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
 PodmanArgs=--env=DATABASE_URL
 # INFO, not DEBUG: DEBUG dumps full prompts into the journal (fleet-ops#4449).
 Environment=LITELLM_LOG=INFO
-# Podman's default stop timeout is 10 s, so `podman rm -f` SIGKILLed the
-# proxy at 10 s whatever TimeoutStopSec says: exit 137, unit failed, and
-# OnFailure= sent a false fail ping on every restart (10-02 11:16:41 journal:
-# "StopSignal SIGTERM failed to stop container ... in 10 seconds"). The window
-# must cover LiteLLM's own request drain, which is GRACEFUL_SHUTDOWN_TIMEOUT
-# (default 30 s, graceful_shutdown_manager.py), plus the uvicorn teardown.
-# fleet-ops#4449 set 110 s for that, but the journal of 2026-10-22/23 shows every
-# drain finishing in 0.00 s with 0 requests in flight, and four stops in a row
-# still sat the full 110 s: one uvicorn worker never exits after "Waiting for
-# connections to close", so the SIGKILL, not the drain, set the restart time.
-# 45 s keeps the whole 30 s drain and a margin, and takes 65 s off each such stop.
-# The value is fixed when the container is created, so it bounds the stop of the next container, not of
-# the one already running: the first restart after a change of this line still waits the old value
-# (2026-10-23 17:08 IST: a container made under 110 s sat until systemd's new 60 s timeout, then its
-# SIGKILL, about 120 s). tests/test_litellm_proxy_stop_window.py keeps this below TimeoutStopSec.
-PodmanArgs=--stop-timeout=45
+# A stop drains: uvicorn stops accepting (HAProxy then sends new calls to the other instance), waits for
+# open calls to finish, and exits. Podman SIGKILLs at this timeout
+# (https://docs.podman.io/en/v4.9.3/markdown/podman-run.1.html#stop-timeout-seconds; podman 4.9
+# Quadlet has no StopTimeout= key). 300 s covers the p99.9 call: 99,912 calls in the 7 days to
+# 2026-11-04 took p50 4.8 s, p99 131 s, p99.9 298 s (fleet-ops#11739). The value is fixed when the
+# container is created. tests/test_litellm_proxy_stop_window.py keeps it below TimeoutStopSec.
+PodmanArgs=--stop-timeout=300
 # Bytecode cache that outlives the --rm container. Each start re-compiled
 # litellm+prisma into a throwaway layer; measured 2026-10-02 on the pinned
 # image, `import litellm.proxy.proxy_server` 24.6/26.0 s cold vs 20.4/18.2 s
@@ -58,23 +57,6 @@ PodmanArgs=--stop-timeout=45
 # against its source mtime, so an image bump just recompiles.
 Volume=fleet-litellm-pycache:/pycache
 Environment=PYTHONPYCACHEPREFIX=/pycache
-# uvicorn (>=0.37 on the pinned image, bundled 0.53.0) pings a spawned worker
-# over a pipe and SIGKILLs it if the ping is not answered within
-# timeout_worker_healthcheck, default 5 s. A litellm worker answers only after
-# multiprocessing spawn re-runs the console script, which imports all of
-# litellm — measured 8.1-23.8 s warm on this host, 24.6-26.0 s cold in the
-# container (2026-10-02, the import note above implies warm 18-21 s) — so the
-# default kills every worker at the 5.0-5.5 s cadence seen in the 2026-10-31
-# boots (fleet-ops#11372: 1 to 252 deaths per boot, outage 4-5 min).
-# 120 s = >=4x the slowest measured import, so a normal spawn always answers;
-# with num_workers=2 the surviving worker keeps serving while a hung one is
-# reaped at the 120 s bound. It reaches the uvicorn Config only from the next
-# container creation; litellm proxy_cli passes timeout_worker_healthcheck to
-# uvicorn.Config when the parameter exists (uvicorn>=0.37), and
-# uvicorn supervisors/multiprocess.py uses it for the worker pings.
-# The litellm CLI option --timeout_worker_healthcheck (same name as the env
-# var TIMEOUT_WORKER_HEALTHCHECK) applies only under num_workers > 1.
-Environment=TIMEOUT_WORKER_HEALTHCHECK=120
 # Named pass-through, not --env-host (fleet-ops#9020): --env-host copied the whole
 # systemd --user manager environment into the container. Podman 4.9.3 (Ubuntu 24.04)
 # drops a bare `Environment=NAME` line, so each name is its own PodmanArgs=--env=NAME:
@@ -95,35 +77,12 @@ PodmanArgs=--env=OPENCODE_API_KEY
 PodmanArgs=--env=REDIS_PASSWORD
 PodmanArgs=--env=VERCEL_AI_GATEWAY_JEV_KEY
 PodmanArgs=--env=ZAI_API_KEY
-# --num_workers 2 (fleet-ops#8827). The default is 1, so /health/readiness,
-# /metrics and the /jev pass-through all ran on the ONE event loop that also
-# served every chat completion: 2026-09-28 ~15:20-15:35 IST, with eight
-# audit-0509 units plus normal workers running, readiness accepted the
-# connection and returned zero bytes even at -m 30 while the journal still
-# showed completions 200ing. A light endpoint cannot be served while a
-# long completion holds that loop, so the pool measured here is 2: a
-# cooldowned/streaming completion then occupies one worker and the health
-# and /jev endpoints answer from the other. The nginx-style headers are
-# dropped on purpose: keepalive needs no tune at 1s agent requests.
-#
-# Both are the stock vendor flags of the pinned image (proxy_cli.py:
-# --num_workers -> uvicorn.run(workers=...), and the same file starts
-# prometheus multiproc-dir setup + the query-engine reaper at
-# num_workers > 1, so the gauges stay correct and a force-killed worker's
-# Prisma engine is reaped). Cooldowns stay fleet-wide because the router's
-# CooldownCache is a DualCache over Redis (litellm/router_utils/
-# cooldown_cache.py), not per-process state.
-#
-# 2 is measured, not chosen: 4 on this 2-core CPUQuota=200% slice buys no
-# more throughput, and MemoryCurrent for --num_workers 2 is ~2.0G (786M at
-# 1, 2022M at 2: every worker opens its own Prisma connection pool), so the
-# slice cap was raised to clear it. 8 audit units on one host share that
-# pool, so the ceiling is what keeps 8. max_parallel_requests is a
-# per-process in-memory semaphore (litellm/router.py _get_client
-# local_only=True), so the second worker admits a second copy of the sum;
-# over-admission lands on the 429 cooldown the rows already carry rather
-# than on a hung endpoint.
-Exec=--config /app/config.yaml --port 4000 --host 127.0.0.1 --num_workers 2
+# One uvicorn process per instance, as LiteLLM's production guide says
+# (https://docs.litellm.ai/docs/proxy/prod): scale with instances, not workers. With --num_workers 2
+# one worker hung on every stop and podman SIGKILLed it (journal 2026-11-04 18:30, 20:23, 22:50 IST).
+# Busy-loop health (fleet-ops#8827) is now HAProxy's job: it checks each instance's
+# /health/readiness and sends calls to the other one.
+Exec=--config /app/config.yaml --port %i --host 127.0.0.1 --num_workers 1
 
 [Service]
 # One line per seat file whose key the PodmanArgs=--env=NAME lines above pass on (a test checks
@@ -152,20 +111,12 @@ TimeoutStartSec=15min
 ManagedOOMPreference=avoid
 Restart=on-failure
 RestartSec=10s
-# Let in-flight requests drain instead of being SIGKILLed at 15s (fleet-ops#4449).
-# Above the 45 s --stop-timeout, so podman's own SIGKILL fires first and the unit
-# still has time to remove the container.
-TimeoutStopSec=60
-# A planned stop ends in podman's SIGKILL of the one uvicorn worker that never exits (the pinned
-# litellm CLI has no uvicorn timeout_graceful_shutdown flag to bound it), so conmon exits 137 and the
-# unit would fail and page on a restart that worked (fleet-ops#10177). Exit 137 is therefore a
-# success. A failed start is podman exit 125, a crash is
-# another exit code or signal, and a kernel OOM kill inside this unit's cgroup ends the unit as
-# `oom-kill`, which OOMPolicy=stop (the default, written here so the pair stays together) sets
-# whatever the exit code. Not covered: an external `podman kill` or `kill -9` of the main container
-# with no OOM behind it ends as success, and Restart=on-failure does not restart it.
-# tests/test_litellm_proxy_stop_not_failure.py pins both halves.
-SuccessExitStatus=137
+# Above the 300 s --stop-timeout, so podman's own SIGKILL fires first and the unit still has time
+# to remove the container.
+TimeoutStopSec=320
+# No SuccessExitStatus=137: with one process a planned stop exits 0, so a SIGKILL (podman's
+# timeout, an external kill -9) fails the unit, Restart=on-failure restarts it, and a kernel OOM
+# kill ends it as oom-kill (OOMPolicy=stop, the default, written here).
 OOMPolicy=stop
 
 [Install]

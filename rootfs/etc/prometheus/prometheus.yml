@@ -44,15 +44,16 @@ scrape_configs:
   # the router's own gauges (litellm_deployment_success_rate,
   # litellm_deployment_cooldowns, litellm_request_total_duration_seconds,
   # litellm_total_requests) land in Prometheus alongside the fleet's own
-  # fleet_litellm_* gauges from the /health canary. The proxy binds
-  # 127.0.0.1:4000. The trailing slash on metrics_path is load-bearing:
+  # fleet_litellm_* gauges from the /health canary. Each of the two router
+  # instances is scraped on its own port, because each keeps its own counters
+  # (HAProxy on :4000 would answer from either one). The trailing slash on metrics_path is load-bearing:
   # LiteLLM mounts the endpoint at /metrics/, so a bare /metrics answers 307
   # with an empty body and Prometheus (follow_redirects: false) scrapes zero
   # samples while still reporting the target up (fleet-ops#4174 reopen).
   - job_name: litellm
     metrics_path: /metrics/
     static_configs:
-      - targets: ['127.0.0.1:4000']
+      - targets: ['127.0.0.1:4001', '127.0.0.1:4002']
 
   # fleet-ops#9355: Grafana's own /metrics (anonymous, loopback), so the
   # cost-alarm delivery rule can read grafana_alerting_notifications_failed_total

@@ -164,7 +164,7 @@ def size_bytes(value: str) -> int:
 
 
 def test_proxy_cap_equals_its_slice() -> None:
-    unit = values(parse(ROOT / "containers/quadlet/fleet-litellm-proxy.container"), "Service", "MemoryMax")
+    unit = values(parse(ROOT / "containers/quadlet/fleet-litellm-proxy@.container"), "Service", "MemoryMax")
     slice_cap = values(parse(ROOT / "systemd/app-litellm.slice"), "Slice", "MemoryMax")
     assert unit and slice_cap and size_bytes(unit[0]) == size_bytes(slice_cap[0]), (
         f"fleet-litellm-proxy [Service] MemoryMax={unit} must equal app-litellm.slice [Slice] MemoryMax={slice_cap}, "
