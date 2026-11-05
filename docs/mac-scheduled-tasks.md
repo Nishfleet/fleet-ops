@@ -124,10 +124,9 @@ To check the live copy still matches the canonical file, diff them:
 `diff <(jq -r '.jobs[] | select(.name=="digest-<which>") | .prompt' ~/.hermes/cron/jobs.json) config/hermes/digest-<which>.md` — no output means they match.
 
 To switch a digest off: `hermes cron pause <job id>` stops it without deleting
-anything, and `hermes cron resume <job id>` brings it back. To restore the
-previous wording, `~/.hermes/cron/jobs.json.bak-9706` holds the pre-#9706
-prompts (copy the old `prompt` value back with the same `hermes cron edit`
-command).
+anything, and `hermes cron resume <job id>` brings it back. To restore earlier
+wording, revert `config/hermes/digest-<which>.md` in a PR: the deploy applies
+that file on every run, so git history is the record of past prompts.
 
 ## Checked, not assumed
 
