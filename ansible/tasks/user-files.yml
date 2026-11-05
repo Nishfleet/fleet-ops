@@ -18,7 +18,6 @@
     - cloudflare-tokens-apply.timer
     - fleet-grafana-github-token.service
     - fleet-grafana-github-token.timer
-    - syncthing.service
     - tincan-relay.service
     - tmux-spawn-.scope.d/50-interactive-cpu-priority.conf
   notify: Reload nish's user manager
