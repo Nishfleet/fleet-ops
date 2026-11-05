@@ -40,8 +40,14 @@ def test_login_profile_sets_owner_only_umask() -> None:
     assert profile.is_file(), f"{profile} is missing"
     top_level = [line for line in profile.read_text().splitlines()
                  if line and not line[0].isspace() and not line.startswith("#")]
-    assert top_level == ["umask 077", "claude() {", "}"], (
-        "the login profile holds only the umask line and the claude seats-sandbox wrapper"
+    assert top_level == [
+        "umask 077",
+        'PATH="$HOME/.local/share/skill-python/bin:$PATH"',
+        "claude() {",
+        "}",
+    ], (
+        "the login profile holds only the umask line, the skill Python PATH line"
+        " and the claude seats-sandbox wrapper"
     )
 
 
