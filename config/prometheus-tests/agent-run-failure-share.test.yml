@@ -1,0 +1,74 @@
+# promtool test rules config/prometheus-tests/agent-run-failure-share.test.yml (CI runs it).
+# AgentRunFailureShare (fleet-ops#11799). github_workflow_runs is GitHub's all-time count
+# per conclusion, scraped every 15 minutes, so each series climbs by the runs that finished.
+# https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
+rule_files:
+  - ../../rootfs/etc/prometheus/fleet_rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # The 2026-10-29 to 11-05 shape: 1 failed per 10 passed, every day. Quiet while only one
+  # 24-hour window exists, firing once both windows are over 2% for 30 minutes.
+  - interval: 15m
+    input_series:
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="success"}'
+        values: '0+10x240'
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="failure"}'
+        values: '0+1x240'
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="timed_out"}'
+        values: '0x240'
+    alert_rule_test:
+      - eval_time: 47h
+        alertname: AgentRunFailureShare
+        exp_alerts: []
+      - eval_time: 49h
+        alertname: AgentRunFailureShare
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "more than 2% of finished agent runs failed two days running"
+              description: "9.091% of finished agent.yml runs failed in the last 24 hours, and over 2% the 24 hours before. Find what fails most, fix it, and prove the share fell. Runs: https://github.com/Nishfleet/fleet-ops/actions/workflows/agent.yml"
+
+  # Failures start at hour 30: today is over 2%, the day before had none, so it stays quiet.
+  - interval: 15m
+    input_series:
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="success"}'
+        values: '0+10x240'
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="failure"}'
+        values: '0x120 0+1x120'
+    alert_rule_test:
+      - eval_time: 50h
+        alertname: AgentRunFailureShare
+        exp_alerts: []
+
+  # No run finished for two days (dispatch paused): 0 of 0 is no share, so quiet.
+  - interval: 15m
+    input_series:
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="success"}'
+        values: '79x240'
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="failure"}'
+        values: '32x240'
+    alert_rule_test:
+      - eval_time: 50h
+        alertname: AgentRunFailureShare
+        exp_alerts: []
+
+  # The counts never arrive (exporter down, or GitHub refused the read): blind, so it fires
+  # after 30 minutes, as the old Grafana rule's error state did.
+  - interval: 15m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AgentRunFailureShare
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: AgentRunFailureShare
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: agent-runs
+            exp_annotations:
+              summary: "agent run counts have not arrived for an hour"
+              description: "github_workflow_runs{job=\"agent-runs\"} is missing: check prometheus-json-exporter.service and the GitHub API read, because the failure-share alert is blind."

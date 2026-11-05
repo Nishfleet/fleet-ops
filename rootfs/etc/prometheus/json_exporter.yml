@@ -1,0 +1,14 @@
+# prometheus-community/json_exporter config (fleet-ops#11799). One module: the
+# total_count GitHub returns for a workflow's runs filtered by one conclusion
+# (https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow).
+# prometheus.yml (job agent-runs) passes the URL as the target and sets the
+# conclusion label. Config format: https://github.com/prometheus-community/json_exporter
+modules:
+  github_runs:
+    headers:
+      Accept: application/vnd.github+json
+      X-GitHub-Api-Version: "2022-11-28"
+    metrics:
+      - name: github_workflow_runs
+        path: '{ .total_count }'
+        help: All-time count of the workflow's runs with the conclusion in the target URL (GitHub total_count).

@@ -10,8 +10,8 @@
 #
 # Stock sources only: node_exporter's systemd collector (node_systemd_unit_state,
 # unit-include covers .service and .timer), the blackbox exporter's
-# probe_success, HAProxy's built-in exporter, the fleet-sync textfile metric and
-# Prometheus' own vector().
+# probe_success, HAProxy's built-in exporter, the fleet-sync textfile metric,
+# prometheus-community json_exporter (agent run counts) and Prometheus' own vector().
 #
 # Routing lives in rootfs/etc/alertmanager/alertmanager.yml:
 #   Watchdog          -> the outside dead-man (healthchecks.io), every 5m
@@ -181,6 +181,45 @@ groups:
         annotations:
           summary: "the router has fewer than 2 healthy copies"
           description: "HAProxy has seen {{ $value }} of 2 router instances pass its health check for 15 minutes."
+
+  - name: fleet_agent_runs
+    rules:
+      # More than 2% of finished agent runs failed in each of the last two 24-hour windows
+      # (scorecard target, fleet-ops#10711). The Grafana rule that did this was deleted with
+      # Grafana's GitHub data source in the 2026-11-01 reset (fleet-ops#10935); this restores it
+      # in Prometheus (fleet-ops#11799). Same counting as that rule: failed = failure, timed_out
+      # and startup_failure; finished = those plus success; skipped and cancelled count as
+      # neither. github_workflow_runs is GitHub's all-time total_count per conclusion (job
+      # agent-runs, json_exporter), so a window's runs are the difference between its two ends;
+      # a difference, not increase(), so a deleted run reads as a small dip, not a counter reset.
+      # last_over_time bridges the 15-minute scrape interval. A window with no finished run
+      # divides 0 by 0 and stays quiet. The absent branch is the old rule's error state: the
+      # counts stopped arriving (exporter down, or GitHub refused the read). `for: 30m` keeps
+      # the first load quiet until the first scrape lands.
+      # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
+      - alert: AgentRunFailureShare
+        expr: |
+          (
+            sum(last_over_time(github_workflow_runs{job="agent-runs",conclusion!="success"}[20m]) - last_over_time(github_workflow_runs{job="agent-runs",conclusion!="success"}[20m] offset 1d))
+            /
+            sum(last_over_time(github_workflow_runs{job="agent-runs"}[20m]) - last_over_time(github_workflow_runs{job="agent-runs"}[20m] offset 1d))
+            > 0.02
+          )
+          and on()
+          (
+            sum(last_over_time(github_workflow_runs{job="agent-runs",conclusion!="success"}[20m] offset 1d) - last_over_time(github_workflow_runs{job="agent-runs",conclusion!="success"}[20m] offset 2d))
+            /
+            sum(last_over_time(github_workflow_runs{job="agent-runs"}[20m] offset 1d) - last_over_time(github_workflow_runs{job="agent-runs"}[20m] offset 2d))
+            > 0.02
+          )
+          or
+          absent_over_time(github_workflow_runs{job="agent-runs"}[1h])
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ if $labels.job }}agent run counts have not arrived for an hour{{ else }}more than 2% of finished agent runs failed two days running{{ end }}"
+          description: "{{ if $labels.job }}github_workflow_runs{job=\"agent-runs\"} is missing: check prometheus-json-exporter.service and the GitHub API read, because the failure-share alert is blind.{{ else }}{{ $value | humanizePercentage }} of finished agent.yml runs failed in the last 24 hours, and over 2% the 24 hours before. Find what fails most, fix it, and prove the share fell. Runs: https://github.com/Nishfleet/fleet-ops/actions/workflows/agent.yml{{ end }}"
 
   - name: fleet_router_downgrade
     interval: 5m
