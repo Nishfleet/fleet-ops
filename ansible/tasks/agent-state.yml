@@ -82,7 +82,6 @@
     paths:
       - "{{ agent_share }}/actions-runner"
       - "{{ agent_share }}/agent-runner"
-      - "{{ agent_share }}/fleet-ci-runner"
     patterns: ".credentials*"
     hidden: true
     recurse: true

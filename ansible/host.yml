@@ -148,6 +148,19 @@
       - /etc/systemd/system/hermes-serve.service.d/80-hardening.conf
       # Runner 1's pilot drop-in; fleet-runner@1.service runs it now (fleet-ops#10935).
       - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-1.service.d
+      # nish's deploy runner unit, its drop-ins (fleet-ci-2 and -3 were never live again)
+      # and its runner directories; fleet-ci-runner.service runs the copy as fleet-ci
+      # (tasks/runners.yml). The plaintext git credential block went with it: it only
+      # covered a runner on nish's uid.
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-1.service
+      - /etc/systemd/system/multi-user.target.wants/actions.runner.Nishfleet.netcup-fleet-ci-1.service
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-.service.d
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-1.service.d
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-2.service.d
+      - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-3.service.d
+      - "{{ agent_share }}/fleet-ci-runner"
+      - /etc/tmpfiles.d/no-plaintext-git-credentials.conf
+      - "{{ nish_home }}/.git-credentials"
       # The Healthchecks fail ping; Prometheus SystemUnitFailed replaces it (E7).
       - /etc/systemd/system/fleet-unit-failed@.service
       - "{{ nish_home }}/.config/systemd/user/fleet-unit-failed@.service"

@@ -26,3 +26,14 @@ polkit.addRule(function(action, subject) {
         return polkit.Result.YES;
     }
 });
+
+// fleet-ci, the deploy runner's own user (rootfs/etc/systemd/system/fleet-ci-runner.service),
+// may start the deploy unit and nothing else.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "fleet-host-config.service" &&
+        action.lookup("verb") == "start" &&
+        subject.user == "fleet-ci") {
+        return polkit.Result.YES;
+    }
+});
