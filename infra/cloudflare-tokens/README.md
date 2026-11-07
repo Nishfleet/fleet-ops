@@ -273,15 +273,14 @@ coexist.
 `vps-grafana` has a second consumer that a rewritten file does not reach:
 Grafana mounts a **copy** of the file as the `grafana-cloudflare-api-token`
 Podman secret, and `ansible/tasks/secrets.yml` recreates that copy on a
-host-config run. So the apply's `ExecStartPost` starts
-`fleet-host-config.service`, the writer that already does that, instead of
-writing the secret a second time: it replaces the copy only when the value
-changed and restarts `fleet-grafana.service` only then. Without that step the
-window between a rotation and the next host-config run would leave Grafana
-holding a token the apply had just deleted, and the Cloudflare spend watch
-(fleet-ops#9355) would read nothing meanwhile. There is no host-config timer,
-so that window has no other bound. polkit grants user `nish` the verb `start` on
-that unit and nothing else (`rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules`).
+host-config run: it replaces the copy only when the value changed and restarts
+`fleet-grafana.service` only then. The apply itself starts nothing after the run
+(a user unit cannot reliably start a system unit: polkit(8),
+systemd.service(5) `ExecStartPost=`), so Grafana's copy reaches the new value on
+the next host-config run -- a merge (deploy-box.yml) or a boot
+(fleet-host-config-boot.timer). Until then the copy holds the token the apply
+just deleted, and the Cloudflare spend watch (fleet-ops#9355) reads nothing
+meanwhile.
 
 Rotation happens only when `tofu apply` runs. If no apply happens within 45
 days of the last one, the tokens expire and the deploys that read them fail. The

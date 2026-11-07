@@ -62,16 +62,8 @@ ExecStart=/bin/sh -c 'TF_VAR_github_app_pem=$$(cat %h/.config/cloudflare/nishfle
 # Grafana does not read deploy-ci.env: it mounts a copy of it as the
 # grafana-cloudflare-api-token Podman secret (containers/quadlet/
 # fleet-grafana.container), and ansible/tasks/secrets.yml refreshes that copy on
-# a host-config run. A rotation here would otherwise leave Grafana holding the
-# token this apply just deleted until the next host-config run, and the
-# Cloudflare spend watch (fleet-ops#9355) would read nothing meanwhile. There is
-# no host-config timer (deploy-box.yml starts fleet-host-config.service only on a
-# push to main, or at boot), so the window has no other bound. So the apply asks
-# that existing writer to run rather than writing the secret a second time: it
-# already reads this file, trims the value, replaces the secret only when it
-# differs and restarts Grafana. polkit grants nish `start` on that unit and
-# nothing else (rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules), and
-# --no-block keeps a long playbook from holding this oneshot.
-ExecStartPost=/usr/bin/systemctl start --no-block fleet-host-config.service
+# a host-config run. A rotation here therefore reaches Grafana on the next
+# host-config run -- a merge (deploy-box.yml) or a boot
+# (fleet-host-config-boot.timer) -- so the apply starts nothing after the run.
 TimeoutStartSec=900
 UMask=0077
