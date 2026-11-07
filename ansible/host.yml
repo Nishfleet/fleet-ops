@@ -83,7 +83,7 @@
     # is the one place its version is written: tasks/pinned-tools.yml installs
     # this release's .deb from trycua/cua, checked against the release's own
     # checksums.txt. Renovate opens the PR that bumps it (.github/renovate.json).
-    cua_spaces_version: 0.16.0
+    cua_spaces_version: 0.20.0
     docker_cli: /usr/bin/docker
     nft_cli: /usr/sbin/nft
     nsenter_cli: /usr/bin/nsenter
