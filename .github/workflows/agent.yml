@@ -91,7 +91,7 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           permission-contents: read
           permission-issues: write
-          permission-pull-requests: read
+          permission-pull-requests: write
       # Strangers' text never reaches the worker (fleet-ops#9978). As Copilot cloud agent and
       # claude-code-action do, a run needs write access (maintain reads as write, triage as read):
       # the actor who started it AND the issue's author, whose title and body become the packet.
@@ -288,7 +288,11 @@ jobs:
           gh pr merge "$pr" -R "$REPO" --auto
   park:
     needs: [claim, work, push]
-    if: failure()
+    # A job past timeout-minutes ends `cancelled`, and failure() is false for it, so the
+    # needs results are read too. !cancelled() keeps a run cancelled by hand from parking.
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#needs-context
+    if: ${{ !cancelled() && (failure() || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     environment: agent
     timeout-minutes: 5
