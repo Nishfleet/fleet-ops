@@ -31,7 +31,8 @@ UMask=0077
 Slice=agent.slice
 # MemoryHigh is the throttle, not a kill: past it the kernel reclaims hard, and
 # oomd kills the runner once that pressure holds above 40% for 60s
-# (systemd.resource-control(5), MemoryHigh= and ManagedOOMMemoryPressure=).
+# (DefaultMemoryPressureDurationSec=60s in oomd.conf.d/99-fleet.conf, oomd.conf(5);
+# systemd.resource-control(5), MemoryHigh= and ManagedOOMMemoryPressure=).
 # 4G sat on the need: a 0509 work job's vitest run alone peaks at 3.2G anon and
 # npm ci at 4.5G with page cache (measured 2026-11-07, uncapped, VITEST_MAX_WORKERS=2),
 # plus the runner and pi, so jobs throttled at 4.0G and oomd killed them
