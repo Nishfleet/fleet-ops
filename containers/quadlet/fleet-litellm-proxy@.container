@@ -27,7 +27,7 @@ StartLimitIntervalSec=1h
 StartLimitBurst=20
 
 [Container]
-Image=ghcr.io/berriai/litellm:v1.105.0@sha256:60947db020b57e204823d3fbc8bb295c85be890d7c9adcc77fb4f5fc2fe410b2
+Image=ghcr.io/berriai/litellm:v1.108.2@sha256:d8b4ac356743d647a13bb93f45b941fcd5f5354122cfd205948a1b192790389d
 # general_settings.disable_prisma_schema_update stays true: the proxy itself never migrates, it only
 # logs "prisma schema out of sync". The migration is the deploy's handler (see the header).
 # Podman container names cannot hold the @ of the default systemd-%N name.
