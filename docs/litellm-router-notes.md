@@ -186,3 +186,12 @@ Note 16 left them alone because that morning's `assistant` hour had no capacity 
 When the park takes the assistant row, the assistant group's fallback is `worker-capable` (router `fallbacks`), so an assistant call rides the order-2 CommandCode rows until the plan clears — the shape note 16 refused to assume had no capacity behind it.
 
 The alert resolved itself at 13:21Z (last crossed-budget raise) and stayed quiet through a config apply restart at 15:15Z and beyond — that restart is the #11476 deploy, whose config still rides the burst treatment on the MiniMax rows until this PR lands, so prod has not received the park by hand —: `ALERTS{alertname="RouterStrongGroupFailing"}` is an empty vector after, and the 15-minute fraction reads 0 on 376 calls at 17:31Z. That resolution is restart-shaped, not fix-shaped, so the park above is the part of the cause a machine can hold, and the CommandCode wall's shape stays with Nish.
+
+## Note 19
+
+fleet-ops#11671: the two rows the roster proof (#11595, on fleet-ops#10935) left behind on their own quota walls answer after the resets. On 2026-11-08, 19 minutes past the Alibaba monthly reset (16:00 UTC, the wall text in note 16 named it: "The quota will reset at 11-08 16:00:00 UTC") and 4 days past the Command Code weekly reset (2026-11-04 12:45 UTC), one real completion each through the proxy on 127.0.0.1:4000, cited by the proxy's own `x-litellm-call-id` and `x-litellm-model-id` response headers (v1.105.0, common_request_processing.py):
+
+- `commandcode-glm53flash-worker-cheap` answered "OK" at 2026-11-08 16:19:53 UTC, call id 7f8afc4c-457b-43fe-9617-884195591e2f, called as `worker-cheap`.
+- `alibaba-qwen38max-assistant` — the assistant group has held the Alibaba row since #11595 (the `judge` alias resolves there, fleet-ops#10935) — answered "OK" (21 completion tokens, thinking budget included) at 2026-11-08 16:20:12 UTC, call id cd69aad6-e26d-41f8-ba00-feb1cafc2dbf, called as `judge`.
+
+Both calls by the worker lane's virtual key (`litellm-agent.env`, https://docs.litellm.ai/docs/proxy/virtual_keys), non-streaming, prompts of one sentence. No config change: neither row was ever removed, only walled by its plan's own clock (the #9075/#9122 rule Nish set on 2026-10-02: a quota never justifies a removal), and the #11146 parks re-probe about 4x/day, so each row re-entered its group on the reset by itself.
