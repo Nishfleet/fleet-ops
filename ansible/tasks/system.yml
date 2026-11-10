@@ -305,28 +305,6 @@
     mode: preserve
   notify: Reload nftables
 
-# The drive eval engine's egress limit (fleet-ops#9983): its own table, loaded
-# by nftables.service through the nftables.d include. Installed before the
-# queued handlers run, so the table and its set exist when dockerd-eval.service
-# starts and systemd adds the engine's cgroup to the set.
-- name: Create the nftables drop-in directory for the eval engine's rule
-  ansible.builtin.file:
-    path: /etc/nftables.d
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-
-- name: Install the eval engine's egress rule
-  ansible.builtin.copy:
-    src: "{{ rootfs }}/etc/nftables.d/evalnet.nft"
-    dest: /etc/nftables.d/evalnet.nft
-    owner: root
-    group: root
-    mode: "0644"
-    validate: /usr/sbin/nft -c -f %s
-  notify: Reload nftables
-
 # The postgres account is a package leftover with no login use: set its shell
 # to nologin. Only when the account exists; this never creates it.
 - name: Look up the postgres account
