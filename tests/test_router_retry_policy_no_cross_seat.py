@@ -86,8 +86,9 @@ below is a claim about it. They also run without a network - a plain
 http.server answers one row 429 and the peers 200.
 
 CI does not run this file yet: https://github.com/Nishfleet/fleet-ops/issues/9427
-carries the job, and the worker App token has no Workflows permission, so a
-worker cannot push the ci.yml change that would run it. Until that lands, the
+carries the job. Since 2026-11-10 the lane's push token may push workflow files,
+so a worker can open the ci.yml PR that would run it (the merge still needs a
+code-owner approval). Until that lands, the
 pick counts below are only as live as the last hand run, and the run command
 runs the suite in the pinned litellm 1.105.0 interpreter (the image's own
 python, or any venv with litellm==1.105.0 installed; the version is asserted
