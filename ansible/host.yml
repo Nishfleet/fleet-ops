@@ -37,9 +37,9 @@
     # (containers/quadlet/fleet-litellm-proxy@.container, rootfs/etc/haproxy/haproxy.cfg).
     litellm_proxy_ports: [4001, 4002]
     fleet_reviewer_pi_packages: "{{ (lookup('ansible.builtin.file', repo_root ~ '/config/pi-packages.json') | from_json).packages | select('search', 'pi-grok') | list }}"
-    # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
+    # Node for tether: one exact LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
-    # release's SHASUMS256.txt (https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
+    # release's SHASUMS256.txt (https://nodejs.org/dist/<version>/SHASUMS256.txt).
     # A new version is a reviewed PR that changes both values.
     tether_node_version: 22.23.3
     tether_node_sha256: df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
@@ -50,7 +50,8 @@
     # release's .sha256 asset). An upgrade is one reviewed PR that changes both
     # values; a rollback is the revert of that PR. These two lines are the only
     # place the version and the hash are written.
-    # 0.7.0 is the first release that uses its own Space's key from cua.env.
+    # The first release that uses its own Space's key from cua.env is the floor this
+    # pin keeps to, so no earlier release is ever written here.
     tether_version: 0.7.1
     tether_sha256: b753ed661e96ccdf7fcfd71f15e00f77fe65d9aee6105fd6b320fa185633104a
     # Everything below derives from the two pins. The directory and the cached
@@ -182,7 +183,6 @@
       - {name: grafana-telegram-bot-token, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_BOT_TOKEN}
       - {name: grafana-telegram-home-channel, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_HOME_CHANNEL}
       - {name: grafana-cloudflare-api-token, src: "{{ nish_home }}/.config/cloudflare/deploy-ci.env", key: CLOUDFLARE_API_TOKEN}
-      - {name: grafana-postgres-password, src: "{{ nish_home }}/.config/fleet-ops/grafana-postgres-password.env", key: GRAFANA_POSTGRES_PASSWORD}
 
     # The tincan relay's approval policy (fleet-ops#9979). It was hand-made on
     # the box, so nothing in the repo said what the gate was; it is now rendered
@@ -332,8 +332,8 @@
         name: nftables.service
         state: reloaded
 
-    # A moved `current` link is invisible to the running agent: v0.1.2 landed
-    # on 23 Oct and the unit kept running 0.1.1 until a hand restart. This
+    # A moved `current` link is invisible to the running agent: one release landed
+    # on 23 Oct and the unit kept running the previous one until a hand restart. This
     # fires only when the hand-enabled wants symlink exists, and never while
     # the off marker exists (the marker run notifies nothing and keeps the
     # unit stopped).
