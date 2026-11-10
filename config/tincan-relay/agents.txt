@@ -13,13 +13,7 @@
 #   tincan agents --json --socket ~/.local/state/tincan-relay/admin.sock
 claude-mac
 claude-vps
-command-code
-cursor-vps
 devin-mac
-devin-vps
-fleet-worker
 grok-cli-mac
 hermes
-opencode
-pi
 pi-mac

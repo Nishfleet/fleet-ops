@@ -73,15 +73,9 @@ def test_the_roster_is_the_relays_agent_list():
     assert roster() == [
         "claude-mac",
         "claude-vps",
-        "command-code",
-        "cursor-vps",
         "devin-mac",
-        "devin-vps",
-        "fleet-worker",
         "grok-cli-mac",
         "hermes",
-        "opencode",
-        "pi",
         "pi-mac",
     ]
 
