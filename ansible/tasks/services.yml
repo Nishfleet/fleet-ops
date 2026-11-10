@@ -226,9 +226,46 @@
   loop:
     - hermes-gateway.service
     - hermes-serve.service
+  register: hermes_login_restart
   when:
     - hermes_installed_sandbox_dropin.stat.exists
     - "hermes_installed_sandbox_dropin.stat.mtime | int > ([hermes_gateway_start.stdout | int, hermes_serve_start.stdout | int] | min)"
+
+# 2026-11-10 (fleet-ops#11900): the restart above only asks systemd to start,
+# and a gateway whose start keeps failing flaps in the background while the
+# play reads green. The two tasks below fail the deploy actually: 30s is one
+# missed start plus one RestartSec=10 retry (hermes-serve carries the same
+# RestartSec), so a gateway that flapped one start and recovered is active by
+# then, and one that keeps failing is not. The drop-in lines that started the
+# crash loop live in the same file this restart is for, which is why the check
+# sits here, not in final-checks.yml.
+- name: Give hermes-gateway 30 seconds to settle after the restart
+  ansible.builtin.wait_for:
+    timeout: 30
+  register: hermes_gateway_settle_wait
+  when: hermes_login_restart.results | default([]) | selectattr('changed') | list | length == 2
+
+- name: Read hermes-gateway's state 30 seconds after the restart
+  ansible.builtin.command:
+    argv: [systemctl, is-active, hermes-gateway.service]
+  register: hermes_gateway_settled
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  when: hermes_gateway_settle_wait is not skipped
+
+- name: Fail when hermes-gateway is not active 30 seconds after the restart
+  ansible.builtin.assert:
+    that: hermes_gateway_settled.stdout | trim == 'active'
+    fail_msg: >-
+      hermes-gateway is not active 30 seconds after the restart (fleet-ops#11900, 2026-11-10's
+      six-minute crash loop): is-active said '{{ hermes_gateway_settled.stdout | trim }}'
+      (rc {{ hermes_gateway_settled.rc }}) {{ hermes_gateway_settled.stderr | trim }}. With
+      dashboard.public_url set it needs the dashboard login settings in {{ nish_home }}/.hermes/secrets.env,
+      which the shared /etc/systemd/system/hermes-.service.d/sandbox.conf drop-in now loads for both
+      Hermes units. Read the start failure in `journalctl -u hermes-gateway.service` before rerunning.
+    quiet: true
+  when: hermes_gateway_settle_wait is not skipped
 
 # hermes-serve binds 127.0.0.1 and Tailscale Serve publishes it on this node's
 # tailnet name, port 10000 (https://tailscale.com/kb/1312/serve). Hermes takes
