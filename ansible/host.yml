@@ -118,6 +118,11 @@
       - /srv/aiostreams/compose.yaml
       - /srv/aiostreams/compose.yaml.bak-2026-10-22
       - /srv/aiostreams/.env.bak-1789995543
+      # The retired deploy clone (fleet-ops#10935 E1, left for a checked hand
+      # delete). tasks/user-files.yml keeps the agents' checkout itself on main
+      # now — a standalone clone, not a git worktree of this one — so the
+      # duplicate parent has no reader left.
+      - "{{ nish_home }}/workspaces/tooling/fleet-ops-deploy-clone"
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"
