@@ -48,5 +48,33 @@
     - Reload systemd
     - Reload nish's user manager
 
+# The grafana_ro role and the session_hop_logs view were built for the LiteLLM
+# Postgres data source deleted on 2026-11-10 (fleet-ops#11851). They live inside
+# the router's database, not on a path `retired` can remove: that datadir is in
+# nish's home, so state: absent there would delete the cluster. The drop runs psql
+# as nish over the cluster's unix socket, the way the restic dump does
+# (rootfs/etc/systemd/system/restic-r2-backup.service), and reads the password from
+# nish's ~/.pgpass (0600); no password is in argv. IF EXISTS makes a later run a
+# no-op, and `removes` skips it while the database is down, so a fresh host or a
+# stopped cluster does not fail the play. Drop the task once a deploy shows both gone.
+- name: Drop the retired grafana_ro role and session_hop_logs view
+  become: true
+  become_user: nish
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/psql
+      - --host={{ nish_home }}/.local/share/fleet-litellm-postgres/run
+      - --username=litellm
+      - --dbname=litellm
+      - --no-psqlrc
+      - --no-password
+      - --set=ON_ERROR_STOP=1
+      - --command=DROP VIEW IF EXISTS public.session_hop_logs
+      - --command=DROP ROLE IF EXISTS grafana_ro
+    removes: "{{ nish_home }}/.local/share/fleet-litellm-postgres/run/.s.PGSQL.5432"
+  environment: "{{ nish_env }}"
+  register: retired_db_objects
+  changed_when: retired_db_objects.rc is defined and 'DROP ' in retired_db_objects.stdout
+
 - name: Apply pending handlers before the credential check
   ansible.builtin.meta: flush_handlers
