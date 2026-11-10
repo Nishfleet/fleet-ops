@@ -43,6 +43,10 @@ Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
 PodmanArgs=--env=DATABASE_URL
 # INFO, not DEBUG: DEBUG dumps full prompts into the journal (fleet-ops#4449).
 Environment=LITELLM_LOG=INFO
+# HAProxy checks /health/readiness every 2 s per instance (rootfs/etc/haproxy/haproxy.cfg), and
+# uvicorn's access log otherwise writes a line per check. LiteLLM's stock env var drops exactly
+# those lines (https://docs.litellm.ai/docs/proxy/config_settings#environment-variables---reference).
+Environment=LITELLM_DISABLE_ACCESS_LOG_PATHS=/health/readiness
 # A stop drains: uvicorn stops accepting (HAProxy then sends new calls to the other instance), waits for
 # open calls to finish, and exits. Podman SIGKILLs at this timeout
 # (https://docs.podman.io/en/v4.9.3/markdown/podman-run.1.html#stop-timeout-seconds; podman 4.9
