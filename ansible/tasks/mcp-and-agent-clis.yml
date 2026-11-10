@@ -107,22 +107,20 @@
   check_mode: false
   timeout: 60
 
-- name: Drop a stale drive entry  # noqa: no-changed-when
+# The drive filesystem server is retired here (fleet-ops#11862): it duplicates
+# Claude Code's own file tools and its npx launcher is not on a detached job's
+# PATH, so the server cannot start there. This drops the entry Claude Code's
+# user config still carries; a run whose entry is already gone is fine. Cursor's
+# copy needed no matching task: the Cursor swap task left with the Cursor lane
+# (fleet-ops#10580), so these two tasks are the only drive-entry readers left
+# in the repo.
+- name: Drop the retired drive entry from Claude Code's user config  # noqa: no-changed-when
   become: true
   become_user: nish
   environment: "{{ nish_env }}"
   ansible.builtin.command:
     argv: ["{{ nish_home }}/.local/bin/claude", mcp, remove, drive, --scope, user]
-  when: drive_entry.rc == 0 and (drive_mcp_words | reject('in', drive_entry.stdout ~ drive_entry.stderr) | list | length) > 0
-  timeout: 60
-
-- name: Pin the Drive filesystem server in Claude Code's user config  # noqa: no-changed-when
-  become: true
-  become_user: nish
-  environment: "{{ nish_env }}"
-  ansible.builtin.command:
-    argv: "{{ [nish_home ~ '/.local/bin/claude', 'mcp', 'add', '--scope', 'user', 'drive', '--'] + drive_mcp_words }}"
-  when: drive_entry.rc != 0 or (drive_mcp_words | reject('in', drive_entry.stdout ~ drive_entry.stderr) | list | length) > 0
+  when: drive_entry.rc == 0
   timeout: 60
 
 - name: Read Hermes' config

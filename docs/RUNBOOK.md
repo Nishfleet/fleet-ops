@@ -295,9 +295,7 @@ read `GH_CONFIG_DIR=/run/fleet-hermes-github-token` instead, which
 `fleet-hermes-github-token.service`: an RS256 App JWT with the same nishfleet-worker key, then
 an installation token with `issues:write`, `pull_requests:read` and `actions:read` and no
 `repositories` key (the digest counts with `gh repo list Nishfleet`), then a `hosts.yml` in the
-0700 `/run` directory (0600 file, so the token lives in tmpfs, never on disk). The directory is
-not private to Hermes, so the agent lock's shared drop-in hides it too
-(`fleet-agent-lock.service.d/50-shared.conf`). The deploy
+0700 `/run` directory (0600 file, so the token lives in tmpfs, never on disk). The deploy
 enables the timer and mints once; a failed mint is reported and does not stop the rest of the
 host config, and the Hermes units restart onto the new login only once the `hosts.yml` exists
 and a `gh issue view` through it has succeeded, and also only when the sandbox drop-in on

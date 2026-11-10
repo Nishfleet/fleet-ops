@@ -102,6 +102,10 @@
       # off the box in October and the engine has run with no containers since
       # (fleet-ops#11853). Removed with its data in `retired` below.
       - dockerd-eval.service
+      # The system-scope podman auto-update timer, for the reason the user-scope
+      # one below was retired: the images are digest-pinned and move only by
+      # Renovate PR, so podman-auto-update(1) has nothing to pull.
+      - podman-auto-update.timer
     retired_user_units:
       # Every image is digest-pinned and moves only by Renovate PR, so podman's
       # auto-update timer has nothing to pull (podman-auto-update(1)).
@@ -111,7 +115,11 @@
       # foo@N.service instances that replaced it (systemd.unit(5), "Drop-in files").
       - /etc/systemd/user/fleet-litellm-proxy.service.d
       # Empty or orphaned drop-in folders: gpg-agent's live copy went in
-      # fleet-ops#10138, and fleet-agent-lock.service no longer exists.
+      # fleet-ops#10138, and fleet-agent-lock.service no longer exists. The
+      # dir entry also removes its 50-shared.conf drop-in, whose rootfs/ copy
+      # fleet-ops#11862 deleted: no unit or symlink reads it, every
+      # tincan-listen-*.service.d/50-shared.conf symlink left in #10580 and
+      # #11632, and the one surviving listener sets its own InaccessiblePaths=.
       - "{{ nish_home }}/.config/systemd/user/gpg-agent.service.d"
       - /etc/systemd/system/fleet-agent-lock.service.d
       # Read only by the deleted agent-dispatch workflow.
@@ -136,6 +144,10 @@
       - /etc/fleet-ops/dockerd-eval.json
       - /run/dockerd-eval
       - "{{ nish_home }}/.local/share/dockerd-eval"
+      # Claude Code's managed-settings drop-in for the Beacon OTLP telemetry
+      # collector the 2026-11-01 reset removed; the file left rootfs/ in
+      # fleet-ops#11613, and the copy on /etc was removed by hand 2026-11-10.
+      - /etc/claude-code/managed-settings.d/70-beacon-otlp.json
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"
@@ -180,8 +192,6 @@
       - /usr/bin/google-chrome
       - --no-usage-statistics
       - --no-performance-crux
-    drive_mcp_entry: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../config/drive-mcp.json') | from_json).mcpServers.drive }}"
-    drive_mcp_words: "{{ [drive_mcp_entry.command] + (drive_mcp_entry.args | map('replace', '~', nish_home) | list) }}"
     nish_config: "{{ nish_home }}/.config"
     agent_share: "{{ nish_home }}/.local/share"
     # The LiteLLM Redis password: ONE root-only file that the stock password lookup creates
