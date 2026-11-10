@@ -20,8 +20,8 @@ Description=Mint the short-lived GitHub App login Hermes' gh CLI reads (fleet-op
 # The token lives in /run (tmpfs, mode 0700, owned by nish), never on disk and
 # never in argv: the SDK holds the key and the JWT in its own process and hands
 # the token over stdout. A failed mint leaves
-# the previous hosts.yml in place and pages through OnFailure=; the timer tries
-# again in 20 minutes. The StartLimit below caps how fast a pull-in chain (a
+# the previous hosts.yml in place and fails the unit, which the SystemUnitFailed rule
+# reads; the timer tries again in 20 minutes. The StartLimit below caps how fast a pull-in chain (a
 # Hermes unit retrying through Restart=always) can mint, so a crash loop cannot
 # spend the installation-token quota that the worker runs share. The token is
 # the same nishfleet-worker App every worker run uses, so the login is
@@ -34,9 +34,7 @@ Description=Mint the short-lived GitHub App login Hermes' gh CLI reads (fleet-op
 # age is the mint time.
 #
 # The token directory is not private to Hermes: /run is readable by every
-# process that runs as nish, so the agent lock's shared drop-in hides this
-# directory from every locked listener (fleet-agent-lock.service.d/50-shared.conf
-# and config/agent-locks.json must_hide).
+# process that runs as nish.
 #
 # Leave or switch back: `systemctl disable --now
 # fleet-hermes-github-token.timer` and `systemctl mask

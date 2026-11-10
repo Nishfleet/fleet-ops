@@ -68,7 +68,6 @@ def test_the_owners_own_pull_request_is_never_approved(tmp_path):
 
 @pytest.mark.parametrize("body", ["Closes #1", "Closes #1\n\nThe worker wrote no run-proof line, so the reviewer bot will not approve."])
 def test_a_pull_request_without_a_run_proof_line_is_never_approved(tmp_path, body):
-    # agent.yml promises the worker this, and the reviewer AI alone does not keep it.
     assert verdict(tmp_path, "nishfleet-worker[bot]", "fine\nVERDICT: APPROVE", body=body) == "COMMENT"
 
 

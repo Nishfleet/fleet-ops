@@ -10,7 +10,7 @@ One doc per topic under `docs/`. Add new operational prose to the topic's own
 file, not here.
 
 - [Install](docs/install.md)
-- [systemd by default](docs/systemd-by-default.md)
+- [The detached worker unit](docs/detached-worker-unit.md)
 - [Daily update](docs/daily-update.md)
 - [Mac daily update](docs/mac-daily-update.md)
 - [Remote Control](docs/remote-control.md)
@@ -18,7 +18,6 @@ file, not here.
 - [Agent autonomy drop-in](docs/agent-autonomy-drop-in.md)
 - [claude.ai connectors off on the server](docs/claudeai-connectors-off.md)
 - [Browser tool](docs/browser-tool.md)
-- [Drive filesystem server](docs/drive-filesystem-server.md)
 - [Router notes](docs/litellm-router-notes.md)
 - [Cloudflare credentials](docs/cloudflare-credentials.md)
 - [D1 migrations](docs/d1-migrations.md) and [D1 backup](docs/d1-backup-mechanism.md)

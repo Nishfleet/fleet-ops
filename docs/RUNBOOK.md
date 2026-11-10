@@ -49,19 +49,15 @@ and the system manager alike, because `systemd-run` leaves `CollectMode=
 inactive` and nothing unloads it. `reset-failed` is the only thing that clears
 it.
 
-What the launcher rule in AGENTS.md "Session-outliving work" changes is the
+What the detached-launch rule in `docs/detached-worker-unit.md` changes is the
 detector, not the leftover. It launches a system unit as nish. node_exporter
 reads only the system bus, so a failed system unit fires `SystemUnitFailed`
 and becomes a fix job. A failed user unit is not scraped: of the 212 unit
 names node_exporter exposes, not one is a user-manager unit, and
 `fleet-sync.service` and `fleet-litellm-proxy.service`
-are all absent from them. A user unit's one other route is
-`OnFailure=fleet-unit-failed@%N.service`, which every user unit in `systemd/`
-carries and which instantiates a system unit node_exporter does scrape. That
-route is dormant on this box, because the reconcile URL file it reads is mode
-000, root-owned and empty, so the unit SKIPs and exits 0. What hears about a
-failed user unit today is the daily update, and nothing else. A leftover still
-needs a hand `reset-failed`; the difference is that somebody hears about it.
+are all absent from them. What hears about a failed user unit today is the
+daily update, and nothing else. A leftover still needs a hand `reset-failed`;
+the difference is that somebody hears about it.
 
 To read a leftover before clearing it, `show` is the one-line form (`status`
 prints the flag too, inside its `Loaded:` and `Transient:` lines, which is not
@@ -142,12 +138,13 @@ one with `git tag -a <name> -m "<why>"` and push it, and keep it on `main`.
 Interactive shells do not read `~/.config/environment.d`. The systemd user
 manager does, for user units, so a value only a unit needs goes there. Do not
 add a loader for it to `~/.bashrc` or `~/.zshrc`. Work that needs a value from
-a file runs as a system unit as nish (AGENTS.md "Session-outliving work") with
+a file runs as a system unit as nish (`docs/detached-worker-unit.md`) with
 `EnvironmentFile=`, never as a `systemd-run` transient under the user manager,
 because a failed user unit is not scraped: node_exporter reads only the system
 bus, so a failed `--user` unit fires no alert and only the daily update sees it
 ("The failed-unit check and leftover ad-hoc units" above). Not from an
-interactive shell either (README, "systemd by default").
+interactive shell either, and not as a user-manager unit: the one-line
+system-unit form is `docs/detached-worker-unit.md`.
 
 The loader that ran the systemd environment generator in those files from
 2026-10-07 carried the pi-grok `PI_XAI_CLIENT_VERSION` pin into shells. The pin
@@ -281,8 +278,8 @@ the quadlet's new mount takes effect. Do it right after the merge deploys: until
 provisioning reload the merge triggers cannot find the new mount and
 `fleet-grafana-provisioning.service` pages once per provisioning change. Read it: `systemctl --user show
 fleet-grafana-github-token.service -p Result -p ExecMainStartTimestamp` and the journal line
-`minted a GitHub App token`. A failed mint pages through `OnFailure=`
-(`fleet-unit-failed@`), keeps the previous token, and the delivery rule pages hermes-urgent
+`minted a GitHub App token`. A failed mint keeps the previous token, and the
+delivery rule pages hermes-urgent
 if a webhook still fails. Switch off: `systemctl --user disable --now
 fleet-grafana-github-token.timer` and `systemctl --user mask fleet-grafana-github-token.service`
 (the quadlet's `Wants=` also mints once per Grafana start); the webhook then sends an empty token (401), the delivery
@@ -298,9 +295,7 @@ read `GH_CONFIG_DIR=/run/fleet-hermes-github-token` instead, which
 `fleet-hermes-github-token.service`: an RS256 App JWT with the same nishfleet-worker key, then
 an installation token with `issues:write`, `pull_requests:read` and `actions:read` and no
 `repositories` key (the digest counts with `gh repo list Nishfleet`), then a `hosts.yml` in the
-0700 `/run` directory (0600 file, so the token lives in tmpfs, never on disk). The directory is
-not private to Hermes, so the agent lock's shared drop-in hides it too
-(`fleet-agent-lock.service.d/50-shared.conf`). The deploy
+0700 `/run` directory (0600 file, so the token lives in tmpfs, never on disk). The deploy
 enables the timer and mints once; a failed mint is reported and does not stop the rest of the
 host config, and the Hermes units restart onto the new login only once the `hosts.yml` exists
 and a `gh issue view` through it has succeeded, and also only when the sandbox drop-in on
@@ -309,9 +304,9 @@ disk is newer than the unit's start (`ActiveEnterTimestamp`), the staleness comp
 install never re-queues a restart and no state file holds a parked restart. A Hermes start
 needs the mint to have succeeded (`Wants=` and `After=` in the drop-in; the mint skips a
 token younger than 15 min, so a restart spends no
-extra API calls), and a failed mint keeps the previous `hosts.yml`, pages through `OnFailure=`
-and is capped by the unit's `StartLimitBurst=6` per ten minutes (the timer retries in 20
-minutes). Read
+extra API calls), and a failed mint keeps the previous `hosts.yml` and is
+capped by the unit's `StartLimitBurst=6` per ten minutes (the timer retries in
+20 minutes). Read
 it: `systemctl show fleet-hermes-github-token.service -p Result -p ExecMainStartTimestamp` and
 the journal line `minted the nishfleet-worker App token as the Hermes gh login`.
 `sudo -u nish env GH_CONFIG_DIR=/run/fleet-hermes-github-token gh issue view 10267 --repo
@@ -557,7 +552,8 @@ Loading it is the stock property, required (no `-` prefix) so a missing file
 fails the unit at start instead of running a session on the wrong login:
 
 ```
-systemd-run --user --collect --unit <name> -p EnvironmentFile=%h/.config/claude/oauth.env \
+sudo systemd-run --uid=nish --gid=nish -p RuntimeMaxSec=<seconds> --unit <name> \
+  -p "EnvironmentFile=<home>/.config/claude/oauth.env" \
   -- claude -p ...
 ```
 
@@ -594,16 +590,16 @@ single-name file of its own instead (fleet-ops#10222):
   `--env-host` until #9020; it now passes the named `PodmanArgs=--env=` list.
   Its `anthropic/` rows set `api_base` explicitly and take `MINIMAX_API_KEY`,
   so `ANTHROPIC_BASE_URL` is not read.
-- `fleet-sync`, `fleet-unit-failed@`,
-  `fleet-litellm-proxy-config`, the postgres, redis and aiostreams quadlets,
+- `fleet-sync`, `fleet-litellm-proxy-config`,
+  the postgres, redis and aiostreams quadlets,
   and the `hermes-`, `tailscaled`, `oomd` and slice drop-ins start no agent.
 
 The runner environment is the one thing the repo cannot show (the runner
 `.env` and the live `~/.pi/agent` extensions are outside it). If a worker
 engine ever needs one of these names, give that runner a drop-in with the line
 above for the single file it needs; nothing in this repo asks for it today. A
-hand-run `claude -p`, or a transient under the user manager, that needs the
-token passes the line above.
+hand-run `claude -p` in a system unit as nish (`docs/detached-worker-unit.md`)
+that needs the token passes the line above.
 
 ## Unattended Claude runs (fleet-ops#9502)
 

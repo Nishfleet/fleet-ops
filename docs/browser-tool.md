@@ -33,9 +33,7 @@ credential file does not hold them back.
 - No browser plugin, only the MCP server: `rootfs/etc/claude-code/managed-settings.d/85-no-playwright.json`
   sets `playwright@claude-plugins-official` to `false`, and managed settings
   beat the user's `enabledPlugins`, so no Claude Code session (server chats
-  included) loads the Playwright tools (fleet-ops#10529). The drive filesystem
-  server stays: it is an MCP entry in `config/drive-mcp.json`, not a plugin
-  ([Drive filesystem server](drive-filesystem-server.md)). Switch Playwright
+  included) loads the Playwright tools (fleet-ops#10529). Switch Playwright
   back on: delete the drop-in and add
   `/etc/claude-code/managed-settings.d/85-no-playwright.json` to `retired` in
   `ansible/host.yml`, because `copy` never deletes.

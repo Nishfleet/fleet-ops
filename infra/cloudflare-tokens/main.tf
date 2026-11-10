@@ -9,7 +9,8 @@ locals {
   # repo          = GitHub repo that receives the secret; null for the token that
   #                 is written to a VPS file instead (file below).
   # environment   = set when the workflow reads the secret from a GitHub
-  #                 Environment (0509 deploy); null writes a repo-level secret.
+  #                 Environment (0509 deploy and preview); null writes a
+  #                 repo-level secret.
   # secret_name   = the name the workflows already read, so no workflow changes.
   # file          = 0600 file on the VPS that receives the token value, for the
   #                 one consumer that is not a GitHub Actions job (Grafana's
@@ -40,6 +41,22 @@ locals {
       file        = null
       account     = ["Workers Scripts Write", "D1 Write", "Queues Write", "Account Settings Read"]
       zone        = ["Zone Read", "Workers Routes Write"]
+      vps_only    = false
+    }
+    # The pull request preview job uploads a Worker, which the read-only repo
+    # token (0509-reports) cannot do. The preview job names the `preview`
+    # environment, so GitHub uses this environment secret in place of the repo
+    # one. The drive token, whose previews work, carries the wider deploy set;
+    # a preview upload needs only Workers Scripts Write, and the CLI resolves
+    # the account with Account Settings Read. No zone permissions and not
+    # VPS-only: the job runs on a hosted runner.
+    "0509-preview" = {
+      repo        = "0509"
+      environment = "preview"
+      secret_name = "CLOUDFLARE_API_TOKEN"
+      file        = null
+      account     = ["Workers Scripts Write", "Account Settings Read"]
+      zone        = []
       vps_only    = false
     }
     "0509-reports" = {

@@ -70,31 +70,17 @@ def test_the_roster_holds_one_clean_agent_name_per_line():
 
 
 def test_the_roster_is_the_relays_agent_list():
-    # The live authority is `tincan agents --json --socket
-    # ~/.local/state/tincan-relay/admin.sock`, which CI cannot reach (it runs on
-    # GitHub's runners, not the box). The list it answered on 2026-10-30 (amp, cursor-mac and droid-mac
-    # gone from the mesh) is pinned here, and ansible/the policy tasks check the live one on every playbook
-    # run. A roster edit that is not a deliberate agent change fails here until
-    # this list is re-captured with that command.
     assert roster() == [
         "claude-mac",
         "claude-vps",
-        "command-code",
-        "cursor-vps",
         "devin-mac",
-        "devin-vps",
-        "fleet-worker",
         "grok-cli-mac",
         "hermes",
-        "opencode",
-        "pi",
         "pi-mac",
     ]
 
 
 def test_the_roster_does_not_name_an_agent_the_relay_holds_as_an_outsider():
-    # grokbot, instinct and muse are on the mesh but are not ours, so the policy
-    # holds them. A name here that is not ours opens the gate for it.
     for outsider in ("grokbot", "instinct", "muse"):
         assert outsider not in roster(), outsider
 
@@ -116,8 +102,6 @@ def test_the_policy_names_the_notify_destination_and_the_hold_ttl():
 
 
 def test_the_policy_is_rendered_without_a_trailing_newline():
-    # The hand-made file it replaces had none, and -j is what keeps that: a
-    # trailing byte is a diff on every host-config run.
     argv = ["jq", "--indent", "1", "-n", "--rawfile", "roster", str(ROSTER_FILE), "-f", str(PROGRAM_FILE)]
     without_j = subprocess.run(argv, capture_output=True, text=True, check=True).stdout
     with_j = subprocess.run(["jq", "-j", *argv[1:]], capture_output=True, text=True, check=True).stdout
@@ -145,8 +129,6 @@ def test_the_loud_check_rejects_a_missing_malformed_or_wrong_shaped_policy(tmp_p
 
 
 def test_the_host_playbook_renders_installs_and_checks_the_policy():
-    # The render is jq driven by the repo's own program file, so there is no
-    # script to keep in step with the roster.
     assert re.search(
         r"- name: Render the tincan relay approval policy from the agent roster\n"
         r"(?:.*\n)*?"
@@ -171,11 +153,6 @@ def test_the_host_playbook_renders_installs_and_checks_the_policy():
 
 @pytest.mark.skipif(not (shutil.which("ansible-playbook") and shutil.which("yq")), reason="ansible or yq is not installed")
 def test_the_host_playbook_installs_the_render_byte_for_byte(tmp_path):
-    # The install moves the render through a registered result, and Ansible
-    # folds a multi-line registered string into one line unless the task turns
-    # it into a plain string first. Running the two real tasks is the only way
-    # to see that: a policy that is one line long is still valid JSON, so the
-    # loud check below would pass while the box's gate had drifted.
     state = tmp_path / ".local/state/tincan-relay"
     state.mkdir(parents=True)
     play = json.loads(

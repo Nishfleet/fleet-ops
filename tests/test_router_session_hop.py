@@ -4,8 +4,9 @@ The question the drill answers: a worker session is pinned to one row, that row
 starts 429ing, the router cools it, and the session sends 100 more calls. How
 many of those calls land on a row other than the one the call before used?
 
-Measured on litellm 1.105.0, the pin in
-containers/quadlet/fleet-litellm-proxy@.container, with the router settings
+Measured on the litellm the proxy image pins (the tag in
+containers/quadlet/fleet-litellm-proxy@.container, read by
+tests/router_litellm_pin.py), with the router settings
 config/litellm-proxy.yaml ships (session_affinity, cooldown_time 60,
 allowed_fails 1, deployment_affinity_ttl_seconds 600): 62 of 99 hops, across 3 distinct
 rows. Re-claim the pin to a healthy row - which is what the #9411 fix does - and the
@@ -68,18 +69,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_POST(self):
-        # No server registered: a future test that forgets the push would watch
-        # its assertions pass against a mock that answers everything 200, which
-        # is the quiet way to prove nothing.
         if not _CURRENT_SERVER:
             raise RuntimeError("_Handler fired with no _CURRENT_SERVER registered; "
                                "append the server in the test's try block")
-        # The body must be read before the response is written. litellm holds the
-        # connection open (HTTP/1.1), so if those bytes stay in the socket buffer
-        # the next request on this connection is parsed as
-        # '<body>POST /path HTTP/1.1' and the stdlib answers 501 'Unsupported
-        # method' - no hit is recorded, so a real hop is silently dropped from
-        # the count this drill is built on.
         length = int(self.headers.get("Content-Length") or 0)
         if length:
             self.rfile.read(length)
@@ -159,7 +151,6 @@ async def _drill(server, calls=CALLS, reclaim=False):
     drops the stale pin before the count, the way the #9411 fix re-claims it."""
     settings = _router_settings()
     saved_callbacks = litellm.callbacks
-    # simple-shuffle draws from `random`; seed it so no draw can differ between runs.
     random.seed(9412)
     _CURRENT_SERVER.append(server)
     litellm.callbacks = []
@@ -221,7 +212,7 @@ def test_a_pinned_session_that_cools_does_not_re_shuffle_the_group():
 
 drill_is_red = pytest.mark.xfail(
     strict=True,
-    reason="litellm 1.105.0 re-shuffles a session pinned to a cooled row: 62 of 99 hops "
+    reason="the pinned litellm re-shuffles a session pinned to a cooled row: 62 of 99 hops "
            "(fleet-ops#9412 item 3). Drop this marker in the PR that bumps the image (#9411).",
 )
 test_a_pinned_session_that_cools_does_not_re_shuffle_the_group = drill_is_red(

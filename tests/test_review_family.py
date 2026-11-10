@@ -3,8 +3,9 @@
 Runs the review steps' real shell with a fake `gh` and `pi` over the records GitHub keeps (the
 branch's push log and the agent.yml run names), and checks the router rows, the one review
 fallback and the schema guards that keep a review away from a builder's row. A pi build reaches
-Claude then Qwen, any other build reaches Qwen, GLM or DeepSeek, and Grok answers only when the
-router step failed (owner 2026-11-04: "need the others as backup", never MiniMax).
+Claude then Qwen, any other build reaches DeepSeek, and Grok answers only when the
+router step failed (owner 2026-11-04: "need the others as backup", never MiniMax; the Qwen
+review-any row left on the owner's 2026-11-10 audit, decision 14, fleet-ops#11876).
 https://docs.litellm.ai/docs/proxy/reliability#fallbacks
 https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepscontinue-on-error
 """
@@ -135,7 +136,7 @@ def test_the_review_groups_hold_their_families():
     groups = {g: [r["litellm_params"]["model"] for r in ROUTER["model_list"] if r["model_name"] == g]
               for g in ("review-claude", "review-qwen", "review-any")}
     assert groups == {"review-claude": ["anthropic/claude-sonnet-5-5"], "review-qwen": ["openai/qwen3.8-max"],
-                      "review-any": ["openai/qwen3.8-max", "openai/glm-5.3-flash", "openai/deepseek-v4.1-flash"]}
+                      "review-any": ["openai/deepseek-v4.1-flash"]}
 
 
 def reachable(group):
@@ -157,14 +158,16 @@ def test_any_other_build_never_reaches_claude_or_minimax():
     assert not [m for m in reachable("review-any") if re.search("claude|minimax", m, re.IGNORECASE)]
 
 
-def test_a_failed_review_any_row_hands_the_call_to_another_row():
+def test_the_review_any_row_answers_a_review_call():
+    """The single DeepSeek row serves the call (owner decision 2026-11-10, decision 14: the group's
+    Qwen row never served a call and left, so a failed call has no peer row to hand to; the router
+    answers the failure and the Grok step picks review up, test_grok_reviews_every_build_when_the_router_step_failed)."""
     litellm = pytest.importorskip("litellm")
     import asyncio
 
     rows = json.loads(json.dumps([r for r in ROUTER["model_list"] if r["model_name"] == "review-any"]))
-    for r in rows:
-        r["litellm_params"].update(api_key="test", mock_response="litellm.RateLimitError")
-    rows[-1]["litellm_params"]["mock_response"] = "deepseek answered"
+    assert len(rows) == 1
+    rows[0]["litellm_params"].update(api_key="test", mock_response="deepseek answered")
     rs = ROUTER["router_settings"]
     router = litellm.Router(model_list=rows, num_retries=rs["num_retries"], retry_policy=rs["retry_policy"],
                             allowed_fails_policy=rs["allowed_fails_policy"], cooldown_time=rs["cooldown_time"])

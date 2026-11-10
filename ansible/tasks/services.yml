@@ -32,9 +32,14 @@
 
 # Hermes' own installer writes hermes-gateway.service; --if-missing leaves the
 # unit it already wrote alone, and `hermes gateway restart --system` refreshes
-# it. hermes-serve.service stays ours: Hermes ships no installer for serve
-# (its desktop.md: keep `hermes serve` running under systemd). The shared
-# sandbox is hermes-.service.d/sandbox.conf (fleet-ops#10935 D9).
+# it. The unit is not copied under rootfs/: it is installer-generated and its
+# PATH pins versioned tool directories the installer rewrites on every upgrade,
+# so a tree copy would put a stale PATH back on the play after each upgrade
+# (a changed task every run, and node or npm dirs that may be gone).
+# hermes-serve.service stays ours: Hermes ships no installer for serve (its
+# desktop.md: keep `hermes serve` running under systemd). The shared sandbox is
+# hermes-.service.d/sandbox.conf (fleet-ops#10935 D9), which applies to
+# hermes-gateway.service too.
 - name: Install the Hermes gateway service with Hermes' own installer
   ansible.builtin.command:
     argv: ["{{ nish_home }}/.local/bin/hermes", gateway, install, --system, --run-as-user, nish, --if-missing, --no-start-now]
@@ -83,22 +88,6 @@
     enabled: true
     state: started
     daemon_reload: true
-  ignore_errors: "{{ ansible_check_mode }}"
-
-# The rootless Docker engine for drive's agent eval (fleet-ops#9983); the
-# fleet-ci-3 runner reaches it through DOCKER_HOST (its 30-eval.conf). Started
-# once; a later edit to the unit file is staged until the next restart. It
-# replaces podman-eval, which cannot run the eval (Inspect needs Docker Engine
-# 24.0.6 or newer). The tmpfiles entry and the unit were installed above, and
-# the queued handlers ran, before this point.
-- name: Enable the rootless Docker engine for the drive eval
-  ansible.builtin.systemd_service:
-    name: dockerd-eval.service
-    enabled: true
-    state: started
-    daemon_reload: true
-  # A unit that does not start fails the play, so the deploy goes red
-  # (docs.ansible.com/ansible/latest/playbook_guide/playbooks_error_handling.html).
   ignore_errors: "{{ ansible_check_mode }}"
 
 # The retired podman engine: stopped and disabled, and its unit file is in

@@ -50,8 +50,21 @@ scrape_configs:
   # LiteLLM mounts the endpoint at /metrics/, so a bare /metrics answers 307
   # with an empty body and Prometheus (follow_redirects: false) scrapes zero
   # samples while still reporting the target up (fleet-ops#4174 reopen).
+  # The endpoint requires a router key since fleet-ops#11847 (LiteLLM's
+  # require_auth_for_metrics_endpoint, https://docs.litellm.ai/docs/proxy/prometheus):
+  # the page lists every seat, hashed key and caller address. The key comes from a
+  # 0600 file owned by the prometheus user (/etc/prometheus/litellm_metrics_key),
+  # placed on the box like the other /etc/prometheus credentials and never from this
+  # repo. Place it before the deploy: the play's promtool check opens this path
+  # (unlike alertmanager_password), so a missing file stops the play. 60s: the
+  # counters are cumulative, and each scrape serialises over 1 MB
+  # (https://prometheus.io/docs/prometheus/latest/configuration/configuration/#scrape_config).
   - job_name: litellm
+    scrape_interval: 60s
     metrics_path: /metrics/
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/litellm_metrics_key
     static_configs:
       - targets: ['127.0.0.1:4001', '127.0.0.1:4002']
 

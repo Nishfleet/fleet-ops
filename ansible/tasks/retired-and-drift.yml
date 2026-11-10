@@ -48,5 +48,58 @@
     - Reload systemd
     - Reload nish's user manager
 
+# The grafana_ro role and the session_hop_logs view were built for the LiteLLM
+# Postgres data source deleted on 2026-11-10 (fleet-ops#11851). They live inside
+# the router's database, not on a path `retired` can remove: that datadir is in
+# nish's home, so state: absent there would delete the cluster. The drop runs psql
+# as nish over the cluster's unix socket, the way the restic dump does
+# (rootfs/etc/systemd/system/restic-r2-backup.service), and reads the password from
+# nish's ~/.pgpass (0600); no password is in argv.
+#
+# The superuser `nish` role connects, not the router's read-write `litellm` login:
+# the deleted data source's DDL sets grafana_ro's password as the nish role and gives
+# litellm nothing but the write path, so litellm has no CREATEROLE and DROP ROLE from
+# it fails with "permission denied" (PostgreSQL, ALTER ROLE docs:
+# https://www.postgresql.org/docs/16/sql-alterrole.html). Proven on a Postgres 16
+# against the DDL grants (run-proof, 2026-11-11).
+#
+# grafana_ro still holds privileges after the view goes: CONNECT on the database and
+# USAGE on schema public, both granted by the DDL. DROP ROLE refuses a role they hang
+# from ("role cannot be dropped because some objects depend on it", ON_ERROR_STOP
+# then red-runs the play), so the DO block revokes them first:
+# https://www.postgresql.org/docs/16/sql-drop-owned.html -- DROP OWNED also takes the
+# privileges on the database itself, which no in-database DROP covers. The pg_roles
+# guard makes the whole block a no-op once the role is gone; the view's own IF EXISTS
+# covers the first command.
+#
+# changed_when stays false: psql prints the DROP VIEW / DO command tag on stdout
+# even when IF EXISTS matched nothing (the no-op run's "does not exist, skipping"
+# notice goes to stderr, but the tag still lands on stdout), so every run's stdout
+# carries "DROP VIEW"\n"DO" and no stdout check can tell a drop from a skip --
+# proven against Postgres 16 in the run-proof run. This is a one-way retirement
+# pass, not a state the play reads back. `removes` skips the task while the database
+# is down, so a fresh host or a stopped cluster does not fail the play. Drop the
+# task once a deploy shows both gone.
+- name: Drop the retired grafana_ro role and session_hop_logs view
+  become: true
+  become_user: nish
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/psql
+      - --host={{ nish_home }}/.local/share/fleet-litellm-postgres/run
+      - --username=nish
+      - --dbname=litellm
+      - --no-psqlrc
+      - --no-password
+      - --set=ON_ERROR_STOP=1
+      - --command=DROP VIEW IF EXISTS public.session_hop_logs
+      - >-
+        --command=DO $retire$ BEGIN IF EXISTS (SELECT FROM pg_roles
+        WHERE rolname = 'grafana_ro') THEN DROP OWNED BY grafana_ro;
+        DROP ROLE grafana_ro; END IF; END $retire$
+    removes: "{{ nish_home }}/.local/share/fleet-litellm-postgres/run/.s.PGSQL.5432"
+  environment: "{{ nish_env }}"
+  changed_when: false
+
 - name: Apply pending handlers before the credential check
   ansible.builtin.meta: flush_handlers

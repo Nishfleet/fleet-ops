@@ -5,8 +5,8 @@ http.server standing in for the providers: the tether group answers the chosen f
 the assistant group answers 200. Run on the proxy image's litellm (see
 containers/quadlet/fleet-litellm-proxy@.container):
 
-  uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx \
-      python -m pytest -q tests/test_router_tether_fallback.py
+  uvx --with "litellm==$(python tests/router_litellm_pin.py)" --with pytest==8.3.5 \
+      --with jsonschema --with httpx python -m pytest -q tests/test_router_tether_fallback.py
 """
 from __future__ import annotations
 
@@ -76,13 +76,11 @@ def test_live_config_tether_is_one_claude_row_falling_to_assistant_only():
     assert len(rows) == 1
     assert rows[0]["litellm_params"]["model"] == "anthropic/claude-sonnet-5-5"
     assert rows[0]["litellm_params"]["api_key"] == "os.environ/ANTHROPIC_API_KEY"
-    # the Claude key serves only tether and the review job's group, and `assistant` (shared with the Hermes chat agent) has no Claude row
     assert [r["model_name"] for r in cfg["model_list"]
             if r["litellm_params"].get("api_key") == "os.environ/ANTHROPIC_API_KEY"] == ["tether", "review-claude"]
     fallbacks = {k: v for entry in cfg["router_settings"]["fallbacks"] for k, v in entry.items()}
     assert fallbacks["tether"] == ["assistant"]
     assert not any("tether" in v for v in fallbacks.values())
-    # no group-specific lists: they would stop the general fallbacks being the default for every other group
     assert "content_policy_fallbacks" not in cfg["router_settings"]
     assert "context_window_fallbacks" not in cfg["router_settings"]
 
@@ -144,7 +142,6 @@ def test_a_claude_failure_is_answered_by_assistant(case):
         assert resp.choices[0].message.content == "ok"
         assert HITS[0] == "tether" and HITS[-1] == "assistant"
         assert resp._hidden_params["model_id"] == "assistant-row"
-        # the next call, whatever state the Claude row is in (parked or not), is still answered
         resp2 = asyncio.run(router.acompletion(model="tether", messages=[{"role": "user", "content": "again"}]))
         assert resp2.choices[0].message.content == "ok"
     finally:
