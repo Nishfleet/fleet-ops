@@ -141,11 +141,16 @@ jobs:
           # A review round is the bot's last look asking for changes on this head. A red head
           # cannot get one, the reviewer reads green CI only (review.yml), so the lane answers
           # a failure the checks report on this sha instead: a check run with conclusion
-          # "failure" names the dead job. Both rounds ride the same cap: the third change
-          # request, or a red head after two change requests, labels the PR needs-owner and
-          # runs nothing.
+          # "failure" names the dead job. Both rounds ride the same cap of 3: each change
+          # request from the bot, each "answering red CI" comment this step left on the PR,
+          # and this red head itself count one round, so the third (say a red head after two
+          # change requests, or a third red head in a row) labels the PR needs-owner and runs
+          # nothing.
           # https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
+          # https://docs.github.com/en/rest/issues/comments#list-issue-comments
           failing=$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" --jq '[.check_runs[] | select(.conclusion == "failure") | .name] | join(" ")')
+          red=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --jq '[.[] | select(.body | startswith("agent: answering red CI on "))] | length')
+          rounds=$((rounds + red + (${#failing} > 0 ? 1 : 0)))
           if [ -z "$failing" ] && [ "$(jq -r 'last | "\(.state) \(.commit_id)"' "$RUNNER_TEMP/reviews.json")" != "CHANGES_REQUESTED $sha" ]; then
             echo "the bot's last review is no change request on $sha and its checks are green; nothing to answer"; echo go=false >> "$GITHUB_OUTPUT"; exit 0
           fi
@@ -302,7 +307,7 @@ jobs:
           pr=$(gh pr create -R "$REPO" --head "agent/issue-$ISSUE" --title "$title" --body "Closes #$ISSUE"$'\n\n'"Built by the agent lane: $run"$'\n\n'"$proof")
           gh issue comment "$ISSUE" -R "$REPO" --body "agent: PR $pr"
           # https://cli.github.com/manual/gh_pr_merge: with a merge queue --auto queues the PR.
-          # A failure fails the job, so park labels the issue agent-failed.
+          # A failure fails the job, so park labels the issue agent-blocked.
           gh pr merge "$pr" -R "$REPO" --auto
   park:
     needs: [claim, work, push]
@@ -312,17 +317,19 @@ jobs:
     # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#needs-context
     if: ${{ !cancelled() && (failure() || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
-    # The run's own token, not the worker App: parking carried the App credential of the same
-    # environment `agent` the failing steps used, so whatever took them down (a dead or missing
-    # App token) failed the park too, and a dead run stranded its issue on agent-in-progress.
-    # github.token has no environment and cannot come back dead, and `issues: write` is all it
-    # needs to make the run visible and its issue re-queueable by adding agent-ready.
-    # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#failure
+    environment: agent
     timeout-minutes: 5
-    permissions: {issues: write}
+    permissions: {}
     steps:
+      - name: App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: "4728578"
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-issues: write
       - name: Park on failure
-        env: {GH_TOKEN: "${{ github.token }}"}
+        env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
         run: |
-          gh issue edit "$ISSUE" -R "$REPO" --remove-label agent-in-progress --add-label agent-failed
+          gh issue edit "$ISSUE" -R "$REPO" --add-label agent-blocked --remove-label agent-in-progress
           gh issue comment "$ISSUE" -R "$REPO" --body "agent: run failed, see $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID; add agent-ready to retry"

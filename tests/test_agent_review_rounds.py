@@ -83,14 +83,16 @@ def review(state, sha=SHA, body="finding", user="nishfleet-approver"):
     return {"user": {"login": user}, "state": state, "commit_id": sha, "body": body}
 
 
-def round_data(reviews, ref="agent/issue-7", failing=()):
+def round_data(reviews, ref="agent/issue-7", failing=(), red_answers=0):
     # The round step reads the check runs of the head sha too, so a red CI head can be
     # answered (failing = names of failed check runs). A green head by default.
     return {"repos/o/r/pulls/12": {"head": {"ref": ref, "sha": SHA}},
             "repos/o/r/pulls/12/reviews?per_page=100": reviews,
             f"repos/o/r/commits/{SHA}/check-runs?per_page=100":
                 {"check_runs": [{"name": n, "status": "completed", "conclusion": "failure"}
-                                for n in failing]}}
+                                for n in failing]},
+            "repos/o/r/issues/12/comments?per_page=100":
+                [{"body": f"agent: answering red CI on {OLD} (ci): x"}] * red_answers}
 
 
 def labelled(calls):
@@ -157,6 +159,13 @@ def test_a_red_head_on_a_fresh_pr_runs_too(tmp_path):
 def test_a_third_red_answer_after_the_change_requests_goes_to_the_owner(tmp_path):
     reviews = [review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD)]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews, failing=("ci",)), ISSUE="7", PR="12")
+    assert proc.returncode == 0 and out == "go=false\n"
+    assert labelled(calls) == [["api", "repos/o/r/issues/12/labels", "-f", "labels[]=needs-owner"]]
+    assert RED_COMMENT not in calls
+
+
+def test_a_third_red_head_in_a_row_goes_to_the_owner(tmp_path):
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data([], failing=("ci",), red_answers=2), ISSUE="7", PR="12")
     assert proc.returncode == 0 and out == "go=false\n"
     assert labelled(calls) == [["api", "repos/o/r/issues/12/labels", "-f", "labels[]=needs-owner"]]
     assert RED_COMMENT not in calls
@@ -238,11 +247,7 @@ def test_the_hop_refuses_a_branch_that_is_not_an_issue_number(tmp_path):
     assert proc.returncode != 0 and calls == []
 
 
-# agent.yml may ask for no more than the product stubs grant (issues: read), except park:
-# fleet-ops#11860 unparked it from the App token, which is what broke with the run, and park
-# runs on github.token with the one permission labelling and a comment need (issues: write).
 def test_agent_yml_asks_no_more_than_the_product_stubs_grant():
     asked = [(name, job.get("permissions")) for name, job in WF["jobs"].items()
-             if name != "park" and job.get("permissions") not in ({}, {"issues": "read"})]
+             if job.get("permissions") not in ({}, {"issues": "read"})]
     assert asked == []
-    assert WF["jobs"]["park"]["permissions"] == {"issues": "write"}
