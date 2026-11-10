@@ -34,9 +34,7 @@ Description=Mint the short-lived GitHub App login Hermes' gh CLI reads (fleet-op
 # age is the mint time.
 #
 # The token directory is not private to Hermes: /run is readable by every
-# process that runs as nish, so the agent lock's shared drop-in hides this
-# directory from every locked listener (fleet-agent-lock.service.d/50-shared.conf
-# and config/agent-locks.json must_hide).
+# process that runs as nish.
 #
 # Leave or switch back: `systemctl disable --now
 # fleet-hermes-github-token.timer` and `systemctl mask

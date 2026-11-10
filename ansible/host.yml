@@ -95,7 +95,11 @@
     # Retired units and paths, removed by tasks/retired-and-drift.yml. Every
     # entry the old lists named was absent from the box on 2026-11-05 (the deploy
     # log showed `ok`, nothing to delete, for each), so the lists restarted empty.
-    retired_units: []
+    # The system-scope podman auto-update timer, for the reason the user-scope
+    # one below was retired: the images are digest-pinned and move only by
+    # Renovate PR, so podman-auto-update(1) has nothing to pull.
+    retired_units:
+      - podman-auto-update.timer
     retired_user_units:
       # Every image is digest-pinned and moves only by Renovate PR, so podman's
       # auto-update timer has nothing to pull (podman-auto-update(1)).
@@ -118,6 +122,10 @@
       - /srv/aiostreams/compose.yaml
       - /srv/aiostreams/compose.yaml.bak-2026-10-22
       - /srv/aiostreams/.env.bak-1789995543
+      # Claude Code's managed-settings drop-in for the Beacon OTLP telemetry
+      # collector the 2026-11-01 reset removed; the file left rootfs/ in
+      # fleet-ops#11613, and the copy on /etc was removed by hand 2026-11-10.
+      - /etc/claude-code/managed-settings.d/70-beacon-otlp.json
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"
@@ -162,8 +170,6 @@
       - /usr/bin/google-chrome
       - --no-usage-statistics
       - --no-performance-crux
-    drive_mcp_entry: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../config/drive-mcp.json') | from_json).mcpServers.drive }}"
-    drive_mcp_words: "{{ [drive_mcp_entry.command] + (drive_mcp_entry.args | map('replace', '~', nish_home) | list) }}"
     nish_config: "{{ nish_home }}/.config"
     agent_share: "{{ nish_home }}/.local/share"
     # The LiteLLM Redis password: ONE root-only file that the stock password lookup creates

@@ -18,7 +18,6 @@ file, not here.
 - [Agent autonomy drop-in](docs/agent-autonomy-drop-in.md)
 - [claude.ai connectors off on the server](docs/claudeai-connectors-off.md)
 - [Browser tool](docs/browser-tool.md)
-- [Drive filesystem server](docs/drive-filesystem-server.md)
 - [Router notes](docs/litellm-router-notes.md)
 - [Cloudflare credentials](docs/cloudflare-credentials.md)
 - [D1 migrations](docs/d1-migrations.md) and [D1 backup](docs/d1-backup-mechanism.md)
