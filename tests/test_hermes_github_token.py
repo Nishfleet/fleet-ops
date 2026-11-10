@@ -12,23 +12,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 STUB = ROOT / "tests/github_app_stub.py"
 IN_CI = bool(os.environ.get("GITHUB_ACTIONS"))
 SUDO = ["sudo", "-n"] if IN_CI else []
-# A self-hosted runner's unit sets NoNewPrivileges=yes (nothing inside it may
-# elevate), so its worker runs as an outside job and skips this file; hosted CI
-# keeps root sudo and runs it.
-probe = subprocess.run([*SUDO, "true"], capture_output=True, check=False)
-if os.environ.get("GITHUB_ACTIONS") and probe.returncode != 0:
-    _no_sudo = True  # A runner's unit sets NoNewPrivileges=yes: nothing inside may raise to root.
-else:
-    _no_sudo = False
 SCOPE = [] if IN_CI else ["--user"]
 RUN_DIR = pathlib.Path("/run" if IN_CI else os.environ.get("XDG_RUNTIME_DIR", "/nonexistent"))
 UNIT_DIR = pathlib.Path("/etc/systemd/system" if IN_CI else pathlib.Path.home() / ".config/systemd/user")
 pytestmark = pytest.mark.skipif(
-    shutil.which("systemd-run") is None
-    or not (IN_CI or (RUN_DIR / "bus").exists())
-    or _no_sudo,
-    reason=_no_sudo and "no usable sudo inside the runner: NoNewPrivileges=yes" or "needs a systemd manager",
+    shutil.which("systemd-run") is None or not (IN_CI or (RUN_DIR / "bus").exists()),
+    reason="needs a systemd manager",
 )
+
 
 def sh(cmd, check=False, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, check=check, **kw)

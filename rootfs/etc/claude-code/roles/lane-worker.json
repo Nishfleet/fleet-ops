@@ -36,7 +36,6 @@
         "registry.npmjs.org",
         "pypi.org",
         "files.pythonhosted.org",
-        "litellm.fleet.local:4000",
         "127.0.0.1:4000"
       ]
     }
