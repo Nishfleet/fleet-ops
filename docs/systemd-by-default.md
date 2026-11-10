@@ -54,10 +54,12 @@ plain clone — which is exactly why the `git-mirror-update` refresher was
 deleted in the 2026-09-18 glue sweep: `--reference-if-able` borrows whatever
 objects the mirror already has and fetches the rest from GitHub, so a mirror
 that stops being refreshed costs a little bandwidth, never correctness. The
-mirrors under `/home/nish/workspaces/.mirrors` are left in place (14G) and
-are still worth borrowing from; refresh one by hand with
+mirrors under `/home/nish/workspaces/.mirrors` are left in place and are
+still worth borrowing from; refresh one by hand with
 `git -C /home/nish/workspaces/.mirrors/<repo>.git fetch --all` if it ever
-drifts far enough to matter.
+drifts far enough to matter. fleet-ops is the exception: agents read the
+checkout the host play itself keeps on main (`~/workspaces/tooling/fleet-ops`,
+moved by tasks/user-files.yml on every deploy), never a mirror of it.
 
 One trap lives inside the mirror itself (fleet-ops#5737): a mirror whose
 fetch refspec covers `refs/heads/*` and `refs/tags/*` only never updates any
@@ -79,7 +81,9 @@ lying. A mirror cloned fresh from GitHub carries no `refs/remotes/` at all
 fetch seeds it (correctly, under the refspec above). A mirror cloned from
 another mirror inherits whatever remote-tracking refs the source carries —
 the refspec above is what keeps them honest either way. Never
-hand-`update-ref` `refs/remotes/origin/*` in a mirror.
+hand-`update-ref` `refs/remotes/origin/*` in a mirror. fleet-ops leans on
+none of this: the checkout agents read is moved to main by the host play
+itself, so no mirror spelling can serve them stale code.
 
 A short log with no verdict after a backgrounded launch is a **launcher fault**
 (the session reaped the process). A log containing `rate_limit` /

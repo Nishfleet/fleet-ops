@@ -81,6 +81,12 @@
 # --dangerously-skip-permissions (https://code.claude.com/docs/en/permissions).
 # Its sandbox block runs Bash under bubblewrap and socat, installed above
 # (https://code.claude.com/docs/en/sandboxing).
+# Its file rules name Edit(path), never Write(path): Claude Code checks file
+# permissions against Edit(path) and Read(path) rules, so a Write(path) rule
+# never matches while Edit(path) already covers every built-in tool that edits
+# files, the Write tool included
+# (https://code.claude.com/docs/en/permissions, "Write(path), Glob(path), and
+# Grep(path) rules don't match").
 - name: Install the per-role Claude permission allow lists
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/claude-code/roles/"
