@@ -17,9 +17,10 @@ Description=Mint the short-lived GitHub App token Grafana's alert webhook sends 
 # already mounts, scoped by the request body to issues:write on this one repo
 # (the contact points only POST issues). It lives in the user runtime dir
 # (tmpfs, mode 0700), never on disk and never in argv: the SDK holds the key
-# and the JWT in its own process and hands the token over stdout. A failed mint keeps the previous token file, pages through
-# OnFailure=, and Grafana's own delivery rule
-# (cloudflare-spend-delivery.yaml) pages hermes-urgent if a webhook still fails.
+# and the JWT in its own process and writes the token to the runtime file. A
+# failed mint keeps the previous token file, pages through OnFailure=, and
+# Grafana's own delivery rule (cloudflare-spend-delivery.yaml) pages
+# hermes-urgent if a webhook still fails.
 #
 # Switch off: `systemctl --user disable --now fleet-grafana-github-token.timer`
 # and `systemctl --user mask fleet-grafana-github-token.service` (fleet-grafana
@@ -33,52 +34,41 @@ Type=oneshot
 RuntimeDirectory=fleet-grafana-github-token
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
-# GITHUB_API_URL exists so CI can run this very ExecStart against a local stub
-# (.github/workflows/ci.yml, step "GitHub App token unit"); the host never
-# overrides it.
+UMask=0077
+# GITHUB_API_URL lets a test point this ExecStart at a local stub
+# (tests/github_app_stub.py); the host never overrides it.
 Environment=GITHUB_API_URL=https://api.github.com
 Environment=APP_ID=4728578
 Environment=APP_KEY=%h/.config/fleet-worker/nishfleet-worker.private-key.pem
 # Grafana expands $__file{} at load and a missing file fails the whole
 # alerting provisioning, so the file must exist before anything can fail.
-ExecStartPre=/bin/sh -c 'rm -f "$$RUNTIME_DIRECTORY/token.new"; test -e "$$RUNTIME_DIRECTORY/token" || { umask 077; : > "$$RUNTIME_DIRECTORY/token"; }'
+ExecStartPre=/usr/bin/touch -a %t/fleet-grafana-github-token/token
 # GitHub's Octokit SDK (@octokit/auth-app, pinned by
 # config/github-app-token/package-lock.json) signs the App JWT and mints a
 # token limited to this repo and issues:write, so this unit carries no crypto
 # of its own (docs: "Generating an installation access token for a GitHub
-# App", "use GitHub's Octokit SDKs"). Grafana reads a file, not an SDK, so the
-# timer and the file write stay. `$$` is systemd's escape for a literal `$`.
+# App", "use GitHub's Octokit SDKs"). The SDK writes the token to the file and
+# keeps the key and the JWT in its own process; no shell sees either.
 Environment=MINT=%h/.local/share/github-app-token/mint.mjs
 Environment='TOKEN_PERMISSIONS={"issues":"write"}'
 Environment=TOKEN_REPOSITORIES=fleet-ops
-ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
-  tok=$$(/opt/node-v22.23.3/bin/node "$$MINT"); \
-  printf "%%s" "$$tok" > "$$RUNTIME_DIRECTORY/token.new"; \
-  mv -f "$$RUNTIME_DIRECTORY/token.new" "$$RUNTIME_DIRECTORY/token"; \
-  echo "minted a GitHub App token for Nishfleet/fleet-ops issues:write, valid one hour"'
-# Grafana picks the new file up on a provisioning reload. The service skips
-# itself when Grafana is stopped (a starting Grafana reads the file anyway).
-#
-# The reload is now the guard below, not an unconditional start. Grafana drops
-# an in-flight dispatch when the reload applies a new configuration, and all
-# three observed one-off notifications failures align with an apply or restart
-# (fleet-ops#11426: 13:15:56Z apply and the 21:26Z restart, 2026-10-29;
+Environment=GH_TOKEN_FILE=%t/fleet-grafana-github-token/token
+Environment=GH_LOADED_FILE=%t/fleet-grafana-github-token/provisioned-token-mint
+Environment=GH_RELOAD=1
+Environment=GH_ADMIN_PASSWORD_FILE=%h/.config/fleet-ops/grafana-admin-password
+Environment=GH_RELOAD_URL=http://127.0.0.1:3001/api/admin/provisioning/alerting/reload
+# Grafana drops an in-flight dispatch when a reload applies a new configuration,
+# and all three observed one-off notifications failures align with an apply or
+# restart (fleet-ops#11426: 13:15:56Z apply and the 21:26Z restart, 2026-10-29;
 # fleet-ops#11441: the 14:37:27Z apply from this very mint, 2026-10-31). The
-# mint fired the reload three times per token hour, so the guard reloads only
-# when the token loaded into Grafana (`$__file{}` is frozen at load) has run
-# down to one mint interval remaining, which keeps the timer's own failure
-# slack: a healthy cadence reloads at every second mint instead of every mint.
-# When a mint fails, the next succeeding mint can hold the loaded token until
-# its last minute before the reload lands, so a few sends can still go out on
-# a token that just expired — the same at most one mint interval a failed
-# mint already accepts, which the delivery rule pages through. The mint time
-# of the loaded token is the mtime of the token file at the reload, so the
-# ledger below holds it; a missing, empty or non-numeric ledger, as after a
-# boot, means reload. A reload whose ledger write fails (say, the tmpfs is
-# gone mid-run) reloads again at the next mint: an extra reload costs one
-# more in-flight dispatch, never a lost delivery.
-#
-# No `-` prefix: the reload unit is gone, so a reload that cannot get through
-# fails this unit and shows in systemctl --failed.
-ExecStartPost=/bin/bash -c 'set -euo pipefail; l="$$RUNTIME_DIRECTORY/provisioned-token-mint"; m="$$(stat -c %%Y "$$RUNTIME_DIRECTORY/token" 2>/dev/null || echo 0)"; loaded="$$(cat "$$l" 2>/dev/null || echo 0)"; case "$$loaded" in ""|*[!0-9]*) loaded=0;; esac; now=$$(date +%%s); if test "$$loaded" -le "$$(($$now - 2400))"; then if /usr/bin/systemctl --user is-active --quiet fleet-grafana.service; then curl -fsS --connect-timeout 5 --max-time 30 --retry 3 --retry-all-errors -o /dev/null -X POST --config <(printf "user = \\"admin:%%s\\"\\n" "$$(cat %h/.config/fleet-ops/grafana-admin-password)") http://127.0.0.1:3001/api/admin/provisioning/alerting/reload; echo "$$m" > "$$l"; fi; fi'
+# minter therefore reloads only when the token Grafana loaded (its `$__file{}`
+# is frozen at load) is 40 minutes old: one mint interval of slack, so a healthy
+# cadence reloads at every second mint instead of every mint. The ledger holds
+# the mtime of the token at the last reload; a missing or non-numeric ledger,
+# as after a boot, means reload. A reload whose ledger write fails (say, the
+# tmpfs is gone mid-run) reloads again at the next mint: an extra reload costs
+# one more in-flight dispatch, never a lost delivery. A stopped Grafana is
+# skipped (the next start reads the fresh file); a real HTTP failure fails this
+# unit and shows in systemctl --failed.
+ExecStart=/opt/node-v22.23.3/bin/node ${MINT}
 TimeoutStartSec=300

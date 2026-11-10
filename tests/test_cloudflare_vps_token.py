@@ -70,12 +70,15 @@ def test_the_apply_fails_when_the_address_file_does_not_match_the_host():
     fails the unit before the apply when one is not in the file (OnFailure =
     loud). The README carries the one-command refresh that fixes the file.
     """
-    pre = next(line for line in UNIT.read_text().splitlines() if line.startswith("ExecStartPre="))
+    text = UNIT.read_text()
+    pre = "\n".join(line for line in text.splitlines() if line.startswith("ExecStartPre="))
     assert "vps-cidrs.tfvars" in pre
-    assert "ifconfig.me" in pre, "the check must read the same documented source as the README"
-    assert re.search(r"-4", pre) and re.search(r"-6", pre), "the file is locked to both families"
-    assert "-qFx" in pre, "the addresses are matched as fixed whole lines, not as regexes"
-    assert "exit 1" in pre, "a mismatch fails the unit before tofu runs (OnFailure fires)"
+    assert pre.count("ifconfig.me") == 2, "the check must read the same documented source as the README"
+    assert re.search(r"curl -4", pre) and re.search(r"curl -6", pre), "the file is locked to both families"
+    assert pre.count("grep -qF -f") == 2, "the quoted address token is matched fixed, not as a regex"
+    assert "AssertPathExists=%h/.config/cloudflare/vps-cidrs.tfvars" in text, (
+        "a missing file fails the unit before tofu runs"
+    )
     readme = (ROOT / "infra/cloudflare-tokens/README.md").read_text()
     assert "printf" in readme and "ifconfig.me" in readme and ">" in readme, (
         "no documented one-command refresh to fix the file when the check fails"
@@ -99,6 +102,15 @@ def test_the_apply_hands_the_rotation_to_the_existing_writer():
     assert not [line for line in text.splitlines() if line.startswith(("ExecStart=", "ExecStartPost=")) and "/bin/sh" in line and "TF_VAR_github_app_pem" not in line], (
         "no second writer in shell: ansible/tasks/secrets.yml already does this"
     )
+
+
+def test_the_app_key_reaches_the_provider_as_a_credential_path():
+    """The key is never in argv or the environment; the provider reads the credential path."""
+    text = UNIT.read_text()
+    assert "LoadCredential=nishfleet-secrets.pem:%h/.config/cloudflare/nishfleet-secrets.private-key.pem" in text
+    assert "Environment=TF_VAR_github_app_pem_file=%d/nishfleet-secrets.pem" in text
+    versions = (ROOT / "infra/cloudflare-tokens/versions.tf").read_text()
+    assert "pem_file        = file(var.github_app_pem_file)" in versions
 
 
 def test_only_the_github_secret_tokens_take_the_gha_prefix():

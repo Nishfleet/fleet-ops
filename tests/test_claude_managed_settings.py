@@ -42,7 +42,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 MANAGED_TREE = ROOT / "rootfs/etc/claude-code"
 MANAGED = ROOT / "rootfs/etc/claude-code/managed-settings.json"
 DROPINS = ROOT / "rootfs/etc/claude-code/managed-settings.d"
-JSON_OBJECT_GATE = "import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)"
+JSON_OBJECT_GATE = "jq -e 'type == \"object\"' %s"
 NEEDS_YQ = pytest.mark.skipif(not shutil.which("yq"), reason="yq missing")
 RULE_SHAPE = re.compile(r"^\w+\(.*\)$")
 FILE_TOOLS_THE_CHECK_IGNORES = ("Write", "Glob")

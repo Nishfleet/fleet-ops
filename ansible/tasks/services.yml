@@ -218,14 +218,14 @@
 
 - name: Read when hermes-gateway last started
   ansible.builtin.command:
-    argv: [/bin/sh, -c, "t=$(systemctl show -p ActiveEnterTimestamp --value hermes-gateway.service); case \"$t\" in ''|n/a) echo 0 ;; *) date -d \"$t\" +%s ;; esac"]
+    argv: [systemctl, show, --timestamp=unix, -p, ActiveEnterTimestamp, --value, hermes-gateway.service]
   register: hermes_gateway_start
   changed_when: false
   check_mode: false
 
 - name: Read when hermes-serve last started
   ansible.builtin.command:
-    argv: [/bin/sh, -c, "t=$(systemctl show -p ActiveEnterTimestamp --value hermes-serve.service); case \"$t\" in ''|n/a) echo 0 ;; *) date -d \"$t\" +%s ;; esac"]
+    argv: [systemctl, show, --timestamp=unix, -p, ActiveEnterTimestamp, --value, hermes-serve.service]
   register: hermes_serve_start
   changed_when: false
   check_mode: false
@@ -239,7 +239,7 @@
     - hermes-serve.service
   when:
     - hermes_installed_sandbox_dropin.stat.exists
-    - "hermes_installed_sandbox_dropin.stat.mtime | int > ([hermes_gateway_start.stdout | int, hermes_serve_start.stdout | int] | min)"
+    - "hermes_installed_sandbox_dropin.stat.mtime | int > ([hermes_gateway_start.stdout | regex_replace('^@', '') | int, hermes_serve_start.stdout | regex_replace('^@', '') | int] | min)"
 
 # hermes-serve binds 127.0.0.1 and Tailscale Serve publishes it on this node's
 # tailnet name, port 10000 (https://tailscale.com/kb/1312/serve). Hermes takes
@@ -308,7 +308,7 @@
     state: restarted
     daemon_reload: true
   when: >-
-    hermes_serve_unit.stat.mtime | int > hermes_serve_start.stdout | int
+    (hermes_serve_unit.stat.mtime | int) > (hermes_serve_start.stdout | regex_replace('^@', '') | int)
     or hermes_public_url_set is changed
 
 # The router container mounts this copy. A changed file restarts the router.

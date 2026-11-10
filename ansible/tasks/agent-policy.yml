@@ -34,7 +34,7 @@
     owner: root
     group: root
     mode: preserve
-    validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
+    validate: /usr/bin/jq -e 'type == "object"' %s
 
 - name: Install the Claude Code managed-settings defaults file
   ansible.builtin.copy:
@@ -43,7 +43,7 @@
     owner: root
     group: root
     mode: preserve
-    validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
+    validate: /usr/bin/jq -e 'type == "object"' %s
 
 # nish's login shells set umask 077, so a tmux session started
 # from one writes owner-only state under ~/.local/share/devin instead of the

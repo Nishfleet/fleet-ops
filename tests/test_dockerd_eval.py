@@ -61,7 +61,7 @@ def test_the_unit_keeps_the_prototype_flags_and_limits() -> None:
     ):
         assert flag in exec_start, flag
     assert "--disable-host-loopback" not in exec_start
-    assert "$$@" in exec_start
+    assert "/usr/bin/dockerd" in exec_start
     assert unit["Delegate"] == ["yes"]
     assert unit["MemoryMax"] == ["6G"]
     assert unit["TasksMax"] == ["4096"]
@@ -91,6 +91,8 @@ def test_the_engine_sees_only_its_data_root_and_rclone_under_home() -> None:
     unit = keys(UNIT)
     (tmpfs,) = unit["TemporaryFileSystem"]
     assert tmpfs.startswith("/home/nish:mode=0700,")
+    assert "/run/docker:mode=0700,uid=1000,gid=1000" in tmpfs
+    assert "/run/containerd:mode=0700,uid=1000,gid=1000" in tmpfs
     assert unit["BindPaths"] == ["/home/nish/.local/share/dockerd-eval"]
     assert unit["BindReadOnlyPaths"] == ["-/home/nish/.local/bin/rclone"]
 

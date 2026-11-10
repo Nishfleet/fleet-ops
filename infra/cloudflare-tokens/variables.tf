@@ -45,8 +45,7 @@ variable "github_app_installation_id" {
   default     = "176168389"
 }
 
-variable "github_app_pem" {
-  description = "The App's private key contents. Set as TF_VAR_github_app_pem by the unit; never in a file in the repo."
+variable "github_app_pem_file" {
+  description = "Path to the App's private key. The unit passes a systemd credential path (LoadCredential=); the provider reads the contents with file()."
   type        = string
-  sensitive   = true
 }

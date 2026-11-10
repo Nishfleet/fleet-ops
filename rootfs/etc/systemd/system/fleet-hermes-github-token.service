@@ -18,8 +18,8 @@ Description=Mint the short-lived GitHub App login Hermes' gh CLI reads (fleet-op
 # workflow write.
 #
 # The token lives in /run (tmpfs, mode 0700, owned by nish), never on disk and
-# never in argv: the SDK holds the key and the JWT in its own process and hands
-# the token over stdout. A failed mint leaves
+# never in argv: the SDK holds the key and the JWT in its own process and writes
+# hosts.yml itself. A failed mint leaves
 # the previous hosts.yml in place and pages through OnFailure=; the timer tries
 # again in 20 minutes. The StartLimit below caps how fast a pull-in chain (a
 # Hermes unit retrying through Restart=always) can mint, so a crash loop cannot
@@ -29,9 +29,10 @@ Description=Mint the short-lived GitHub App login Hermes' gh CLI reads (fleet-op
 #
 # A run whose token file is younger than 15 min mints nothing: a Hermes restart
 # pulls this unit in (Wants= in its sandbox drop-in), and without the skip
-# every Hermes restart would spend two API calls on a token that still works.
-# gh 2.103.3 writes nothing to its config dir (fleet-ops#10184), so the file
-# age is the mint time.
+# every restart would spend two API calls on a token that still works. The
+# minter checks the file age before it mints; stock systemd has no condition on
+# a file's age. gh 2.103.3 writes nothing to its config dir (fleet-ops#10184),
+# so the file age is the mint time.
 #
 # The token directory is not private to Hermes: /run is readable by every
 # process that runs as nish, so the agent lock's shared drop-in hides this
@@ -78,19 +79,10 @@ Environment=APP_KEY=/home/nish/.config/fleet-worker/nishfleet-worker.private-key
 # installation token, so this unit carries no crypto of its own (docs:
 # "Generating an installation access token for a GitHub App", "use GitHub's
 # Octokit SDKs"). gh reads a file, not an SDK, so the timer and the file write
-# stay. `$$` is systemd's escape for a literal `$`, `%%` for `%`. The new file
-# is written beside the old one and renamed over it, so a reader never sees a
-# partial hosts.yml.
+# stay. GH_HOSTS=1 tells the minter to write hosts.yml; it writes the new file
+# beside the old one and renames it over, so a reader never sees a partial file.
 Environment=MINT=/home/nish/.local/share/github-app-token/mint.mjs
 Environment='TOKEN_PERMISSIONS={"actions":"read","issues":"write","pull_requests":"read"}'
-ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
-  now=$$(date +%%s); \
-  if [ -e "$RUNTIME_DIRECTORY/hosts.yml" ] && [ "$((now - $$(stat -c %%Y "$RUNTIME_DIRECTORY/hosts.yml")))" -lt 900 ]; then \
-    echo "the minted login is younger than 15 min, nothing to mint"; \
-    exit 0; \
-  fi; \
-  tok=$$(/opt/node-v22.23.3/bin/node "$$MINT"); \
-  { echo "github.com:"; echo "    user: nishfleet-worker"; echo "    oauth_token: $$tok"; echo "    git_protocol: https"; } > "$$RUNTIME_DIRECTORY/hosts.yml.new"; \
-  mv -f "$$RUNTIME_DIRECTORY/hosts.yml.new" "$$RUNTIME_DIRECTORY/hosts.yml"; \
-  echo "minted the nishfleet-worker App token as the Hermes gh login, valid one hour"'
+Environment=GH_HOSTS=1
+ExecStart=/opt/node-v22.23.3/bin/node ${MINT}
 TimeoutStartSec=300

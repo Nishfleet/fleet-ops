@@ -255,8 +255,8 @@ a file went stale and every delivery answered `401 Bad credentials` for days.
 `fleet-grafana-github-token.service`, which signs an RS256 App JWT with the nishfleet-worker
 key, asks the REST API for an installation token limited to `Nishfleet/fleet-ops` and
 `issues:write`, writes it to `$XDG_RUNTIME_DIR/fleet-grafana-github-token/token` (tmpfs,
-0700 dir, 0600 file) and starts `fleet-grafana-provisioning.service`, the stock admin-API
-reload above — guarded, so the reload lands only when the token Grafana has loaded
+0700 dir, 0600 file) and POSTs the stock admin-API reload above itself — guarded, so the
+reload lands only when the token Grafana has loaded
 (`$__file{}` froze it) has run down to one mint interval left: Grafana drops an
 in-flight dispatch when a reload applies, and the guard reloads at every second mint
 instead of every one, with a lost or unreadable ledger reloading once more
@@ -265,8 +265,8 @@ instead of every one, with a lost or unreadable ledger reloading once more
 is what the file held at the last load. So a token file swap needs no Grafana restart —
 replace the file by rename — the quadlet mounts the token's directory, not the file
 (containers/quadlet/fleet-grafana.container comment line 48), so the rename lands — and POST
-the stock admin reload (`api/admin/provisioning/<target>/reload`, admin basic auth; in
-practice `fleet-grafana-provisioning.service` sends it): the next delivery carries the new
+the stock admin reload (`api/admin/provisioning/<target>/reload`, admin basic auth; the
+minter sends it): the next delivery carries the new
 token. The reload changes only what `$__file{}` expands to; nothing here makes any
 claim about how often a cost alarm pages or re-files its issue (the dispatch gate closes
 same-title re-files). CI holds the behaviour for real: .github/workflows/ci.yml step "A

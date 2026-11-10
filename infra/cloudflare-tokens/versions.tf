@@ -38,12 +38,14 @@ provider "cloudflare" {}
 
 # The secrets are written by the nishfleet-secrets GitHub App (Secrets and Environments write, metadata read,
 # installed only on the repos in main.tf), never a person's login (fleet-ops#10601).
-# The key's contents arrive as the sensitive variable github_app_pem (TF_VAR_github_app_pem, set by the unit).
+# The key's path arrives as github_app_pem_file (TF_VAR_github_app_pem_file, set
+# by the unit to its systemd credential); file() reads the contents here, so the
+# key is never in the environment or argv.
 provider "github" {
   owner = var.github_owner
   app_auth {
     id              = var.github_app_id
     installation_id = var.github_app_installation_id
-    pem_file        = var.github_app_pem
+    pem_file        = file(var.github_app_pem_file)
   }
 }

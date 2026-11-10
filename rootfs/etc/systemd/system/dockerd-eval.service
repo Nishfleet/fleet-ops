@@ -42,9 +42,10 @@
 # the runtime directory). Using it would mean adding Docker's apt repository
 # and its packages, which would replace the host's docker.io. It also passes
 # --disable-host-loopback by default, which this unit leaves out on purpose.
-# The /bin/sh -c line mounts a private tmpfs over /run/docker and /run/containerd
-# inside the namespace, so the host Docker's runtime state is not touched, and
-# then replaces the shell with dockerd.
+# TemporaryFileSystem= mounts a private tmpfs over the host Docker's runtime
+# directories inside the unit's namespace, so the host's state is not touched;
+# rootlesskit keeps those submounts when it copies up /run. dockerd then runs
+# directly, with no shell in front of it.
 #
 # Runtime directory: tmpfiles.d creates /run/dockerd-eval (0700 nish) at boot, so
 # the runners can hide it by inode from the start. RuntimeDirectory= makes the
@@ -86,7 +87,7 @@ Delegate=yes
 Environment=XDG_RUNTIME_DIR=/run/dockerd-eval/rt
 Environment=HOME=/home/nish
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/usr/bin/rootlesskit --state-dir=/run/dockerd-eval/rt/rk --net=slirp4netns --mtu=1500 --slirp4netns-sandbox=auto --slirp4netns-seccomp=auto --port-driver=builtin --copy-up=/etc --copy-up=/run --propagation=rslave /bin/sh -c 'mount -t tmpfs tmpfs /run/docker && mount -t tmpfs tmpfs /run/containerd && exec /usr/bin/dockerd "$$@"' dockerd --exec-opt native.cgroupdriver=cgroupfs --host-gateway-ip=10.0.2.2 --config-file=/etc/fleet-ops/dockerd-eval.json --data-root=/home/nish/.local/share/dockerd-eval/data --exec-root=/run/dockerd-eval/rt/exec --host=unix:///run/dockerd-eval/rt/docker.sock --pidfile=/run/dockerd-eval/rt/dockerd.pid --userland-proxy-path=/usr/bin/rootlesskit-docker-proxy
+ExecStart=/usr/bin/rootlesskit --state-dir=/run/dockerd-eval/rt/rk --net=slirp4netns --mtu=1500 --slirp4netns-sandbox=auto --slirp4netns-seccomp=auto --port-driver=builtin --copy-up=/etc --copy-up=/run --propagation=rslave /usr/bin/dockerd --exec-opt native.cgroupdriver=cgroupfs --host-gateway-ip=10.0.2.2 --config-file=/etc/fleet-ops/dockerd-eval.json --data-root=/home/nish/.local/share/dockerd-eval/data --exec-root=/run/dockerd-eval/rt/exec --host=unix:///run/dockerd-eval/rt/docker.sock --pidfile=/run/dockerd-eval/rt/dockerd.pid --userland-proxy-path=/usr/bin/rootlesskit-docker-proxy
 Restart=on-failure
 RestartSec=10s
 # Eval containers run in this unit's cgroup, so these cap the whole eval.
@@ -102,7 +103,7 @@ NFTSet=cgroup:inet:evalnet:engine_cgroups
 # allowed port is nft's alone (layer 1).
 IPAddressDeny=localhost link-local 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 fd7a:115c:a1e0::/48 fc00::/7
 IPAddressAllow=127.0.0.1/32 127.0.0.53/32 10.0.2.0/24
-TemporaryFileSystem=/home/nish:mode=0700,uid=1000,gid=1000,size=64M
+TemporaryFileSystem=/home/nish:mode=0700,uid=1000,gid=1000,size=64M /run/docker:mode=0700,uid=1000,gid=1000 /run/containerd:mode=0700,uid=1000,gid=1000
 BindPaths=/home/nish/.local/share/dockerd-eval
 BindReadOnlyPaths=-/home/nish/.local/bin/rclone
 InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock -/home/nish/.docker -/run/user/1000 -/home/nish/.local/share/containers/storage -/home/nish/.local/share/podman-eval

@@ -195,9 +195,10 @@ sha256 checked) into `~/.local/bin/tofu`.
 
     cd infra/cloudflare-tokens
     set -a; . ~/.config/cloudflare/token-minter.env; set +a
-    TF_VAR_github_app_pem="$(cat ~/.config/cloudflare/nishfleet-secrets.private-key.pem)" sh -c 'tofu init && tofu plan && tofu apply'
+    export TF_VAR_github_app_pem_file=$HOME/.config/cloudflare/nishfleet-secrets.private-key.pem
+    tofu init && tofu plan && tofu apply
 
-The key is set for that one command only, so it does not stay in the shell.
+The key's path is all that is set; the provider reads the file itself.
 
 Run it from an interactive session of the admin login, not from a jailed worker:
 the worker jails hide `~/.config/cloudflare`, which holds the minter token and
