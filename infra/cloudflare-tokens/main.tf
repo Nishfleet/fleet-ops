@@ -42,22 +42,19 @@ locals {
       zone        = ["Zone Read", "Workers Routes Write"]
       vps_only    = false
     }
+    # The 0509 repo-level secret now serves one job: ci.yml's preview upload
+    # (`cf workers versions create`), which needs Workers Scripts Write and
+    # nothing else. The key keeps its old name so the secret is rewritten in
+    # place, not deleted. The jobs the read groups served were deleted (0509
+    # a66d6243e), and so was the only reader of CLOUDFLARE_SETTINGS_TOKEN, so
+    # that entry is gone and the next apply revokes it and deletes the secret.
     "0509-reports" = {
       repo        = "0509"
       environment = null
       secret_name = "CLOUDFLARE_API_TOKEN"
       file        = null
-      account     = ["D1 Read", "Workers Scripts Read", "Account Analytics Read"]
+      account     = ["Workers Scripts Write"]
       zone        = []
-      vps_only    = false
-    }
-    "0509-settings" = {
-      repo        = "0509"
-      environment = null
-      secret_name = "CLOUDFLARE_SETTINGS_TOKEN"
-      file        = null
-      account     = ["Workers R2 Storage Write"]
-      zone        = ["Zone Read", "Email Routing Rules Write"]
       vps_only    = false
     }
     "0509-support-inbox" = {
@@ -102,6 +99,18 @@ locals {
       secret_name = "CLOUDFLARE_API_TOKEN"
       file        = null
       account     = ["Pages Write", "D1 Write", "Account Settings Read"]
+      zone        = []
+      vps_only    = false
+    }
+    # Made by hand on 2026-11-01 with no expiry; this entry puts it on the
+    # same 30-day rotation. Same groups as the hand-made one: `wrangler
+    # preview` and `wrangler deploy` on workers.dev, with D1 migrations.
+    "rera-report-card" = {
+      repo        = "rera-report-card"
+      environment = null
+      secret_name = "CLOUDFLARE_API_TOKEN"
+      file        = null
+      account     = ["Workers Scripts Write", "D1 Write", "Account Settings Read"]
       zone        = []
       vps_only    = false
     }
