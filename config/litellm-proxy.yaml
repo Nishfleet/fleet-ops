@@ -451,9 +451,10 @@ model_list:
     cache_proof: "Same model and endpoint as alibaba-qwen38max-assistant: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%)."
     id: alibaba-qwen38max-review
 # The review job's group for every PR a pi run did not build (owner 2026-11-04: "need the others
-# as backup", never MiniMax). Qwen, GLM and DeepSeek rows: a failed row cools and the next call
+# as backup", never MiniMax). Qwen and DeepSeek rows: a failed row cools and the next call
 # takes another row (https://docs.litellm.ai/docs/routing). No Claude row, because Claude builds
-# these PRs, and no fallback. A pi build never asks for this group. Rows copy their source row.
+# these PRs, no GLM row (GLM-5.3-Flash is a worker model only, fleet-ops#11847), and no fallback.
+# A pi build never asks for this group. Rows copy their source row.
 - model_name: review-any
   litellm_params:
     model: openai/qwen3.8-max
@@ -472,19 +473,6 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "Same model and endpoint as alibaba-qwen38max-assistant: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%)."
     id: alibaba-qwen38max-review-any
-- model_name: review-any
-  litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: https://api.z.ai/api/coding/paas/v4
-    api_key: os.environ/ZAI_API_KEY
-    tags:
-    - prepaid
-    - zai
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Same model, endpoint and key as zai-glm53flash-worker-capable: Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache)."
-    id: zai-glm53flash-review-any
 - model_name: review-any
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -564,7 +552,9 @@ litellm_settings:
   drop_params: true
   callbacks:
   - prometheus
-  require_auth_for_metrics_endpoint: false
+  # /metrics lists every seat, hashed key and caller address; LiteLLM's key check on it
+  # (https://docs.litellm.ai/docs/proxy/prometheus) must stay on.
+  require_auth_for_metrics_endpoint: true
 general_settings:
   pass_through_endpoints:
     - path: "/jev"
@@ -580,6 +570,10 @@ general_settings:
         ai-gateway-auth-method: "api-key"
   # real traffic is the probe: background checks spent the same free quota (Nish 2026-09-28).
   background_health_checks: false
+  # The spend log keeps every request and response body for ever otherwise (2.9 GB, 766k rows):
+  # LiteLLM's own retention job deletes rows older than this
+  # (https://docs.litellm.ai/docs/proxy/spend_logs).
+  maximum_spend_logs_retention_period: "30d"
   # The container's DATABASE_URL is the single source (host localhost), so a credential change is one env edit (fleet-ops#10020).
   database_url: os.environ/DATABASE_URL
   master_key: os.environ/LITELLM_MASTER_KEY

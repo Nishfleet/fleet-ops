@@ -110,6 +110,18 @@ def test_removed_provider_match_is_exact_on_hostname():
     assert back == ["https://api.cline.bot/v1", "https://ollama.com./v1", "https://ollama.com/v1"], f"removed provider match is not exact on the parsed hostname: {back}"
 
 
+def test_no_glm_row_sits_in_a_review_or_judge_group():
+    # GLM-5.3-Flash is a worker model only (owner rule, fleet-ops#11847): it must never
+    # answer a review or judge call, in any group.
+    bad = [
+        row["model_info"]["id"]
+        for row in _model_list()
+        if re.search(r"glm-5\.3-flash", row["litellm_params"]["model"], re.IGNORECASE)
+        and (row["model_name"].startswith("review-") or row["model_name"] == "judge")
+    ]
+    assert not bad, f"GLM-5.3-Flash rows in a review or judge group: {bad}"
+
+
 def test_every_thinking_budget_row_drops_caller_reasoning_effort():
     # DashScope answers 400 when a request carries reasoning_effort next to a row's thinking_budget (fleet-ops#10109).
     rows = [r for r in _model_list() if "thinking_budget" in (r["litellm_params"].get("extra_body") or {})]
