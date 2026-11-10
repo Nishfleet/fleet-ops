@@ -27,19 +27,19 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              api_base: https://api.anthropic.com/v1/messages
+              api_base: https://api.anthropic.com
             exp_annotations:
-              summary: "paid plan https://api.anthropic.com/v1/messages has had no successful router response for 24 hours"
-              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com/v1/messages in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+              summary: "paid plan https://api.anthropic.com has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
       - eval_time: 28h
         alertname: PaidPlanIdle
         exp_alerts:
           - exp_labels:
               severity: warning
-              api_base: https://api.anthropic.com/v1/messages
+              api_base: https://api.anthropic.com
             exp_annotations:
-              summary: "paid plan https://api.anthropic.com/v1/messages has had no successful router response for 24 hours"
-              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com/v1/messages in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+              summary: "paid plan https://api.anthropic.com has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
           - exp_labels:
               severity: warning
               api_base: https://api.commandcode.ai/provider/v1
@@ -48,9 +48,10 @@ tests:
               description: "The router answered no successful response for paid-plan endpoint https://api.commandcode.ai/provider/v1 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
 
   # A row that has never succeeded since the router started has no success
-  # counter, only litellm_deployment_state: it fires. A busy paid endpoint and
-  # an endpoint that is not in config/paid-plans.json (the vercel eval gateway)
-  # stay quiet.
+  # counter, only litellm_deployment_state: it fires, labelled by the plan's own
+  # api_base (the rule strips the runtime "/v1/messages" suffix). A busy paid
+  # endpoint and an endpoint that is not in config/paid-plans.json (the vercel
+  # eval gateway) stay quiet.
   - interval: 1h
     input_series:
       - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.z.ai/api/coding/paas/v4"}'
@@ -65,7 +66,26 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              api_base: https://api.minimax.io/anthropic/v1/messages
+              api_base: https://api.minimax.io/anthropic
             exp_annotations:
-              summary: "paid plan https://api.minimax.io/anthropic/v1/messages has had no successful router response for 24 hours"
-              description: "The router answered no successful response for paid-plan endpoint https://api.minimax.io/anthropic/v1/messages in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+              summary: "paid plan https://api.minimax.io/anthropic has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.minimax.io/anthropic in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+
+  # fleet-ops#11884 (seen live 2026-11-10): the router exports a deployment's
+  # state under its configured api_base, while the counter only carries the
+  # runtime URL the Anthropic provider built (plan api_base + "/v1/messages"),
+  # so an exact join missed a plan that was taking calls all day. MiniMax's
+  # state series under both label sets with thousands of successful responses
+  # at the suffixed one must stay quiet.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.minimax.io/anthropic/v1/messages",model_id="minimax-m31-assistant"}'
+        values: '0+100x30'
+      - series: 'litellm_deployment_state{job="litellm",instance="127.0.0.1:4001",api_base="https://api.minimax.io/anthropic",model_id="minimax-m31-assistant",litellm_model_name="assistant"}'
+        values: '2x30'
+      - series: 'litellm_deployment_state{job="litellm",instance="127.0.0.1:4001",api_base="https://api.minimax.io/anthropic/v1/messages",model_id="minimax-m31-assistant",litellm_model_name="MiniMax-M3.1-Flash-Preview"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: PaidPlanIdle
+        exp_alerts: []
