@@ -40,6 +40,36 @@
     group: root
     mode: preserve
 
+# Rotates the two ansible-pull play logs (ANSIBLE_LOG_PATH of both play units,
+# /var/lib/fleet-ops/fleet-{host-config,update}.log), which used to grow past
+# 60 MB and be readable by every local user (fleet-ops#11863). logrotate(8).
+- name: Install logrotate's config for the play logs
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/logrotate.d/"
+    dest: /etc/logrotate.d/
+    owner: root
+    group: root
+    mode: preserve
+
+# Both play units point ANSIBLE_LOG_PATH at these logs (the journal's cap
+# rotated a run's tail away once). This creates them owner-only here, so the
+# file is 0600 before anything renders into it and cannot go back to
+# world-readable while the log grows unrotated.
+- name: Create the play logs owner-only before anything renders into them
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  loop:
+    - /var/lib/fleet-ops/fleet-host-config.log
+    - /var/lib/fleet-ops/fleet-update.log
+  # A --check run on a box without the StateDirectory yet has no log path.
+  ignore_errors: "{{ ansible_check_mode }}"
+
 # Read before the apply below, so the final check sees the state the run found, not
 # the state the repair left (fleet-ops#11120).
 - name: Read the config dirs' owner as the apply found it

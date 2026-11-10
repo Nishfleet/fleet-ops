@@ -1,8 +1,9 @@
 # The detached worker unit
 
-`AGENTS.md` → "Session-outliving work is a systemd transient unit" carries the
-rule and points here. This file holds the one-line command. Issue: nish-vault#46
-item 4.
+This file carries the rule — "Session-outliving work is a systemd transient
+unit" — and holds the one-line command. The full rules live in the vault
+`_system/shared-memory/global-standing-rules.md`, which `AGENTS.md` names for
+them. Issue: nish-vault#46 item 4.
 
 Session-outliving work is a systemd transient unit, never `nohup pi ... &` or a
 trailing `&`: those die with the shell (fleet-ops#350) and launch with no dead-man
@@ -39,3 +40,54 @@ Two reasons, both proven 2026-10-25 with `sudo systemd-run --uid=nish` probes:
    units on this host. A timed-out unit showed
    `node_systemd_unit_state{state="failed"}=1` within 75 s, and inside the unit
    `~/.config/gh` was empty, with 3 entries on the host, while `GH_TOKEN` was set.
+
+Watch a live run with `systemctl status <name>.service`; after it ends, the
+journal keeps the record (`journalctl -u <name>`). Not a dispatcher: no retry
+ladder, no seat rotation, no queue.
+
+A short log with no verdict after a backgrounded launch is a **launcher fault**
+(the session reaped the process; use the one line above). A log containing
+`rate_limit` / `ETIMEDOUT` / `quota` is a **lane fault** (rotate the seat). Do
+not mix them up.
+
+## Cloning inside a run: borrow from the local mirror
+
+If the packet clones a repo, use a reference clone against the local bare
+mirror (fleet-ops#1213), not a full GitHub copy:
+
+```
+git clone --reference-if-able <home>/workspaces/.mirrors/<repo>.git \
+  https://github.com/Nishfleet/<repo>.git <dest>
+```
+
+Never `--dissociate` on throwaway worktrees. Never push to a mirror (read-only
+fetch target). A missing, stale or corrupt mirror degrades to a plain clone:
+`--reference-if-able` borrows whatever objects the mirror already has and
+fetches the rest from GitHub, so a mirror that stops being refreshed costs a
+little bandwidth, never correctness. Refresh one by hand with
+`git -C <home>/workspaces/.mirrors/<repo>.git fetch --all` if it ever drifts far
+enough to matter. fleet-ops is the exception: agents read the checkout the host
+play itself keeps on main (moved by `ansible/tasks/user-files.yml` on every
+deploy), never a mirror of it.
+
+One trap lives inside the mirror itself (fleet-ops#5737): a mirror whose fetch
+refspec covers `refs/heads/*` and `refs/tags/*` only never updates any leftover
+`refs/remotes/origin/*` refs, so `git show origin/main:<file>` against the
+mirror silently serves hours-old content while `main` is current. Map the heads
+namespace into the remote-tracking one so the two spellings cannot disagree,
+then refresh:
+
+```
+git -C <home>/workspaces/.mirrors/<repo>.git config --add \
+  remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+git -C <home>/workspaces/.mirrors/<repo>.git fetch --all
+```
+
+Every fetch then force-moves `refs/remotes/origin/*` to the same SHAs as
+`refs/heads/*`, so a stale spelling heals on the next fetch instead of lying. A
+mirror cloned fresh from GitHub carries no `refs/remotes/` at all: its
+`origin/main` spelling fails loudly until the first fetch seeds it. A mirror
+cloned from another mirror inherits whatever remote-tracking refs the source
+carries; the refspec above keeps them honest either way. Never hand-`update-ref`
+`refs/remotes/origin/*` in a mirror. fleet-ops leans on none of this: the
+checkout agents read is moved to main by the host play itself.

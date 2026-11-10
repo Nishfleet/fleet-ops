@@ -103,18 +103,40 @@ jobs:
           set -euo pipefail
           read -r head author proof < <(gh pr view "$PR" -R "$REPO" --json headRefOid,author,body --jq '"\(.headRefOid) \(.author.login) \(.body // "" | test("(?im)^run-proof:"))"')
           [ "$head" = "$SHA" ] || { echo "head moved past $SHA; its own CI run starts the next review"; exit 0; }
+          # Set on every hold for the owner; only those get the label and the review request.
+          owner_hold=''
           case "$(grep -oE '^VERDICT: [A-Z-]+' <<<"$REVIEW" | tail -1)" in
             'VERDICT: APPROVE') event=APPROVE ;;
             'VERDICT: CHANGES') event=REQUEST_CHANGES ;;
-            'VERDICT: HOLD-OWNER') event=COMMENT; REVIEW+=$'\n\nHeld for the owner.' ;;
+            'VERDICT: HOLD-OWNER') event=COMMENT; REVIEW+=$'\n\nHeld for the owner.'; owner_hold=1 ;;
             *) echo "::error::the reviewer gave no verdict line"; exit 1 ;;
           esac
           # GitHub counts the code owner's own pull request as owner-reviewed, so the bot's
           # approval alone merged fleet-ops#11741. The bot never approves the owner's pull request.
-          [ "$event" != APPROVE ] || [ "$author" != nish3451 ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: the owner opened this pull request.'; }
+          [ "$event" != APPROVE ] || [ "$author" != nish3451 ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: the owner opened this pull request.'; owner_hold=1; }
           # agent.yml tells the worker the bot will not approve without a run-proof line; this holds it.
           [ "$event" != APPROVE ] || [ "$proof" = true ] || { event=COMMENT; REVIEW+=$'\n\nNot approved: the body has no run-proof line.'; }
           # An assignment, so a failed call stops the job instead of approving.
           edits=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq "$TEST_EDITS")
-          [ "$event" != APPROVE ] || [ -z "$edits" ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: this PR deletes or changes existing test lines.'; }
+          [ "$event" != APPROVE ] || [ -z "$edits" ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: this PR deletes or changes existing test lines.'; owner_hold=1; }
           gh api "repos/$REPO/pulls/$PR/reviews" -f commit_id="$SHA" -f event="$event" -f body="$REVIEW"
+          # A hold that only posts a comment told nobody: 34 pull requests sat held for a
+          # week (2026-11-10). The label and the review request are stock gh; the request
+          # itself raises the owner's GitHub notification. Approved pulls are not touched.
+          # https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/requesting-a-pull-request-review
+          # https://cli.github.com/manual/gh_pr_edit
+          # The review is already posted: from here a failed call warns and the job goes on.
+          # https://cli.github.com/manual/gh_label_create (--force updates an existing label)
+          if [ "$owner_hold" ]; then
+            gh label create needs-owner --force -R "$REPO" --color B60205 --description "Waiting for the owner's review" \
+              || echo "::warning::could not create or update the needs-owner label"
+            gh pr edit "$PR" -R "$REPO" --add-label needs-owner \
+              || echo "::warning::could not add the needs-owner label to #$PR"
+            # GitHub rejects a review request to the pull request's own author; the label marks it.
+            if [ "$author" = nish3451 ]; then
+              echo "the owner opened this pull request; the label marks the hold, no review request"
+            else
+              gh pr edit "$PR" -R "$REPO" --add-reviewer nish3451 \
+                || echo "::warning::could not request the owner's review on #$PR"
+            fi
+          fi

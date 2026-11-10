@@ -17,8 +17,8 @@ Description=Mint the short-lived GitHub App token Grafana's alert webhook sends 
 # already mounts, scoped by the request body to issues:write on this one repo
 # (the contact points only POST issues). It lives in the user runtime dir
 # (tmpfs, mode 0700), never on disk and never in argv: the SDK holds the key
-# and the JWT in its own process and hands the token over stdout. A failed mint keeps the previous token file, pages through
-# OnFailure=, and Grafana's own delivery rule
+# and the JWT in its own process and hands the token over stdout. A failed mint keeps the previous token file and shows in
+# `systemctl --user list-units --state=failed`; Grafana's own delivery rule
 # (cloudflare-spend-delivery.yaml) pages hermes-urgent if a webhook still fails.
 #
 # Switch off: `systemctl --user disable --now fleet-grafana-github-token.timer`

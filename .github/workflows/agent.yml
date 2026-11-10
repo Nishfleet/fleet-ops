@@ -222,6 +222,9 @@ jobs:
     timeout-minutes: 10
     permissions: {}
     steps:
+      # Owner decision 2026-11-10: the lane opens PRs that edit .github/workflows/**, so this
+      # token alone adds workflows: write; CODEOWNERS on .github/ still gates the merge.
+      # https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app
       - name: App token
         id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -231,6 +234,7 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
+          permission-workflows: write
       # A gardener pass that changes nothing closes its issue, so gardener.yml files the next one.
       - name: Close a gardener issue that needed no change
         id: nochange

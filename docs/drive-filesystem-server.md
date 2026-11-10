@@ -18,8 +18,5 @@ installed. A session with no network needs that metadata request to answer, so a
 fully offline start is the local-install route Chrome DevTools MCP uses, not
 this entry.
 
-- Bump it: edit `config/drive-mcp.json` and run
-  `tests/test_chrome_devtools_mcp.py`; the play holds no copy of the version.
-- Check it: the `ci` step "Chrome DevTools wiring, hand-off cleanup and Claude
-  lanes" pins the fragment's shape and runs the Cursor swap twice against a temp
-  copy, asserting the pinned words and that the second run changes nothing.
+- Bump it: edit `config/drive-mcp.json`; the play holds no copy of the version.
+- Check it: `claude mcp list` shows the `drive` entry.
