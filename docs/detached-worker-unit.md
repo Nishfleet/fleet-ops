@@ -1,8 +1,9 @@
 # The detached worker unit
 
-`AGENTS.md` → "Session-outliving work is a systemd transient unit" carries the
-rule and points here. This file holds the one-line command. Issue: nish-vault#46
-item 4.
+This file carries the rule — "Session-outliving work is a systemd transient
+unit" — and holds the one-line command. The full rules live in the vault
+`_system/shared-memory/global-standing-rules.md`, which `AGENTS.md` names for
+them. Issue: nish-vault#46 item 4.
 
 Session-outliving work is a systemd transient unit, never `nohup pi ... &` or a
 trailing `&`: those die with the shell (fleet-ops#350) and launch with no dead-man
