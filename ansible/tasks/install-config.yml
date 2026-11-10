@@ -87,6 +87,11 @@
 # files, the Write tool included
 # (https://code.claude.com/docs/en/permissions, "Write(path), Glob(path), and
 # Grep(path) rules don't match").
+# lane-worker.json (fleet-ops#11878) is the same treatment for the agent lane's Claude
+# engine on the agent runners: agent.yml passes it with --permission-mode dontAsk and
+# --setting-sources project,local, so this copy must exist before a Claude engine run
+# starts. The work folder rule is the runners' _work tree, not /tmp: the work job runs
+# in $RUNNER_TEMP/work under /var/lib/fleet-runner/<runner>/_work.
 - name: Install the per-role Claude permission allow lists
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/claude-code/roles/"
