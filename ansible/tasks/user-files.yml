@@ -3,28 +3,6 @@
 # units that read repo files read them from this checkout, /var/lib/fleet-ops/repo.
 # ansible.builtin.copy replaces a symlink at dest with the file (follow defaults to
 # false). The router config and Grafana provisioning are tasks/services.yml's.
-# The read-only checkout of this repo that agents on the box read. One standalone
-# clone that this task really moves to main each run: the git module updates only
-# its own dest, never a checkout linked as a git worktree of a second checkout,
-# which is how this tree sat at a 2026-11-01 HEAD, 51 commits behind, for nine
-# days until a hand fast-forward (2026-11-10). No unit reads it any more — the
-# deploy applies from ansible-pull's own pull directory, /var/lib/fleet-ops/repo
-# (fleet-ops#10935 E1); only agents do. force adds --force to the fetch, so a
-# moved upstream tag (v1) cannot stop the run with "would clobber existing tag".
-# A checkout still linked to the retired clone (its .git is a file pointing into
-# it) fails this module until deleted by hand once; the next run re-clones it
-# standalone.
-# https://docs.ansible.com/ansible/latest/collections/ansible/builtin/git_module.html
-- name: Keep the agents' read-only fleet-ops checkout on main
-  become: true
-  become_user: nish
-  environment: "{{ nish_env }}"
-  ansible.builtin.git:
-    repo: https://github.com/Nishfleet/fleet-ops.git
-    dest: "{{ nish_home }}/workspaces/tooling/fleet-ops"
-    version: main
-    force: true
-
 - name: Install nish's user units
   become: true
   become_user: nish
@@ -43,6 +21,51 @@
     - tincan-relay.service
     - tmux-spawn-.scope.d/50-interactive-cpu-priority.conf
   notify: Reload nish's user manager
+
+# The read-only checkout of this repo that agents on the box read. One standalone
+# clone that this task really moves to main each run: the git module updates only
+# its own dest, never a checkout linked as a git worktree of a second checkout,
+# which is how this tree sat at a 2026-11-01 HEAD, 51 commits behind, for nine
+# days until a hand fast-forward (2026-11-10). No unit reads it any more — the
+# deploy applies from ansible-pull's own pull directory, /var/lib/fleet-ops/repo
+# (fleet-ops#10935 E1); only agents do. force adds --force to the fetch, so a
+# moved upstream tag (v1) cannot stop the run with "would clobber existing tag".
+# The retired deploy clone (fleet-ops#10935 E1) is not in `retired`: it may still
+# be the parent of a linked worktree, so it waits for a checked hand delete.
+# https://docs.ansible.com/ansible/latest/collections/ansible/builtin/git_module.html
+- name: Check whether the agents' checkout is a standalone clone
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.stat:
+    path: "{{ nish_home }}/workspaces/tooling/fleet-ops/.git"
+  register: fleet_ops_checkout_git
+
+# A checkout linked as a git worktree of another checkout has a .git file, and
+# the git module then fails on it (it reads the file as a separate git dir, finds
+# no config there and clones into a directory that is not empty). Such a dest is
+# removed here and re-cloned standalone below, in the same run, so the first
+# deploy after this task lands is green instead of waiting for a hand delete.
+- name: Remove the agents' checkout when it is a linked worktree
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.file:
+    path: "{{ nish_home }}/workspaces/tooling/fleet-ops"
+    state: absent
+  when:
+    - fleet_ops_checkout_git.stat.exists
+    - not (fleet_ops_checkout_git.stat.isdir | default(false))
+
+- name: Keep the agents' read-only fleet-ops checkout on main
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.git:
+    repo: https://github.com/Nishfleet/fleet-ops.git
+    dest: "{{ nish_home }}/workspaces/tooling/fleet-ops"
+    version: main
+    force: true
 
 - name: Install nish's quadlets
   become: true
