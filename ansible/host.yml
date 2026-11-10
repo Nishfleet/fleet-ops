@@ -182,7 +182,6 @@
       - {name: grafana-telegram-bot-token, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_BOT_TOKEN}
       - {name: grafana-telegram-home-channel, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_HOME_CHANNEL}
       - {name: grafana-cloudflare-api-token, src: "{{ nish_home }}/.config/cloudflare/deploy-ci.env", key: CLOUDFLARE_API_TOKEN}
-      - {name: grafana-postgres-password, src: "{{ nish_home }}/.config/fleet-ops/grafana-postgres-password.env", key: GRAFANA_POSTGRES_PASSWORD}
 
     # The tincan relay's approval policy (fleet-ops#9979). It was hand-made on
     # the box, so nothing in the repo said what the gate was; it is now rendered

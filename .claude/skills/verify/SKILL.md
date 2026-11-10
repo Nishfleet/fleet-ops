@@ -38,7 +38,6 @@ printf 'LITELLM_API_KEY=dummy\n' > $H/.config/fleet-ops/seats/litellm-agent.env
 printf 'LITELLM_API_KEY=dummy\n' > $H/.config/fleet-ops/seats/litellm-reviewer.env
 printf 'TELEGRAM_BOT_TOKEN=dummy\nTELEGRAM_HOME_CHANNEL=1\n' > $H/.hermes/.env
 printf 'CLOUDFLARE_API_TOKEN=dummy\n' > $H/.config/cloudflare/deploy-ci.env
-printf 'GRAFANA_POSTGRES_PASSWORD=dummy\n' > $H/.config/fleet-ops/grafana-postgres-password.env
 chown -R nish:nish $H
 STANDINS
 podman exec -e ANSIBLE_PIPELINING=1 "$RUN" sh -c 'cd /srv/fleet-ops && ansible-playbook -i localhost, -c local ansible/host.yml' > "$EV/converge.log" 2>&1; echo "converge rc=$?" >> "$EV/converge.log"
