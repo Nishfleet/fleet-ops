@@ -7,9 +7,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
-# Podman 4.9.3 quadlets have no Memory= key and reject an unknown [Container] key
-# (https://docs.podman.io/en/v4.9.3/markdown/podman-systemd.unit.5.html; Memory= exists only in
-# later podman), so the cap is the unit's [Service] MemoryMax= or --memory= in [Container] PodmanArgs=.
+# upstream: https://docs.podman.io/en/v4.9.3/markdown/podman-systemd.unit.5.html
+# - Podman 4.9.3 quadlets have no Memory= key and reject an unknown [Container] key
+# (Memory= exists only in later podman), so the cap is the unit's [Service] MemoryMax=
+# or --memory= in [Container] PodmanArgs=.
 CAP_KEYS = {"Service": {"MemoryMax"}}
 
 

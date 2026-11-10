@@ -60,6 +60,7 @@ from litellm.router_utils.pre_call_checks.deployment_affinity_check import (
 CONFIG_PATH = "config/litellm-proxy.yaml"
 CALLS = 100
 MAX_HOP_SHARE = 0.02
+SHUFFLE_SEED = 9412
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -68,13 +69,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_POST(self):
-        # No server registered: a future test that forgets the push would watch
-        # its assertions pass against a mock that answers everything 200, which
-        # is the quiet way to prove nothing.
         if not _CURRENT_SERVER:
             raise RuntimeError("_Handler fired with no _CURRENT_SERVER registered; "
                                "append the server in the test's try block")
-        # The body must be read before the response is written. litellm holds the
+        # upstream: https://docs.python.org/3/library/http.server.html
+        # - the body must be read before the response is written. litellm holds the
         # connection open (HTTP/1.1), so if those bytes stay in the socket buffer
         # the next request on this connection is parsed as
         # '<body>POST /path HTTP/1.1' and the stdlib answers 501 'Unsupported
@@ -159,8 +158,8 @@ async def _drill(server, calls=CALLS, reclaim=False):
     drops the stale pin before the count, the way the #9411 fix re-claims it."""
     settings = _router_settings()
     saved_callbacks = litellm.callbacks
-    # simple-shuffle draws from `random`; seed it so no draw can differ between runs.
-    random.seed(9412)
+    random.seed(SHUFFLE_SEED)
+    server.walled = set()
     _CURRENT_SERVER.append(server)
     litellm.callbacks = []
     try:
@@ -202,6 +201,21 @@ async def _drill(server, calls=CALLS, reclaim=False):
 def _hop_share(answers: list[str]) -> float:
     hops = sum(1 for before, after in itertools.pairwise(answers) if before != after)
     return hops / max(len(answers) - 1, 1)
+
+
+def test_the_drill_answers_the_same_rows_on_every_run():
+    """simple-shuffle draws from `random`, so the hop share above only means
+    something if the draw is the same every time. Two identical drills must
+    answer the same rows; a shuffle that drifted would show up here and not in
+    the share."""
+    server = _Server()
+    try:
+        first_pinned, first = asyncio.run(_drill(server))
+        second_pinned, second = asyncio.run(_drill(server))
+    finally:
+        server.close()
+    assert first_pinned == second_pinned, (first_pinned, second_pinned)
+    assert first == second, (first, second)
 
 
 def test_a_pinned_session_that_cools_does_not_re_shuffle_the_group():

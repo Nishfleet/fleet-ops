@@ -28,6 +28,6 @@ def text(rev: str = "", play_file: str = "ansible/host.yml") -> str:
 
 
 def play(rev: str = "", play_file: str = "ansible/host.yml") -> dict:
-    import yaml  # only the tests that read the play as data need PyYAML
+    import yaml
 
     return yaml.safe_load(text(rev, play_file))[0]

@@ -95,10 +95,9 @@ class H(http.server.BaseHTTPRequestHandler):
             wants = [{"repositories": ["fleet-ops"], "permissions": {"issues": "write"}},
                      {"permissions": HERMES_PERMS}]
             if repo is None:
-                # A token request for an installation id nobody looked up is not
-                # what any unit here sends, and a 201 for it would hide a mint that
-                # skipped the lookup it needs to find the installation (review of
-                # PR #11116).
+                # upstream: https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app
+                # - an unknown installation id answers 404, and a 201 would hide a
+                # mint that skipped the lookup it needs to find the installation.
                 verdict, code, out = "unknown", 404, {"message": "Not Found"}
             elif json.loads(body or b"{}") not in wants:
                 verdict, code, out = "bad-body", 422, {"message": "bad body"}
