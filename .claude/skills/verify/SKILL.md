@@ -33,13 +33,11 @@ podman exec -i "$RUN" sh -e <<'STANDINS'
 H=$(getent passwd nish | cut -d: -f6)
 for i in $(seq 1 15); do mkdir -p $H/.local/share/agent-runner/$i; printf '#!/bin/sh\nexec sleep infinity\n' > $H/.local/share/agent-runner/$i/runsvc.sh; chmod 755 $H/.local/share/agent-runner/$i/runsvc.sh; done
 mkdir -p /etc/fleet-ops && touch /etc/fleet-ops/tether-off
-groupadd -f gha0509-lock
 install -d -o nish -g nish -m 700 $H/.config $H/.config/fleet-ops $H/.config/fleet-ops/seats $H/.config/cloudflare $H/.hermes
 printf 'LITELLM_API_KEY=dummy\n' > $H/.config/fleet-ops/seats/litellm-agent.env
 printf 'LITELLM_API_KEY=dummy\n' > $H/.config/fleet-ops/seats/litellm-reviewer.env
 printf 'TELEGRAM_BOT_TOKEN=dummy\nTELEGRAM_HOME_CHANNEL=1\n' > $H/.hermes/.env
 printf 'CLOUDFLARE_API_TOKEN=dummy\n' > $H/.config/cloudflare/deploy-ci.env
-printf 'GRAFANA_POSTGRES_PASSWORD=dummy\n' > $H/.config/fleet-ops/grafana-postgres-password.env
 chown -R nish:nish $H
 STANDINS
 podman exec -e ANSIBLE_PIPELINING=1 "$RUN" sh -c 'cd /srv/fleet-ops && ansible-playbook -i localhost, -c local ansible/host.yml' > "$EV/converge.log" 2>&1; echo "converge rc=$?" >> "$EV/converge.log"
@@ -53,9 +51,9 @@ names the two failures that are expected in a container (the tmpfiles task and t
 
 The `STANDINS` block places what a human or a secret places on the real box: runner
 registrations (a stub `runsvc.sh` in nish's runner folder, which the play copies to
-fleet-runner), dummy secret files, the tether off marker (tether's
-release needs a GitHub login), and the `gha0509-lock` group, which no play makes. A run
-proves nothing about those steps. List them in the PR body.
+fleet-runner), dummy secret files, and the tether off marker (tether's
+release needs a GitHub login). A run proves nothing about those steps. List them in
+the PR body.
 
 ## Doctor
 

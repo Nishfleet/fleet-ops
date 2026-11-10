@@ -20,6 +20,7 @@
     group: prometheus
     mode: "0600"
   no_log: true
+  diff: false
 
 - name: Read that password
   ansible.builtin.slurp:
@@ -39,6 +40,7 @@
     group: prometheus
     mode: "0640"
   no_log: true
+  diff: false
   when: not ansible_check_mode
 
 - name: Look for the alertmanager web config

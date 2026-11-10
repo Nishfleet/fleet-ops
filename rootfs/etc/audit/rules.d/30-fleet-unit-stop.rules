@@ -1,8 +1,8 @@
 # =============================================================================
 # fleet-ops#4266 — who stopped it? audit trail
 # =============================================================================
-# A clean `systemctl stop` of a healthy unit yields Result=success, so
-# OnFailure never fires and the escort rail stays dark. The only durable
+# A clean `systemctl stop` of a healthy unit yields Result=success, so no
+# failure handler fires. The only durable
 # trace of "who stopped it" is the execve audit record of the stopping
 # process. Watch both mechanisms a stopper can use under this uid:
 #   - /usr/bin/systemctl execve (systemctl --user stop <unit>)
@@ -37,10 +37,11 @@
 # The escalation canary's detached-work lint (block 13) that read this trail
 # was deleted 2026-09-18 with the glue sweep. The two -w rules stay as the
 # on-disk forensic evidence for the #4266 silent-death vector: a bare
-# `systemd-run --user` transient (no OnFailure, no RuntimeMaxSec, no
+# `systemd-run --user` transient (no RuntimeMaxSec, no
 # ExecStopPost deliverable check) is only reconstructable from these execve
-# records. The compliant shape is the README one-liner — a transient unit
-# carrying both -p RuntimeMaxSec= and the -p ExecStopPost= deliverable check.
+# records. The compliant shape is the `docs/detached-worker-unit.md` one-liner —
+# a system unit as nish carrying both -p RuntimeMaxSec= and the -p ExecStopPost=
+# deliverable check.
 # Watch the systemd-run binary (and its /bin symlink) so the trail stays
 # populated. Key fleet-unit-run is distinct from the fleet-unit-stop key
 # above (who-stopped) so the two queries stay clean.

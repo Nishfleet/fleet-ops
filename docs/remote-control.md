@@ -13,28 +13,24 @@ of swap full. Nothing alerted anyone.
 | --- | --- | --- |
 | `claude.slice` `MemoryHigh=14G` / `MemoryMax=18G` / `MemorySwapMax=2G` (normal use 6-7G, incident peak 21.5G) | `rootfs/etc/systemd/system/claude.slice` | at the daemon-reload after merge |
 | `OOMPolicy=continue`: a killed child no longer stops the whole unit | `claude-remote-control.service.d/50-alert-on-stop.conf` | at the daemon-reload after merge |
-| `ExecStopPost=` starts `fleet-unit-failed@claude-remote-control.service`, the existing healthchecks.io fail ping (fleet-ops#9033) | same file | next restart of Remote Control (Nish) |
 | `OOMScoreAdjust=-900` to `-500`, so a runaway session child can be chosen | `claude-remote-control.service` | next restart of Remote Control (Nish) |
 | Sandbox drop-in (kernel, clock, devices, `/proc`, `/home` read-only except `/home/nish`, address families, capability and syscall trims): `systemd-analyze security` 9.2 to 4.8 offline. `NoNewPrivileges`, `PrivateTmp` and `ProtectSystem` stay off on purpose, because sessions use `sudo`, `/tmp` and system edits | `claude-remote-control.service.d/80-hardening.conf` | next restart of Remote Control (Nish). Roll back: delete the file, reload, restart |
 
-The alert uses `ExecStopPost=` because `OnFailure=` never fires for this unit:
-it fires on `failed`, and `Restart=always` with `StartLimitIntervalSec=0`
-(`selfheal.conf`) sends every exit to auto-restart. A deliberate restart by
-Nish pings too. The ping needs `HC_URL_RECONCILE` in
-`~/.config/fleet-ops/keystone-hc.env`; unset, the handler logs SKIP and exits 0.
-That check is shared with every `fleet-unit-failed@` caller and is fail-only,
-so it stays down until it is re-armed with a success ping, and a second drop
-while it is still down does not page again.
+The unit auto-restarts every exit (`Restart=always`, `StartLimitIntervalSec=0`
+from `selfheal.conf`), so it never reaches `failed` and the `SystemUnitFailed`
+rule never fires for it. A stop-ping no longer exists either: the alerting
+reset (fleet-ops#10935 E7) removed that handler, and the drop-in now carries
+the `OOMPolicy=continue` above and nothing else.
 
 The LiteLLM router gets no `OOMScoreAdjust`: it runs in the user manager,
 which cannot lower the value below its own 100 (measured:
 `systemd-run --user -p OOMScoreAdjust=-500` reads back 100). The cap above is
 what keeps it from being the victim.
 
-Switch off: delete `50-alert-on-stop.conf` (alert and `OOMPolicy`), the
+Switch off: delete `50-alert-on-stop.conf` (the `OOMPolicy`), the
 `MemoryHigh`/`MemoryMax`/`MemorySwapMax` lines in `claude.slice`, then `systemctl daemon-reload`. Delete the file from
 `rootfs/` and add its path to `retired` in `ansible/host.yml`, otherwise the
-next run installs it again. The running `ExecStopPost=` and `-500` stay until
+next run installs it again. The running `-500` stays until
 Remote Control is next restarted.
 
 ### Remote Control runs on the default login (2026-10-22)
@@ -78,7 +74,8 @@ there, `config/user-tmpfiles.d/claude-max-agents.conf` links
 `~/.claude-max/agents` to `~/.claude/agents` (step 5), and step 5b fails the
 sync if that path is anything but the link. Edit an agent here, by PR; a hand
 edit of the live file is overwritten on the next sync.
-`tests/test_claude_max_agents.py` runs those unit lines against a temp home.
+`tests/test_claude_max_agents.py` ran those unit lines against a temp home before
+the 2026-11-01 reset deleted it.
 
 Switch off: delete the three step-2d install lines and step 5b, the tmpfiles
 file and its live copy in `~/.config/user-tmpfiles.d/`, then
@@ -109,8 +106,7 @@ disabled (--setting-sources) and no enabled source provides
 cleanupPeriodDays." With the pin installed the key sits in a source those
 lanes do not disable, so they sweep at 30 instead of skipping — every worker,
 review and tincan lane on this box starts with `--setting-sources
-project,local` (agent.yml's review job, agent-dispatch.yml's claude lanes,
-the tincan listener commands).
+project,local` (agent.yml's review job and the tincan listener commands).
 
 The sweep is Claude Code's, not a fleet unit: it runs at most once per 24 hours
 (marker `~/.claude/.last-cleanup`), is triggered by the first prompt submit in

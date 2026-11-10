@@ -155,7 +155,10 @@
     label: "{{ item.dest }}"
 
 # The router job's scoped worker key (fleet-ops#11573): it reaches the worker model
-# groups only, never the admin API.
+# groups only, never the admin API. The src is a nish-held credential file: when this copy
+# changed, --diff printed its value into the play's log (fleet-ops#11863), so no_log with
+# diff: false keeps the value out of the ansible-pull log
+# (docs.ansible.com/ansible/latest/playbook_guide/playbooks_privacy.html).
 - name: Give fleet-runner the scoped router key
   ansible.builtin.copy:
     src: "{{ nish_home }}/.config/fleet-ops/seats/litellm-agent.env"
@@ -164,6 +167,8 @@
     owner: fleet-runner
     group: fleet-runner
     mode: '0600'
+  no_log: true
+  diff: false
 
 # No job on this runner pushes any more (fleet-ops#11715), so the git credential helper goes.
 - name: Remove the git credential helper
@@ -291,6 +296,9 @@
 # {"key": "<the fleet-reviewer key>", "models": ["review-claude", "review-qwen", "review-any"]} and stores the
 # key in the seats directory, as fleet-runner's key is.
 # https://docs.litellm.ai/docs/proxy/virtual_keys
+# The src is a nish-held credential file: as the copy above, no_log with diff: false keeps
+# its value out of the ansible-pull log
+# (docs.ansible.com/ansible/latest/playbook_guide/playbooks_privacy.html).
 - name: Give fleet-reviewer its review-only router key
   ansible.builtin.copy:
     src: "{{ nish_home }}/.config/fleet-ops/seats/litellm-reviewer.env"
@@ -299,6 +307,8 @@
     owner: fleet-reviewer
     group: fleet-reviewer
     mode: '0600'
+  no_log: true
+  diff: false
 
 # Its own model file with the router's review groups alone, so the shared pi-models.json
 # cannot shadow pi-grok's models (pi docs/models.md: a models entry replaces the same ID).

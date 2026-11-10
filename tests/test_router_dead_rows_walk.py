@@ -4,8 +4,8 @@ Runs the live config/litellm-proxy.yaml rows and router_settings on a real litel
 Router, with a plain http.server standing in for the providers. The z.ai and
 Command Code rows answer 429 (their plan limits, 2026-11-04), the rest answer 200.
 
-  uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx \
-      python -m pytest -q tests/test_router_dead_rows_walk.py
+  uvx --with "litellm==$(python tests/router_litellm_pin.py)" --with pytest==8.3.5 \
+      --with jsonschema --with httpx python -m pytest -q tests/test_router_dead_rows_walk.py
 """
 from __future__ import annotations
 
