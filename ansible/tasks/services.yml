@@ -32,8 +32,11 @@
 
 # Hermes' own installer writes hermes-gateway.service; --if-missing leaves the
 # unit it already wrote alone, and `hermes gateway restart --system` refreshes
-# it. hermes-serve.service stays ours: Hermes ships no installer for serve
-# (its desktop.md: keep `hermes serve` running under systemd). The shared
+# it. The generated unit is also copied under rootfs/etc/systemd/system/, so the
+# tree copy above installs it on a rebuilt host and the play owns it
+# (fleet-ops#11864); a change to what the installer writes is a PR that re-copies
+# the live file. hermes-serve.service stays ours: Hermes ships no installer for
+# serve (its desktop.md: keep `hermes serve` running under systemd). The shared
 # sandbox is hermes-.service.d/sandbox.conf (fleet-ops#10935 D9).
 - name: Install the Hermes gateway service with Hermes' own installer
   ansible.builtin.command:
