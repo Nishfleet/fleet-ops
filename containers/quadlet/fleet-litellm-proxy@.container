@@ -5,9 +5,10 @@
 # proxy is stateless, run 2+ replicas behind a load balancer, with Redis shared
 # (https://docs.litellm.ai/docs/proxy/deploy). Podman 4.9 Quadlet has no template units, so the
 # deploy writes two real files; the @ name is what gives systemd the %i.
-# The image is pinned by tag and digest (v1.105.0, cosign-verified outside CI). A bump edits the
-# Image= line only. The deploy then runs this image's own migration job and restarts the proxy, in
-# that order (ansible/host.yml handlers, notified when this file changes): the upgrade guide's
+# The image is pinned by tag and digest (cosign-verified outside CI): the tag on the Image= line
+# is the readable label, the digest decides what runs, and a bump edits that line only. The
+# deploy then runs this image's own migration job and restarts the proxy, in that order
+# (ansible/host.yml handlers, notified when this file changes): the upgrade guide's
 # "run migrations before rollout", which Helm does with a pre-upgrade hook
 # (https://docs.litellm.ai/docs/proxy/upgrade_guide). A plain restart (crash, config change,
 # reboot) does not migrate, so it does not keep the router down for the job's 25-150 s
@@ -20,7 +21,7 @@ After=fleet-litellm-postgres.service fleet-litellm-redis.service
 # Keep restarting for a few minutes, then enter failed and page
 # (OnFailure=, fleet-ops#9033). Measured 2026-10-01: podman exit 125
 # dies in ~2s; a healthy start reaches uvicorn in ~38s and readiness
-# in ~75s. Measured 2026-10-23 on v1.105.0: about 30 s to readiness.
+# in ~75s. Measured 2026-10-23 on the pinned image: about 30 s to readiness.
 # Burst 20 × (RestartSec 10s + about 2 min) = 2600s, so the window must be 1h or the burst never
 # fills and OnFailure never fires.
 StartLimitIntervalSec=1h

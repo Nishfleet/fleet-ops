@@ -5,8 +5,8 @@ http.server standing in for the providers: the tether group answers the chosen f
 the assistant group answers 200. Run on the proxy image's litellm (see
 containers/quadlet/fleet-litellm-proxy@.container):
 
-  uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx \
-      python -m pytest -q tests/test_router_tether_fallback.py
+  uvx --with "litellm==$(python tests/router_litellm_pin.py)" --with pytest==8.3.5 \
+      --with jsonschema --with httpx python -m pytest -q tests/test_router_tether_fallback.py
 """
 from __future__ import annotations
 

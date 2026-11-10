@@ -1,6 +1,6 @@
 # Fleet LiteLLM Postgres, containerized (fleet-ops#8435, cutover #8494).
-# postgres:16 matches the cluster's major version, so the existing data dir
-# is reused as-is. The data dir is mounted at its own host path because
+# The image's Postgres major version matches the cluster's, so the existing
+# data dir is reused as-is. The data dir is mounted at its own host path because
 # postgresql.conf pins unix_socket_directories to <pgdata>/run by absolute path.
 
 [Unit]
