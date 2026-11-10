@@ -555,7 +555,7 @@ fails the unit at start instead of running a session on the wrong login:
 
 ```
 sudo systemd-run --uid=nish --gid=nish -p RuntimeMaxSec=<seconds> --unit <name> \
-  -p "EnvironmentFile=/home/nish/.config/claude/oauth.env" \
+  -p "EnvironmentFile=<home>/.config/claude/oauth.env" \
   -- claude -p ...
 ```
 

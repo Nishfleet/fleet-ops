@@ -67,16 +67,15 @@ def test_the_apply_fails_when_the_address_file_does_not_match_the_host():
     an address change the weekly apply would keep succeeding with a token
     locked to dead addresses. ExecStartPre does compare: it reads the host's
     current addresses while the unit's environment has network-online, and
-    fails the unit before the apply when one is not in the file (loud: the
-    unit shows in `systemctl --user list-units --state=failed`). The README
-    carries the one-command refresh that fixes the file.
+    fails the unit before the apply when one is not in the file (OnFailure =
+    loud). The README carries the one-command refresh that fixes the file.
     """
     pre = next(line for line in UNIT.read_text().splitlines() if line.startswith("ExecStartPre="))
     assert "vps-cidrs.tfvars" in pre
     assert "ifconfig.me" in pre, "the check must read the same documented source as the README"
     assert re.search(r"-4", pre) and re.search(r"-6", pre), "the file is locked to both families"
     assert "-qFx" in pre, "the addresses are matched as fixed whole lines, not as regexes"
-    assert "exit 1" in pre, "a mismatch fails the unit before tofu runs (the failed unit is loud)"
+    assert "exit 1" in pre, "a mismatch fails the unit before tofu runs (OnFailure fires)"
     readme = (ROOT / "infra/cloudflare-tokens/README.md").read_text()
     assert "printf" in readme and "ifconfig.me" in readme and ">" in readme, (
         "no documented one-command refresh to fix the file when the check fails"
