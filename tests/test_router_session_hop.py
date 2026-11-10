@@ -69,18 +69,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_POST(self):
-        # No server registered: a future test that forgets the push would watch
-        # its assertions pass against a mock that answers everything 200, which
-        # is the quiet way to prove nothing.
         if not _CURRENT_SERVER:
             raise RuntimeError("_Handler fired with no _CURRENT_SERVER registered; "
                                "append the server in the test's try block")
-        # The body must be read before the response is written. litellm holds the
-        # connection open (HTTP/1.1), so if those bytes stay in the socket buffer
-        # the next request on this connection is parsed as
-        # '<body>POST /path HTTP/1.1' and the stdlib answers 501 'Unsupported
-        # method' - no hit is recorded, so a real hop is silently dropped from
-        # the count this drill is built on.
         length = int(self.headers.get("Content-Length") or 0)
         if length:
             self.rfile.read(length)
@@ -160,7 +151,6 @@ async def _drill(server, calls=CALLS, reclaim=False):
     drops the stale pin before the count, the way the #9411 fix re-claims it."""
     settings = _router_settings()
     saved_callbacks = litellm.callbacks
-    # simple-shuffle draws from `random`; seed it so no draw can differ between runs.
     random.seed(9412)
     _CURRENT_SERVER.append(server)
     litellm.callbacks = []

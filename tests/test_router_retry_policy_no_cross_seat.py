@@ -139,16 +139,8 @@ CONFIG_PATH = "config/litellm-proxy.yaml"
 SCHEMA_PATH = "config/litellm-proxy.schema.json"
 REJECTS_GLOB = "config/litellm-proxy.schema.rejects/retry-policy-*.yaml"
 
-# The litellm the proxy runs, read from the image tag in
-# containers/quadlet/fleet-litellm-proxy@.container through tests/router_litellm_pin.py,
-# which the CI install step reads too: the version is written once, in the image tag,
-# so a bump edits one line and never leaves this file running a different release. The
-# version remains a gate, not prose: a bump that changes the behavioural numbers of
-# this file or of the retry_policy comment in config/litellm-proxy.yaml fails the tests
-# below (fleet-ops#11843), and re-measuring is the PR body's job.
 PINNED_LITELLM = pinned_litellm()
 
-# fleet-ops#9375 as written in this PR (the "old" values the audit measured).
 RP_SHIPPED = {
     "AuthenticationErrorRetries": 2,
     "RateLimitErrorRetries": 2,
@@ -168,7 +160,6 @@ RP_PROPOSED = {
     "DefaultRetries": 1,
 }
 
-# A zeroed-out budget, for the contrast tests only.
 RP_ZERO = {k: 0 for k in RP_PROPOSED}
 
 
@@ -186,11 +177,6 @@ def _counts(paths: list[str]) -> dict:
     return counts
 
 
-# --------------------------------------------------------------------------- #
-# HTTP mock: /fail -> 429 wall, /okcapable -> 200, /okcheap -> 200,
-# /gone403 -> 403, /gone404 -> 404, /synwall -> 429 subscription wall,
-# /synburst -> 429 provider concurrency 429 ("Too many concurrent requests", #9596)
-# --------------------------------------------------------------------------- #
 class _Handler(http.server.BaseHTTPRequestHandler):
     """Answers the /fail rows with a real 429 JSON body so LiteLLM raises
     RateLimitError (an HTML/empty 429 body is re-read as OpenAIException ->
@@ -199,19 +185,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_POST(self):
-        # No server registered: a future test that forgets the push would watch
-        # its assertions pass against a mock that answers everything 200, which
-        # is the quiet way to prove nothing.
         if not _CURRENT_SERVER:
             raise RuntimeError("_Handler fired with no _CURRENT_SERVER registered; "
                                "append the server in the test's try block")
-        # The body must be read before the response is written. litellm holds the
-        # connection open (HTTP/1.1), so if those bytes stay in the socket buffer
-        # the next request on this connection is parsed as
-        # '<body>POST /path HTTP/1.1' and the stdlib answers 501 'Unsupported
-        # method' - no hit is recorded, so a real retry is silently dropped from
-        # the count these tests are built on. See
-        # test_the_mock_reads_the_request_body.
         length = int(self.headers.get("Content-Length") or 0)
         if length:
             self.rfile.read(length)
@@ -242,10 +218,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if "/gone404" in path:
-            # The body carries code "model_not_found" because litellm (1.98.0
-            # and 1.105.0, drilled) reads it to map a 404 to NotFoundError;
-            # without the code the same status arrives as BadRequestError and
-            # skips the NotFoundError piece of this test entirely.
             body = json.dumps({"error": {
                 "message": "This model is unavailable for free. The paid version is available now - use this slug instead: inclusionai/ling-3.0-flash-sante",
                 "type": "invalid_request_error",
@@ -278,8 +250,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if "/fail" in path:
             server = _CURRENT_SERVER[0]
-            # fail_first_only: the /fail row 429s once then answers 200, to probe
-            # whether litellm retries the same row. /failcapable always 429s.
             transient = bool(getattr(server, "fail_first_only", False)
                              and path.startswith("/fail/") and "failcapable" not in path)
             fail_hits = sum(1 for h in server.hits
@@ -368,7 +338,6 @@ async def _run(server, retry_policy, sid, park_on_first_429=False, rows=None, ca
     higher count it returns ([attempts per call], [outcome per call], pin)."""
     server.hits.clear()
     saved_callbacks = litellm.callbacks
-    # simple-shuffle draws from `random`; seed it so no draw can differ between runs.
     random.seed(9375)
     _CURRENT_SERVER.append(server)
     litellm.callbacks = []
@@ -383,14 +352,6 @@ async def _run(server, retry_policy, sid, park_on_first_429=False, rows=None, ca
             deployment_affinity_ttl_seconds=3600,
             retry_policy=retry_policy,
         )
-        # Pin seat-a the way a first successful call does. These Router values
-        # mirror prod router_settings: num_retries 0, allowed_fails 1,
-        # cooldown_time 60, optional_pre_call_checks ["prompt_caching",
-        # "session_affinity"], and the default deployment_affinity_ttl_seconds
-        # (3600). The one difference is redis_url (prod uses it, this test does
-        # not), so what is exercised is the affinity lookup the routing decision
-        # depends on and the routing decision itself - not the Redis Lua-script
-        # claim, which is out of scope for these tests.
         await router.cache.async_set_cache(
             key=_pin_key(sid), value={"model_id": "seat-a"}, ttl=3600)
         pick_batches: list[list[str]] = []
@@ -448,9 +409,6 @@ async def _run_no_fallback(server, retry_policy, sid, seat_a_lane="/fail"):
         litellm.callbacks = saved_callbacks
 
 
-# --------------------------------------------------------------------------- #
-# Config gate
-# --------------------------------------------------------------------------- #
 def _load_retry_policy():
     with open(CONFIG_PATH, "rb") as fh:
         cfg = yaml.safe_load(fh)
@@ -468,25 +426,12 @@ def test_config_retry_policy_is_the_fleet_ops_9375_fix():
 
 
 def test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on():
-    # The behavioural tests below assert pick counts and a same-row retry, which
-    # are litellm-version facts. Their version is the proxy image's, read through
-    # tests/router_litellm_pin.py (the CI install step reads it too), so the
-    # numbers below answer the release the proxy serves and the drift fleet-ops
-    # #10710 logged (a venv against a release the proxy does not serve) cannot
-    # re-enter through a hand-written pin.
     assert importlib.metadata.version("litellm") == PINNED_LITELLM, (
         f"litellm {importlib.metadata.version('litellm')} != {PINNED_LITELLM}; "
         "run on the litellm the proxy image's tag holds")
 
 
-# --------------------------------------------------------------------------- #
-# Unit-level: the retry count the Router actually resolves per error class.
-# --------------------------------------------------------------------------- #
 def test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule():
-    # The reject fixtures are minimal files, so each also trips unrelated keywords
-    # (the judge-row minContains). `check-jsonschema` would pass such a fixture even
-    # with the retry_policy rule deleted. Name the failing path instead: every
-    # retry-policy-* fixture must produce an error at router_settings[/retry_policy].
     with open(SCHEMA_PATH, "rb") as fh:
         schema = json.load(fh)
     jsonschema.Draft202012Validator.check_schema(schema)
@@ -519,11 +464,6 @@ def test_rate_limit_gets_two_retries():
 
 
 def test_the_same_row_retry_has_no_backoff():
-    # Router._time_to_sleep_before_retry returns 0 the moment the group still has
-    # one healthy row (litellm/router.py: "return 0" when healthy_deployments is
-    # non-empty), so the retry the issue asks for lands immediately. That is why
-    # the fix counts rows and not seconds, and why "after the backoff" is only
-    # half satisfied: the backoff sits in Pi's own retry, not in the router.
     router = Router(model_list=_rows(0), routing_strategy="simple-shuffle", num_retries=0,
                     retry_policy=RP_PROPOSED)
     exc = RateLimitError(message="x", llm_provider="openai", model="m")
@@ -534,10 +474,6 @@ def test_the_same_row_retry_has_no_backoff():
 
 
 def test_the_mock_reads_the_request_body():
-    # Pin the bug this file shipped with once already. A handler that never reads
-    # the request body leaves it in the socket buffer and the next request on the
-    # same keep-alive connection is answered 501 with no hit recorded, so the
-    # router's real in-group pick count came out one lower than it is.
     server = _Server()
     try:
         _CURRENT_SERVER.append(server)
@@ -557,23 +493,11 @@ def test_the_mock_reads_the_request_body():
 
 
 def test_internal_server_error_retry_is_live_on_litellm_1_105_0():
-    # litellm 1.98.0's get_num_retries_from_retry_policy had no InternalServerError
-    # branch, so InternalServerErrorRetries was dead config there (one attempt, then the
-    # fallback group). litellm 1.105.0 reads it: the shipped value 1 now gives a 5xx one
-    # in-group retry before the fallback group answers. That is the forward value the
-    # config comment names, measured here on 1.105.0.
-    #
-    # This and the no-backoff test below read litellm internals, so both are the
-    # litellm upgrade tripwires: a litellm bump that changes either shape fails CI
-    # and the numbers in this file and in the config comment must be re-measured.
     rp = RetryPolicy(**RP_PROPOSED)
     exc = InternalServerError(message="x", llm_provider="openai", model="m", response=None)
     assert get_num_retries_from_retry_policy(exc, rp) == 1
 
 
-# --------------------------------------------------------------------------- #
-# End-to-end: a pinned seat that 429s on every attempt (a rate-limited wall).
-# --------------------------------------------------------------------------- #
 def _in_group(attempts):
     """Picks that stayed in the worker-capable group (seat-a / seat-c) as opposed to
     the worker-cheap fallback."""
@@ -595,10 +519,6 @@ def test_shipped_policy_spends_two_retries_on_two_seats_on_a_429_wall():
         attempts, outcome, pin = asyncio.run(_run(server, RP_SHIPPED, "s-shipped-wall"))
     finally:
         server.close()
-    # shipped: the pinned seat 429s, litellm spends retry #1 back on the same row,
-    # then retry #2 hops to seat-c - a second seat, a second cold re-send - before
-    # the worker-cheap fallback answers. Counts, not order, are asserted because
-    # the in-group pick is a shuffle.
     _assert_first_pick_is_the_pinned_seat(attempts)
     ing = _in_group(attempts)
     assert len(ing) == 3, attempts
@@ -614,9 +534,6 @@ def test_the_fix_retries_the_row_that_failed_then_a_peer():
         attempts, outcome, pin = asyncio.run(_run(server, RP_PROPOSED, "s-proposed-wall"))
     finally:
         server.close()
-    # fleet-ops#10178: two retries. The first goes back to the row that just 429d and
-    # parks it (router allowed_fails 1), the second reaches seat-c, which 429s too, so
-    # the fallback group answers: three in-group picks on two seats.
     ing = _in_group(attempts)
     assert len(ing) == 3, attempts
     assert len(set(ing)) == 2, attempts
@@ -628,11 +545,6 @@ def test_the_fix_retries_the_row_that_failed_then_a_peer():
 
 
 def test_a_transient_429_recovers_on_the_row_it_hit():
-    # The headline the issue asks for. When the pinned seat's 429 clears on the
-    # second call, the single retry the fix allows lands on that same row and
-    # answers 200, so the worker-cheap fallback never fires and no cold prompt is
-    # re-sent to another seat. Zero retries (not the fix) would kick the call to
-    # the fallback instead - see test_zero_retries_hit_the_fallback_on_a_transient_429.
     server = _Server()
     server.fail_first_only = True
     try:
@@ -649,8 +561,6 @@ def test_a_transient_429_recovers_on_the_row_it_hit():
 
 
 def test_zero_retries_hit_the_fallback_on_a_transient_429():
-    # The contrast that shows the retry is doing the work: with no retry at all the
-    # one transient 429 costs a cold re-send on the fallback seat.
     server = _Server()
     server.fail_first_only = True
     try:
@@ -665,14 +575,6 @@ def test_zero_retries_hit_the_fallback_on_a_transient_429():
 
 
 def test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself():
-    # The limit of the same-row claim, drilled. A prod row on a daily quota wall
-    # carries RateLimitErrorAllowedFails: 0 (8 worker-capable rows and 8 worker-cheap
-    # rows as of this commit), so its first 429 cools it BEFORE the in-router retry
-    # picks a row. The pinned row is then out of the healthy set, the affinity
-    # filter cannot return it, and the one allowed retry goes to a peer (seat-c),
-    # which 429s too, so the worker-cheap fallback answers: still a cross-seat
-    # re-send, but bounded at one extra in-group pick (the shipped 2 allowed two).
-    # The fix does not give these rows a same-row retry; it caps the damage.
     server = _Server()
     try:
         attempts, outcome, pin = asyncio.run(
@@ -690,12 +592,6 @@ def test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself():
 
 
 def test_a_429_on_the_pinned_row_is_answered_by_a_peer_row():
-    # fleet-ops#10178: worker-capable has no fallback group, so a pinned row that keeps
-    # answering 429 (a one-slot row that is full) must be left by the in-router retries
-    # themselves. Two rows, no fallbacks: the pinned seat-a 429s on every call, seat-c
-    # answers 200. The first retry goes back to seat-a and parks it, the second reaches
-    # seat-c, and the caller never sees the 429. With the old budget of 1 the same call
-    # raised RateLimitError (see the contrast test below).
     for retries, expect_ok in ((RP_PROPOSED["RateLimitErrorRetries"], True), (1, False)):
         server = _Server()
         try:
@@ -713,9 +609,6 @@ def test_a_429_on_the_pinned_row_is_answered_by_a_peer_row():
 
 
 def test_pin_survives_a_failed_then_fallback_success():
-    # First-writer-wins: the fallback success on seat-b must NOT overwrite the pin
-    # (seat-a). Pi's own retry keeps the session id, so the next call re-pins to
-    # seat-a and, once it is healthy, lands on the same seat again.
     server = _Server()
     try:
         _, _, pin = asyncio.run(_run(server, RP_PROPOSED, "s-pin-survives"))
