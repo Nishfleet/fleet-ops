@@ -69,3 +69,19 @@ tests:
             exp_annotations:
               summary: "paid plan https://api.minimax.io/anthropic/v1/messages has had no successful router response for 24 hours"
               description: "The router answered no successful response for paid-plan endpoint https://api.minimax.io/anthropic/v1/messages in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+
+  # fleet-ops#11893: the success counter's api_base is LiteLLM's resolved request
+  # URL, and the anthropic-provider rows (/v1/messages) get it appended while
+  # litellm_deployment_state carries the row's configured base, so the branch
+  # above joins on model_id. A MiniMax plan with a succeeded row whose two
+  # api_base spellings differ therefore stays quiet.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_deployment_state{job="litellm",instance="127.0.0.1:4001",api_base="https://api.minimax.io/anthropic",model_id="minimax-m31-worker-capable",litellm_model_name="worker-capable"}'
+        values: '0x10'
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.minimax.io/anthropic/v1/messages",model_id="minimax-m31-worker-capable"}'
+        values: '50+50x10'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: PaidPlanIdle
+        exp_alerts: []

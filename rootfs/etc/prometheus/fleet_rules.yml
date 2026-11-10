@@ -192,8 +192,12 @@ groups:
       # carries api_base, the endpoint a router row calls, but only exists from a
       # row's first successful call since the router restarted, so a deployment
       # litellm_deployment_state knows and the counter has never seen (a row nobody
-      # has called successfully) fires too — unless that endpoint's counter has
-      # appeared. The api_base regex is the router-facing plans; when
+      # has called successfully) fires too — unless that row's counter has appeared.
+      # The join is on model_id, the row's own id, not api_base: the success counter
+      # records LiteLLM's resolved request URL, which for the anthropic-provider rows
+      # has /v1/messages appended, while litellm_deployment_state carries the row's
+      # configured base (the MiniMax rows read .../anthropic/v1/messages against
+      # .../anthropic; fleet-ops#11893). The api_base regex is the router-facing plans; when
       # config/paid-plans.json changes, change it here with it (tests/test_paid_plans.py
       # holds the pair together). Plans marked `via` in config/paid-plans.json reach their provider without the router and are out of scope.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
@@ -202,9 +206,11 @@ groups:
           (
             sum by (api_base) (increase(litellm_deployment_success_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}[24h])) == 0
             or
-            sum by (api_base) (litellm_deployment_state{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"})
-            unless on (api_base)
-            sum by (api_base) (increase(litellm_deployment_success_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}[24h]))
+            max by (api_base) (
+              sum by (api_base, model_id) (litellm_deployment_state{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"})
+              unless on (model_id)
+              sum by (model_id) (increase(litellm_deployment_success_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}[24h]))
+            )
           )
         labels:
           severity: warning
