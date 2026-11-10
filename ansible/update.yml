@@ -4,20 +4,89 @@
 # - Container images: digest-pinned, bumped by Renovate PRs (.github/renovate.json).
 # - Claude Code: its own background auto-updater.
 # - Cua Spaces: pinned in host.yml, bumped by Renovate PRs, installed by the host play.
-- name: Update npm and uv tools
+#
+# The globally installed npm and uv agent tools are pinned to exact versions in
+# config/agent-tools/pins.txt, and this play installs exactly those versions -
+# the tools the agents run no longer move with each night's
+# `npm update --global` / `uv tool upgrade --all`. A new upstream release
+# becomes a Renovate PR against the pin file 3 days after it ships
+# (.github/renovate.json). Docs: npm `install <pkg>@<version>`
+# (https://docs.npmjs.com/cli/v11/commands/npm-install), uv
+# `tool install <pkg>==<version>` (https://docs.astral.sh/uv/guides/tools/).
+- name: Install the pinned agent tools
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    pins_file: "{{ (playbook_dir ~ '/../config/agent-tools/pins.txt') | realpath }}"
+    # Every non-empty, non-comment pin row: [manager, package, version].
+    pins: >-
+      {{ lookup('ansible.builtin.file', pins_file).splitlines()
+         | map('regex_replace', '#.*$', '') | map('trim') | reject('equalto', '')
+         | map('split', '|') | list }}
   tasks:
-    - name: Update each tool through its own updater  # noqa: no-changed-when
+    - name: Read the versions of the global npm tools
       become: true
       become_user: nish
       environment:
         HOME: /home/nish
         PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
       ansible.builtin.command:
-        argv: "{{ item }}"
-      loop:
-        - [npm, update, --global]
-        - [uv, tool, upgrade, --all]
+        argv: [npm, ls, --global, --depth=0, --json]
+      register: npm_installed
+      failed_when: npm_installed.rc not in [0, 1]
+      changed_when: false
+      check_mode: false
+      timeout: 120
+
+    - name: Install each global npm tool at its pinned version
+      become: true
+      become_user: nish
+      environment:
+        HOME: /home/nish
+        PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+      ansible.builtin.command:
+        argv: [npm, install, --global, "{{ item[1] }}@{{ item[2] }}"]
+      loop: "{{ pins | selectattr(0, 'equalto', 'npm') | list }}"
+      loop_control:
+        label: "{{ item[1] }}@{{ item[2] }}"
+      # `npm ls --global` lists what the same prefix holds: a tool already at
+      # its pin stays there, a drift (or a Renovate bump) installs the pin.
+      when: >-
+        ((npm_installed.stdout | from_json).dependencies | default({})).get(item[1], {}).get('version') != item[2]
+      changed_when: true
+      timeout: 900
+
+    - name: Read the versions of the uv tools
+      become: true
+      become_user: nish
+      environment:
+        HOME: /home/nish
+        PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+      ansible.builtin.command:
+        argv: [uv, tool, list, --show-version-specifiers]
+      register: uv_installed
+      failed_when: uv_installed.rc not in [0, 1]
+      changed_when: false
+      check_mode: false
+      timeout: 120
+
+    - name: Install each uv tool at its pinned version
+      become: true
+      become_user: nish
+      environment:
+        HOME: /home/nish
+        PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+      ansible.builtin.command:
+        argv: [uv, tool, install, --upgrade, "{{ item[1] }}=={{ item[2] }}"]
+      loop: "{{ pins | selectattr(0, 'equalto', 'uv') | list }}"
+      loop_control:
+        label: "{{ item[1] }}=={{ item[2] }}"
+      # `uv tool list --show-version-specifiers` names the spec each tool was
+      # installed with: `<tool> v<version> [required: ==<pin>]`. A tool already
+      # at its pin (all six by default) is skipped, so the run reports no change.
+      when: >-
+        uv_installed.stdout is not search('(?m)^' ~ (item[1] | regex_escape)
+          ~ ' v\\S+ \\[required: ==' ~ (item[2] | regex_escape) ~ '\\]$')
+      changed_when: true
       timeout: 900

@@ -27,6 +27,15 @@
     # raised only after measuring), run as fleet-runner by tasks/runners.yml.
     fleet_runner_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     fleet_runner_pi_version: 1.4.0
+    # The globally installed npm and uv agent tools, each pinned to one exact
+    # version in config/agent-tools/pins.txt (npm|package|version and
+    # uv|package|version rows). tasks/mcp-and-agent-clis.yml installs the uv
+    # rows, ansible/update.yml installs every row, and Renovate
+    # (.github/renovate.json) opens the PR that changes a version.
+    agent_tool_pins: >-
+      {{ lookup('ansible.builtin.file', repo_root ~ '/config/agent-tools/pins.txt').splitlines()
+         | map('regex_replace', '#.*$', '') | map('trim') | reject('equalto', '')
+         | map('split', '|') | list }}
     # The review runner (tasks/runners.yml): the stock actions/runner release, pinned by
     # version and the sha256 GitHub publishes with it.
     fleet_reviewer_runner_version: 2.338.2

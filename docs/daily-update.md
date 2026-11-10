@@ -3,7 +3,13 @@
 `fleet-update.timer` starts `fleet-update.service` every day at 03:30 IST.
 It runs `ansible/update.yml` as root through `ansible-pull`:
 
-1. `npm update --global`, then `uv tool upgrade --all`, each capped at 900 s.
+1. `ansible/update.yml` installs the globally installed npm and uv agent tools
+   at the exact versions pinned in `config/agent-tools/pins.txt`
+   (`npm install --global <pkg>@<version>`, `uv tool install --upgrade
+   <pkg>==<version>`, 900 s cap each step). A new upstream release becomes a
+   Renovate PR against the pin file 3 days later (`renovate.json`), so the
+   tools the agents run never move outside a reviewed PR, and a rollback is
+   that PR's revert.
 2. Ubuntu packages update through `unattended-upgrades`, and Claude Code
    through its own auto-updater, so this run does not touch them.
 

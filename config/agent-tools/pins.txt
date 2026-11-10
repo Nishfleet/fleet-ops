@@ -1,0 +1,21 @@
+# Every globally installed agent tool and its exact version, one row per tool:
+#   npm|<package>|<version>    npm install --global <package>@<version> (npm docs)
+#   uv|<package>|<version>     uv tool install <package>==<version> (uv docs)
+#
+# The nightly update (ansible/update.yml) and the host play
+# (ansible/tasks/mcp-and-agent-clis.yml) install exactly these versions, so the
+# tools the agents run no longer drift with `npm update --global` /
+# `uv tool upgrade --all` (owner decision 2026-11-10, audit decision 13).
+# Renovate (.github/renovate.json) opens the bump PR for a row when the
+# package's new release is at least 3 days old, as Cua Spaces already does,
+# and the revert of that PR is the rollback.
+#
+# Pinned 2026-11-10 at the versions current then (npm and PyPI latest).
+
+npm|@earendil-works/pi-coding-agent|1.5.2
+uv|yt-dlp|2026.10.26
+uv|zizmor|1.32.0
+uv|html2text|2025.4.15
+uv|semgrep|1.185.0
+uv|pytest|9.2.0
+uv|pipx|1.18.16

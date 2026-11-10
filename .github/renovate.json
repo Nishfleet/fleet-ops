@@ -11,6 +11,20 @@
       "packageNameTemplate": "trycua/cua",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^cua-spaces-v(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "description": "The global npm agent tools are pinned to exact versions in config/agent-tools/pins.txt, which the nightly update installs (npm install -g <pkg>@<version>). Renovate opens the bump PR.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^config/agent-tools/pins\\.txt$/"],
+      "matchStrings": ["npm\\|(?<depName>[^|]+)\\|(?<currentValue>\\S+)"],
+      "datasourceTemplate": "npm"
+    },
+    {
+      "description": "The uv agent tools are pinned in the same file (uv tool install <pkg>==<version>), from PyPI.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^config/agent-tools/pins\\.txt$/"],
+      "matchStrings": ["uv\\|(?<depName>[^|]+)\\|(?<currentValue>\\S+)"],
+      "datasourceTemplate": "pypi"
     }
   ],
   "packageRules": [
@@ -23,6 +37,11 @@
     {
       "description": "A Cua Spaces release is taken only once it is 3 days old, as the old daily update did.",
       "matchDepNames": ["cua-spaces"],
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "A pinned agent tool moves only once its release is 3 days old, as Cua Spaces does.",
+      "matchManagers": ["custom.regex"],
       "minimumReleaseAge": "3 days"
     }
   ]

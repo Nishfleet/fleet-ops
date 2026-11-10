@@ -1,22 +1,20 @@
 # Python CLIs that agents and their skills run, each in its own uv tool
-# environment (https://docs.astral.sh/uv/guides/tools/). creates: skips a tool
-# that is already installed, and fleet-update's `uv tool upgrade --all` keeps
-# them current. yt-dlp: the research skills. zizmor: workflow audits.
-# html2text, semgrep, pytest, pipx: agents run them.
-- name: Install the uv tools agents run
+# environment (https://docs.astral.sh/uv/guides/tools/), each at the exact
+# version pinned in config/agent-tools/pins.txt. creates: skips a tool that is
+# already installed at that pin, and the nightly update (ansible/update.yml)
+# installs the pin when it changes, through a Renovate PR. yt-dlp: the research
+# skills. zizmor: workflow audits. html2text, semgrep, pytest, pipx: agents
+# run them.
+- name: Install the pinned version of each uv tool agents run
   become: true
   become_user: nish
   environment: "{{ nish_env }}"
   ansible.builtin.command:
-    argv: ["{{ nish_home }}/.local/bin/uv", tool, install, "{{ item }}"]
-    creates: "{{ nish_home }}/.local/bin/{{ item }}"
-  loop:
-    - yt-dlp
-    - zizmor
-    - html2text
-    - semgrep
-    - pytest
-    - pipx
+    argv: ["{{ nish_home }}/.local/bin/uv", tool, install, "{{ item[1] }}=={{ item[2] }}"]
+    creates: "{{ nish_home }}/.local/bin/{{ item[1] }}"
+  loop: "{{ agent_tool_pins | selectattr(0, 'equalto', 'uv') | list }}"
+  loop_control:
+    label: "{{ item[1] }}=={{ item[2] }}"
   timeout: 600
 
 - name: Create the Chrome DevTools MCP install directory
