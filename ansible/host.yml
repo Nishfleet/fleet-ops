@@ -109,7 +109,11 @@
       # foo@N.service instances that replaced it (systemd.unit(5), "Drop-in files").
       - /etc/systemd/user/fleet-litellm-proxy.service.d
       # Empty or orphaned drop-in folders: gpg-agent's live copy went in
-      # fleet-ops#10138, and fleet-agent-lock.service no longer exists.
+      # fleet-ops#10138, and fleet-agent-lock.service no longer exists. The
+      # dir entry also removes its 50-shared.conf drop-in, whose rootfs/ copy
+      # fleet-ops#11862 deleted: no unit or symlink reads it, every
+      # tincan-listen-*.service.d/50-shared.conf symlink left in #10580 and
+      # #11632, and the one surviving listener sets its own InaccessiblePaths=.
       - "{{ nish_home }}/.config/systemd/user/gpg-agent.service.d"
       - /etc/systemd/system/fleet-agent-lock.service.d
       # Read only by the deleted agent-dispatch workflow.
