@@ -62,13 +62,8 @@ TOKEN_FILE = "$__file{/run/secrets/github-token/token}"
 DEFAULT_REPEAT = 86400
 ERR = ("DatasourceError", "DatasourceNoData")
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
-# A data source that was provisioned and then removed keeps its readers blind, so
-# each one names the replacement the reader must take (fleet-ops#9803).
 RETIRED_DATASOURCES = {"fleet-github-personal": "fleet-github"}
 RETIRED_OWNERS = {"nish3451": "Nishfleet"}
-# Grafana writes the built-in sources several ways: the UI names two of them, the
-# expression engine uses __expr__, and a saved expression node carries -100 (older
-# rules) or "grafana" (newer ones) as its data source uid.
 BUILTIN_DATASOURCES = {"-- Mixed --", "-- Dashboard --", "-- Grafana --", "__expr__", "-100", "grafana"}
 
 
@@ -590,8 +585,6 @@ def main(root):
     annotation_guards(rules, bad)
     alert_titles_agree(points, repo, bad)
     bad += alertmanager_auth(repo)
-    # fleet-ops#10327: one host event (20 units failing) must file one issue per
-    # alert name, not one per instance, and its body must name every instance.
     units = [{"signal": "prometheus", "severity": "warning", "alertname": "Prometheus alert firing",
               "prom_alertname": "SystemUnitFailed", "name": f"fleet-unit-{i}.service", "instance": "host"} for i in range(3)]
     keys = {group_key(deepest(policy, u), u) for u in units}

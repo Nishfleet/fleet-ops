@@ -40,6 +40,36 @@
     group: root
     mode: preserve
 
+# Rotates the two ansible-pull play logs (ANSIBLE_LOG_PATH of both play units,
+# /var/lib/fleet-ops/fleet-{host-config,update}.log), which used to grow past
+# 60 MB and be readable by every local user (fleet-ops#11863). logrotate(8).
+- name: Install logrotate's config for the play logs
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/logrotate.d/"
+    dest: /etc/logrotate.d/
+    owner: root
+    group: root
+    mode: preserve
+
+# Both play units point ANSIBLE_LOG_PATH at these logs (the journal's cap
+# rotated a run's tail away once). This creates them owner-only here, so the
+# file is 0600 before anything renders into it and cannot go back to
+# world-readable while the log grows unrotated.
+- name: Create the play logs owner-only before anything renders into them
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  loop:
+    - /var/lib/fleet-ops/fleet-host-config.log
+    - /var/lib/fleet-ops/fleet-update.log
+  # A --check run on a box without the StateDirectory yet has no log path.
+  ignore_errors: "{{ ansible_check_mode }}"
+
 # Read before the apply below, so the final check sees the state the run found, not
 # the state the repair left (fleet-ops#11120).
 - name: Read the config dirs' owner as the apply found it
@@ -60,30 +90,12 @@
   ansible.builtin.command: /usr/bin/systemd-tmpfiles --create
   changed_when: false
 
-# The rootless Docker engine for the drive eval (fleet-ops#9983) reads this
-# config instead of the host's /etc/docker/daemon.json, which sets the runsc
-# runtime. rootlesskit comes from apt: the unit runs dockerd under it.
-- name: Create the fleet-ops config directory
-  ansible.builtin.file:
-    path: /etc/fleet-ops
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-
-- name: Install the rootless Docker engine's config
-  ansible.builtin.copy:
-    src: "{{ rootfs }}/etc/fleet-ops/dockerd-eval.json"
-    dest: /etc/fleet-ops/dockerd-eval.json
-    owner: root
-    group: root
-    mode: "0644"
-
-- name: Install rootlesskit, slirp4netns and uidmap for the rootless Docker engine
+# rootless podman (the quadlet containers in tasks/user-files.yml) needs
+# newuidmap for its user namespace (uidmap(1)); the drop-in
+# 90-podman-newuidmap.conf whitelists it for the user sandbox.
+- name: Install uidmap for rootless podman
   ansible.builtin.apt:
     name:
-      - rootlesskit
-      - slirp4netns
       - uidmap
     state: present
     update_cache: true
@@ -194,6 +206,8 @@
 # The GStreamer base plugins, libhyphen0, libharfbuzz-icu0 and libwebpdemux2 are
 # not listed: LibreOffice and Pillow above depend on them, and removing a
 # library removes the packages that depend on it.
+# rootlesskit and slirp4netns were the retired eval engine dockerd-eval's
+# runtime, with only that unit calling them (fleet-ops#11853).
 - name: Remove packages nothing on the box uses
   ansible.builtin.apt:
     name:
@@ -237,10 +251,23 @@
       - fonts-jetbrains-mono
       - xfonts-cyrillic
       - xfonts-scalable
+      - rootlesskit
+      - slirp4netns
     state: absent
     purge: true
     autoremove: true
     lock_timeout: 300
+
+# The nftables include directory (/etc/nftables.d/*.nft is pulled in by
+# nftables.conf) holds tether's Cua Space fence file, rendered by
+# tasks/tether.yml.
+- name: Create the nftables include directory
+  ansible.builtin.file:
+    path: /etc/nftables.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
 
 - name: Install sysctl settings
   ansible.builtin.copy:
@@ -276,28 +303,6 @@
     owner: root
     group: root
     mode: preserve
-  notify: Reload nftables
-
-# The drive eval engine's egress limit (fleet-ops#9983): its own table, loaded
-# by nftables.service through the nftables.d include. Installed before the
-# queued handlers run, so the table and its set exist when dockerd-eval.service
-# starts and systemd adds the engine's cgroup to the set.
-- name: Create the nftables drop-in directory for the eval engine's rule
-  ansible.builtin.file:
-    path: /etc/nftables.d
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-
-- name: Install the eval engine's egress rule
-  ansible.builtin.copy:
-    src: "{{ rootfs }}/etc/nftables.d/evalnet.nft"
-    dest: /etc/nftables.d/evalnet.nft
-    owner: root
-    group: root
-    mode: "0644"
-    validate: /usr/sbin/nft -c -f %s
   notify: Reload nftables
 
 # The postgres account is a package leftover with no login use: set its shell

@@ -1,8 +1,11 @@
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import urllib.parse
+
+import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 YQ = shutil.which("yq")
@@ -43,7 +46,7 @@ def test_every_prepaid_row_is_a_listed_plan():
     assert not unlisted, f"prepaid rows not in config/paid-plans.json: {unlisted}. Changing config/paid-plans.json needs Nish (CODEOWNERS)"
 
 
-SINGLE_ROW_TIERS = {"tether", "assistant", "review-claude", "review-qwen"}
+SINGLE_ROW_TIERS = {"tether", "assistant", "review-claude", "review-qwen", "review-any"}
 
 
 def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exists():
@@ -53,10 +56,29 @@ def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exist
     for row in _model_list():
         tiers[row["model_name"]] = tiers.get(row["model_name"], 0) + 1
     thin = {t: n for t, n in tiers.items() if n < (1 if t in SINGLE_ROW_TIERS else 2)}
-    assert not thin, f"router tiers below their floor (2 rows, tether and assistant 1): {thin}. Only tether, assistant, review-claude and review-qwen (review-claude falls back to review-qwen, and review-qwen to nothing, owner 2026-11-04) may hold one row (fleet-ops#9980; assistant since OpenCode Go key 2 left on 2026-10-26, and it falls to worker-capable)"
+    assert not thin, f"router tiers below their floor (2 rows, tether and assistant 1): {thin}. Only tether, assistant, review-claude, review-qwen and review-any may hold one row (review-claude falls back to review-qwen, and review-qwen to nothing, owner 2026-11-04; assistant since OpenCode Go key 2 left on 2026-10-26, and it falls to worker-capable; review-any since the Qwen row left on the owner's 2026-11-10 audit, decision 14: it has never served a call, fleet-ops#11876)"
     groups = {row["model_name"] for row in _model_list()}
     missing = [(src, dst) for entry in json.loads(cfg_out) for src, dsts in entry.items() for dst in dsts if dst not in groups]
     assert not missing, f"fallbacks naming a group with no row: {missing}"
+
+
+def test_paid_plan_idle_alert_covers_every_paid_router_endpoint():
+    """PaidPlanIdle (rootfs/etc/prometheus/fleet_rules.yml) watches the router-facing plans by hardcoding
+    their api_base values in a regex, because Prometheus cannot read config/paid-plans.json; this test is
+    the pair's guard, like test_every_live_paid_plan_keeps_a_router_row (fleet-ops#11845).
+    """
+    alerts = [r for g in yaml.safe_load((ROOT / "rootfs/etc/prometheus/fleet_rules.yml").read_text())["groups"] for r in g["rules"] if r.get("alert") == "PaidPlanIdle"]
+    assert len(alerts) == 1, "PaidPlanIdle is missing from fleet_rules.yml"
+    found = re.findall(r'api_base=~"([^"]+)"', alerts[0]["expr"])
+    assert found, "PaidPlanIdle must select endpoints by the router's api_base label"
+    assert len(set(found)) == 1, f"PaidPlanIdle's {len(found)} api_base regexes differ; every copy in its expr must be identical"
+    # The expr is a PromQL string: "\\." there is the regex "\\.".
+    pattern = found[0].replace("\\\\", "\\")
+    uncovered = [
+        p["name"] for p in _plans()
+        if p.get("via") != "pi-provider" and not re.fullmatch(pattern, p["api_base"] + "/v1/messages")
+    ]
+    assert not uncovered, f"paid plans PaidPlanIdle does not watch: {uncovered}. Add the plan's api_base to its regex in rootfs/etc/prometheus/fleet_rules.yml; plans marked `via` are out of scope"
 
 
 REMOVED_PROVIDER_HOSTS = frozenset({"api.cline.bot", "ollama.com"})
@@ -88,8 +110,19 @@ def test_removed_provider_match_is_exact_on_hostname():
     assert back == ["https://api.cline.bot/v1", "https://ollama.com./v1", "https://ollama.com/v1"], f"removed provider match is not exact on the parsed hostname: {back}"
 
 
+def test_no_glm_row_sits_in_a_review_or_judge_group():
+    # GLM-5.3-Flash is a worker model only (owner rule, fleet-ops#11847): it must never
+    # answer a review or judge call, in any group.
+    bad = [
+        row["model_info"]["id"]
+        for row in _model_list()
+        if re.search(r"glm-5\.3-flash", row["litellm_params"]["model"], re.IGNORECASE)
+        and (row["model_name"].startswith("review-") or row["model_name"] == "judge")
+    ]
+    assert not bad, f"GLM-5.3-Flash rows in a review or judge group: {bad}"
+
+
 def test_every_thinking_budget_row_drops_caller_reasoning_effort():
-    # DashScope answers 400 when a request carries reasoning_effort next to a row's thinking_budget (fleet-ops#10109).
     rows = [r for r in _model_list() if "thinking_budget" in (r["litellm_params"].get("extra_body") or {})]
     assert rows, "no row sets thinking_budget"
     bad = [r["model_info"]["id"] for r in rows if "reasoning_effort" not in r["litellm_params"].get("additional_drop_params", [])]

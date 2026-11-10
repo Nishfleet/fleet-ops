@@ -36,14 +36,11 @@ def assert_retries_then_fails(text: str) -> None:
     assert unit["Service"].get("Type") == "oneshot"
     assert unit["Service"].get("Restart") == "on-failure"
     wait = _seconds(unit["Service"]["RestartSec"])
-    # Type=oneshot has no start timeout by default, so a run without one has no bound.
     assert "TimeoutStartSec" in unit["Service"], "cap each run with TimeoutStartSec"
     run = _seconds(unit["Service"]["TimeoutStartSec"])
     burst = int(unit["Unit"]["StartLimitBurst"])
     window = _seconds(unit["Unit"]["StartLimitIntervalSec"])
     assert burst > 1
-    # The refused start comes burst * (run + wait) after the first one; a shorter window
-    # resets the count first, so a slow failure retries forever and never reaches failed.
     assert window > burst * (run + wait), "StartLimitIntervalSec must exceed burst * (TimeoutStartSec + RestartSec)"
 
 

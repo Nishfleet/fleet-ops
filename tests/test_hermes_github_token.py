@@ -51,9 +51,6 @@ def mint(tmp_path_factory):
 
 
 def test_hermes_login_unit_writes_the_hosts_yml_gh_reads(mint):
-    # Runs rootfs/etc/systemd/system/fleet-hermes-github-token.service itself, as
-    # the host's system unit, through tests/github_app_stub.py (fleet-ops#10267). The key path and the runtime directory are the only
-    # edits, so this is the ExecStart the host runs.
     mint.mode.write_text("ok\n")
     name = "fleet-hermes-token-pytest"
     text = (ROOT / "rootfs/etc/systemd/system/fleet-hermes-github-token.service").read_text()
@@ -63,8 +60,6 @@ def test_hermes_login_unit_writes_the_hosts_yml_gh_reads(mint):
     text = re.sub(r"^Environment=MINT=.*$", f"Environment=MINT={ROOT / 'config/github-app-token/mint.mjs'}", text, flags=re.MULTILINE)
     text = text.replace("/opt/node-v22.23.3/bin/node", shutil.which("node"))
     text = re.sub(r"^RuntimeDirectory=.*$", f"RuntimeDirectory={name}", text, flags=re.MULTILINE)
-    # The host runs this as User=nish; the runner has no such user, so the copy
-    # takes the job's user instead.
     text = re.sub(r"^User=.*$", f"User={os.environ['USER']}" if IN_CI else "", text, flags=re.MULTILINE)
     unit = mint.dir / f"{name}.service"
     unit.write_text(text)
@@ -80,8 +75,6 @@ def test_hermes_login_unit_writes_the_hosts_yml_gh_reads(mint):
         assert re.fullmatch(r"github\.com:\n {4}user: nishfleet-worker\n {4}oauth_token: ghs_stub_\d+\n {4}git_protocol: https\n", body), body
         assert sh([*SUDO, "stat", "-c", "%a", str(hosts)]).stdout.strip() == "600"
         assert sh([*SUDO, "stat", "-c", "%a", str(run)]).stdout.strip() == "700"
-        # Age the token file past the 15 min skip window, or the second start
-        # would exit 0 on the fresh-token skip instead of testing the failure path.
         sh([*SUDO, "touch", "-d", f"@{int(time.time()) - 1000}", str(hosts)], check=True)
         mint.mode.write_text("fail\n")
         start = ctl("start", unit.name)

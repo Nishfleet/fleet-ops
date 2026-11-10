@@ -33,7 +33,8 @@
 Description=Apply fleet-ops host config (ansible-pull of ansible/host.yml)
 Wants=network-online.target
 After=network-online.target
-# A failed run pings the healthchecks.io fail URL, same handler as the user units.
+# A failed run reaches `failed`, which node_exporter exposes and the
+# SystemUnitFailed rule reads (rootfs/etc/prometheus/fleet_rules.yml).
 
 [Service]
 Type=oneshot

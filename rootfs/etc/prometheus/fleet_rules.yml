@@ -11,7 +11,9 @@
 # Stock sources only: node_exporter's systemd collector (node_systemd_unit_state,
 # unit-include covers .service and .timer), the blackbox exporter's
 # probe_success, HAProxy's built-in exporter, the fleet-sync textfile metric,
-# prometheus-community json_exporter (agent run counts) and Prometheus' own vector().
+# prometheus-community json_exporter (agent run counts), Prometheus' own vector()
+# and the router's own deployment exports (litellm_deployment_success_responses_total,
+# litellm_deployment_state).
 #
 # Routing lives in rootfs/etc/alertmanager/alertmanager.yml:
 #   Watchdog          -> the outside dead-man (healthchecks.io), every 5m
@@ -181,6 +183,45 @@ groups:
         annotations:
           summary: "the router has fewer than 2 healthy copies"
           description: "HAProxy has seen {{ $value }} of 2 router instances pass its health check for 15 minutes."
+
+      # PaidPlanIdle (fleet-ops#11845, the standing rules' "a paid plan with no calls
+      # for 24 hours"): a paid plan in config/paid-plans.json that the router has not
+      # answered successfully for 24 hours. The 24-hour window is the alert's own
+      # measure, so there is no extra `for:`. Endpoints are the router's own exports,
+      # label names checked live 2026-11-10: litellm_deployment_success_responses_total
+      # carries api_base, the endpoint a router row calls, but only exists from a
+      # row's first successful call since the router restarted, so a deployment
+      # litellm_deployment_state knows and the counter has never seen (a row nobody
+      # has called successfully) fires too — unless that endpoint's counter has
+      # appeared. The api_base regex is the router-facing plans; when
+      # config/paid-plans.json changes, change it here with it (tests/test_paid_plans.py
+      # holds the pair together). Plans marked `via` in config/paid-plans.json reach their provider without the router and are out of scope.
+      #
+      # The two label sets do not always agree (seen live 2026-11-10, fleet-ops#11884):
+      # the router exports a deployment's state under its configured api_base
+      # (https://api.minimax.io/anthropic), while the counter carries the runtime URL
+      # the Anthropic provider built (https://api.minimax.io/anthropic/v1/messages),
+      # so an exact `unless on (api_base)` join missed a plan that had thousands of
+      # successful calls and fired anyway. label_replace strips a trailing
+      # "/v1/messages" (the only runtime suffix the exporter adds) from the raw
+      # series first, so both label sets for one plan collapse into the same
+      # api_base in the sum by, both branches name the plan the way
+      # config/paid-plans.json does, and the join is a plan-level one.
+      # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
+      - alert: PaidPlanIdle
+        expr: |
+          (
+            sum by (api_base) (label_replace(increase(litellm_deployment_success_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}[24h]), "api_base", "$1", "api_base", "(.*)/v1/messages")) == 0
+            or
+            sum by (api_base) (label_replace(litellm_deployment_state{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}, "api_base", "$1", "api_base", "(.*)/v1/messages"))
+            unless on (api_base)
+            sum by (api_base) (label_replace(increase(litellm_deployment_success_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}[24h]), "api_base", "$1", "api_base", "(.*)/v1/messages"))
+          )
+        labels:
+          severity: warning
+        annotations:
+          summary: "paid plan {{ $labels.api_base }} has had no successful router response for 24 hours"
+          description: "The router answered no successful response for paid-plan endpoint {{ $labels.api_base }} in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
 
   - name: fleet_agent_runs
     rules:

@@ -19,6 +19,8 @@ permission group name against the live API. Which jobs have run on the new
 tokens is in the PR body. A weekly timer renews them (see "Renewal").
 `fleet_console` (fleet-console-worker) was applied by hand on 2026-10-20 and is
 now in `main.tf`, so the weekly apply no longer destroys it; `seo-fix-kit` is new and is created by the next apply.
+`0509-preview` is new and is created by the next apply; until then the 0509
+preview job still reads the read-only repo token and the upload still fails.
 `vps-grafana` is new and is created by the next apply, together with the
 `~/.config/cloudflare/deploy-ci.env` file it writes (fleet-ops#10169).
 
@@ -28,6 +30,7 @@ now in `main.tf`, so the weekly apply no longer destroys it; `seo-fix-kit` is ne
 |---|---|---|---|---|---|---|
 | `drive` | drive | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
 | `0509-deploy` | 0509 | `CLOUDFLARE_API_TOKEN` (environment `production`) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
+| `0509-preview` | 0509 | `CLOUDFLARE_API_TOKEN` (environment `preview`) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (the pull request preview job, which names the `preview` environment) | none |
 | `0509-reports` | 0509 | `CLOUDFLARE_API_TOKEN` (repo) | D1 Read, Workers Scripts Read, Account Analytics Read | none | GitHub-hosted (`e2e-scheduled.yml` backup-proof, jev-failures, soak-report; `evals.yml`) | none |
 | `0509-settings` | 0509 | `CLOUDFLARE_SETTINGS_TOKEN` (repo) | Workers R2 Storage Write | Zone Read, Email Routing Rules Write | GitHub-hosted (`cloudflare-settings.yml`) | none |
 | `0509-support-inbox` | mailbox | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
@@ -78,7 +81,10 @@ in `main.tf`.
 
 Existing org secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are
 visible to all Nishfleet repos. A repo or environment secret of the same name wins
-over the org secret, so the new tokens take over with no workflow change.
+over the org secret, so the new tokens take over with no workflow change. For a
+job that names an environment, the environment secret also wins over a repo
+secret, which is why `0509-preview` takes over the preview upload with no
+workflow change.
 `vps-grafana` closes the last gap the org fallback covered: the VPS consumer now
 has a token of its own, so the org `CLOUDFLARE_API_TOKEN` has no consumer left.
 Delete it by hand in the GitHub org settings once the first apply has run and
@@ -255,8 +261,9 @@ changes nothing on a healthy apply.
 The `precondition` on the token resource stays: with `vps_only =
 true` and an empty `vps_cidrs`, the plan fails (fail-closed) instead of minting
 an unlocked token. That failure stops the whole apply, so no other token is
-renewed either; it is loud (the unit's `OnFailure=` fires the healthchecks fail
-ping) and the tokens keep working until 45 days after their last rotation, which
+renewed either; it is loud (the unit shows in
+`systemctl --user list-units --state=failed`) and the tokens keep working until
+45 days after their last rotation, which
 leaves about two weeks to place the file after the first failed weekly run.
 
 ## Rotation
@@ -310,9 +317,9 @@ for three weeks, then replaces them, and two missed weeks still leave slack.
   the same file as a hand apply. The provider cache goes to
   `~/.cache/fleet-ops/cloudflare-tokens-tofu` (`TF_DATA_DIR`) because the root-owned checkout is read-only to nish.
   `ExecStartPre` runs `tofu init`.
-- Failure is loud: `OnFailure=fleet-unit-failed@%N.service` sends the
-  healthchecks.io fail ping (fleet-ops#9033), and the unit shows in
-  `systemctl --user list-units --state=failed`. Logs:
+- Failure is loud: the unit shows in
+  `systemctl --user list-units --state=failed` (a user unit is not scraped, so
+  no alert fires on it). Logs:
   `journalctl --user -u cloudflare-tokens-apply.service`.
 - `tofu` is installed to `~/.local/bin/tofu` by `ansible/host.yml` (root, on the
   `fleet-host-config` run after merge). Until then the unit fails on a missing
