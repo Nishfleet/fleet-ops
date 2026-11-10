@@ -1,8 +1,11 @@
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import urllib.parse
+
+import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 YQ = shutil.which("yq")
@@ -57,6 +60,24 @@ def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exist
     groups = {row["model_name"] for row in _model_list()}
     missing = [(src, dst) for entry in json.loads(cfg_out) for src, dsts in entry.items() for dst in dsts if dst not in groups]
     assert not missing, f"fallbacks naming a group with no row: {missing}"
+
+
+def test_paid_plan_idle_alert_covers_every_paid_router_endpoint():
+    """PaidPlanIdle (rootfs/etc/prometheus/fleet_rules.yml) watches the router-facing plans by hardcoding
+    their api_base values in a regex, because Prometheus cannot read config/paid-plans.json; this test is
+    the pair's guard, like test_every_live_paid_plan_keeps_a_router_row (fleet-ops#11845).
+    """
+    alerts = [r for g in yaml.safe_load((ROOT / "rootfs/etc/prometheus/fleet_rules.yml").read_text())["groups"] for r in g["rules"] if r.get("alert") == "PaidPlanIdle"]
+    assert len(alerts) == 1, "PaidPlanIdle is missing from fleet_rules.yml"
+    match = re.search(r'api_base=~"([^"]+)"', alerts[0]["expr"])
+    assert match, "PaidPlanIdle must select endpoints by the router's api_base label"
+    # The expr is a PromQL string: "\\." there is the regex "\\.".
+    pattern = match.group(1).replace("\\\\", "\\")
+    uncovered = [
+        p["name"] for p in _plans()
+        if p.get("via") != "pi-provider" and not re.fullmatch(pattern, p["api_base"] + "/v1/messages")
+    ]
+    assert not uncovered, f"paid plans PaidPlanIdle does not watch: {uncovered}. Add the plan's api_base to its regex in rootfs/etc/prometheus/fleet_rules.yml; plans marked `via` are out of scope"
 
 
 REMOVED_PROVIDER_HOSTS = frozenset({"api.cline.bot", "ollama.com"})
