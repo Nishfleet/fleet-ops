@@ -25,7 +25,7 @@ credential file does not hold them back.
 
 | Agent | How it gets the tool |
 |---|---|
-| Claude Code | no plugin: the `chrome-devtools` mod left the nish-mods marketplace, and the drop-in that enabled it is retired. Playwright is off in every session (server chats included) by `85-no-playwright.json`. Worker lanes run `--strict-mcp-config`, which hides plugins, so `agent.yml` passes `--mcp-config` with `config/worker-mcp.json` (bare `chrome-devtools-mcp` from `~/.local/bin`). |
+| Claude Code | no plugin: the `chrome-devtools` mod left the nish-mods marketplace, and the drop-in that enabled it is retired. Playwright is off in every session (server chats included) by `85-no-playwright.json`. |
 | Pi | the play merges the entry into `~/.config/mcp/mcp.json`, the shared MCP file pi-mcp-adapter reads (lazy lifecycle; other servers in it are kept). `rootfs/etc/tmpfiles.d/chrome-devtools-profiles.conf` ages out profile dirs a killed server leaves in `/tmp`. |
 | Hermes | one `chrome-devtools` line under `mcp_servers:` in `~/.hermes/config.yaml`, added when absent and `mcp_servers:` is a bare key (`mcp_servers: {}` or no key is left alone). Its built-in `browser` toolset needs the `agent-browser` CLI and its own Chromium, which this box does not have. |
 | Codex | not installed; the play drops the dead `camofox-browser` table from `~/.codex/config.toml`. |
@@ -46,10 +46,8 @@ credential file does not hold them back.
   line).
 - Delete it all: remove the tasks from "Create the Chrome
   DevTools MCP install directory" through "Add the chrome-devtools entry under
-  Hermes' mcp_servers" in `ansible/tasks/mcp-and-agent-clis.yml`,
-  `config/chrome-devtools-mcp/` and `tests/test_chrome_devtools_mcp.py` with its
-  `ci.yml` step.
-- The check is the `ci` step "Chrome DevTools MCP is pinned once and wired into
-  every agent": the args match in every fragment, and the Codex and Hermes
-  tasks run twice against temp copies (the second run changes nothing).
+  Hermes' mcp_servers" in `ansible/tasks/mcp-and-agent-clis.yml` and
+  `config/chrome-devtools-mcp/`.
+- The check is CI's host-play `ansible-playbook --syntax-check` and
+  `ansible-lint`; no job asserts the MCP wiring since the 2026-11-01 reset.
 

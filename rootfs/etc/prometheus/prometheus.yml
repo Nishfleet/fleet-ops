@@ -164,3 +164,31 @@ scrape_configs:
         target_label: instance
       - target_label: __address__
         replacement: 127.0.0.1:9115
+
+  # fleet-ops#11799: agent run outcomes for AgentRunFailureShare (fleet_rules.yml). The
+  # prometheus-community json_exporter on :7979 reads GitHub's total_count of agent.yml runs
+  # per conclusion, one target each (multi-target exporter pattern:
+  # https://prometheus.io/docs/guides/multi-target-exporter/). No token: the repo is public,
+  # and 4 targets every 15 minutes are 16 of the 60 unauthenticated calls an hour
+  # (https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).
+  - job_name: agent-runs
+    scrape_interval: 15m
+    metrics_path: /probe
+    params:
+      module: [github_runs]
+    static_configs:
+      - targets: ['https://api.github.com/repos/Nishfleet/fleet-ops/actions/workflows/agent.yml/runs?status=success&per_page=1']
+        labels: {conclusion: success}
+      - targets: ['https://api.github.com/repos/Nishfleet/fleet-ops/actions/workflows/agent.yml/runs?status=failure&per_page=1']
+        labels: {conclusion: failure}
+      - targets: ['https://api.github.com/repos/Nishfleet/fleet-ops/actions/workflows/agent.yml/runs?status=timed_out&per_page=1']
+        labels: {conclusion: timed_out}
+      - targets: ['https://api.github.com/repos/Nishfleet/fleet-ops/actions/workflows/agent.yml/runs?status=startup_failure&per_page=1']
+        labels: {conclusion: startup_failure}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:7979

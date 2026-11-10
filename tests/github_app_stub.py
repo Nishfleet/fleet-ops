@@ -42,7 +42,7 @@ def b64d(s):
 
 
 def jwt_problem(auth):
-    if not auth or not auth.startswith("Bearer "):
+    if not auth or auth[:7].lower() != "bearer ":
         return "no bearer"
     try:
         h, p, s = auth[7:].split(".")

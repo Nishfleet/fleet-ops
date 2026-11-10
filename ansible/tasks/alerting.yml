@@ -160,7 +160,41 @@
     - Reload prometheus
     - Reload alertmanager
     - Reload blackbox exporter
+    - Restart json exporter
   when: alertmanager_auth_ready | default(false) | bool
+
+# prometheus-community/json_exporter for the agent-runs scrape job (fleet-ops#11799). Ubuntu
+# 24.04 has no package, so the pinned release binary, its sha256 from the release's
+# sha256sums.txt (https://github.com/prometheus-community/json_exporter/releases/tag/v0.8.0),
+# unpacked into the root-owned versioned directory the unit names. A bump changes the version
+# here, in the unit's ExecStart and in ci.yml's stub list, and the checksum, together.
+- name: Download the pinned json_exporter release
+  ansible.builtin.get_url:
+    url: https://github.com/prometheus-community/json_exporter/releases/download/v0.8.0/json_exporter-0.8.0.linux-amd64.tar.gz
+    dest: /var/cache/json_exporter-0.8.0.linux-amd64.tar.gz
+    checksum: sha256:bd25fe58f62cec131b2ecbe859358990bb07f0266439ddcdef501fdd182a4fe1
+    owner: root
+    group: root
+    mode: "0644"
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Unpack the pinned json_exporter
+  ansible.builtin.unarchive:
+    src: /var/cache/json_exporter-0.8.0.linux-amd64.tar.gz
+    dest: /opt/
+    remote_src: true
+    owner: root
+    group: root
+    creates: /opt/json_exporter-0.8.0.linux-amd64/json_exporter
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Enable and start the json exporter
+  ansible.builtin.systemd_service:
+    name: prometheus-json-exporter.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  ignore_errors: "{{ ansible_check_mode }}"
 
 # The Telegram chat id has no file option in Alertmanager, so it is kept out
 # of the repo: the repo copy holds chat_id 1 and the installed copy gets the

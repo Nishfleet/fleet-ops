@@ -4,7 +4,8 @@
 repository can hold it yet — every candidate is archived or held to net-zero
 workflow code lines — so this change lands the record and nothing that runs.**
 This answers what the issue asked: whether a SQL dump is the mechanism at all, and
-which repo owns it.
+which repo owns it. History: the ratchet facts below were read on 2026-10-29; the
+2026-11-01 reset deleted fleet-ops' `ratchet.yml`, so fleet-ops now requires only `ci`.
 
 ## The problem, as three live runs
 

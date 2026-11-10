@@ -3,39 +3,13 @@
 `fleet-update.timer` starts `fleet-update.service` every day at 03:30 IST.
 It runs `ansible/update.yml` as root through `ansible-pull`:
 
-1. Pause: set the repo variable `FLEET_DISPATCH_PAUSED=true` in each queue
-   repo, stop the work timers, wait until no runner has a job (up to 150 min),
-   stop the runner services. `agent-dispatch` stays enabled: only its
-   worker-starting jobs skip, and `hold-risky` keeps holding risky PRs. (It was
-   `gh workflow disable` until 2026-10-05; a disabled workflow drops every
-   trigger, the guard included.)
-2. Prune: apt cache, Docker containers stopped for a day, dangling Docker and
-   Podman images, old build cache, the npm and uv caches.
-3. Update: `apt dist-upgrade` (which carries syncthing, from Syncthing's own
-   apt repository), `autoremove`, `needrestart -r a`, then each
-   user-level tool through its own updater (npm globals, pi, claude and its
-   plugins, uv, bun, rclone). Stale npm
-   staging dirs (`.*-stage-*` under the npm global root) are deleted first,
-   because one left by an interrupted self-update makes `npm update --global`
-   exit non-zero.
-   Cua Spaces has no apt repository, so when a newer stable release exists and
-   no desk run is turning, the run downloads its `.deb`, checks the sha256
-   against the release's `checksums.txt`, installs it, restarts the Cua daemon,
-   deletes and creates the `desk` Space again (the agent's files stay in the
-   Cua Volume on the host), and smoke-tests one throwaway Space. Any failure
-   fails the run.
-4. Resume, even when a step failed: start the runners, set
-   `FLEET_DISPATCH_PAUSED=false` where this run set it, restart the timers,
-   sweep each queue. The repos it paused are listed in
-   `/var/lib/fleet-ops/dispatch-paused-by-update` from before the first set
-   until every flag is clear again, so a run killed before this step (timeout,
-   SIGKILL) is undone by the next run, which clears those flags first. A flag
-   set by hand is never in that file and stays set.
-5. Verify: the netcup runners online, each queue's sweep run accepted by
-   GitHub, pi answering a real call with its extensions loaded and every
-   extension in `~/.pi/agent/settings.json` pinned (full SHA for `git:`, exact
-   version for `npm:`), no failed unit, router ready, Remote Control up. Any
-   problem fails the unit, which pages.
+1. `npm update --global`, then `uv tool upgrade --all`, each capped at 900 s.
+2. Ubuntu packages update through `unattended-upgrades`, and Claude Code
+   through its own auto-updater, so this run does not touch them.
+
+A failed run retries after 30 min, at most 3 starts in 4 h, and then stays
+`failed`, which `SystemUnitFailed` reads. A run that hangs fails at 45 min
+(`TimeoutStartSec=`).
 
 It never reboots. When a package needs a reboot, it opens one
 `needs-nish-decision` issue. The daily security updates (`unattended-upgrades`)

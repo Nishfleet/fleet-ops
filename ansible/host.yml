@@ -23,13 +23,6 @@
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
     repo_root: "{{ (playbook_dir ~ '/..') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
-    # Every runner unit that ran as nish is retired: the agent lane runs on
-    # fleet_runner_ids as fleet-runner (fleet-ops#10935). 23 was the nish-vault runner's
-    # directory; `retired` removes it after retired_units stops that runner, so it is
-    # left out here. A retired registration is not removed at GitHub, because no
-    # credential on this box may do that; GitHub drops a self-hosted runner that has
-    # not connected for 14 days (docs: "Removing self-hosted runners").
-    agent_runner_retired_ids: "{{ range(1, 37) | reject('equalto', 23) | list }}"
     # The agent pool: netcup-agent-1 to 15 (Nish, fleet-ops#10935, 2026-11-01: 15,
     # raised only after measuring), run as fleet-runner by tasks/runners.yml.
     fleet_runner_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
@@ -86,6 +79,11 @@
     tether_space_name: tether
     tether_space_ref: "local:{{ tether_space_name }}"
     cua_cli: /opt/Cua Spaces/resources/native/cua
+    # Cua Spaces, which tether's Space runs on, has no apt repository. This line
+    # is the one place its version is written: tasks/pinned-tools.yml installs
+    # this release's .deb from trycua/cua, checked against the release's own
+    # checksums.txt. Renovate opens the PR that bumps it (.github/renovate.json).
+    cua_spaces_version: 0.16.0
     docker_cli: /usr/bin/docker
     nft_cli: /usr/sbin/nft
     nsenter_cli: /usr/bin/nsenter
@@ -95,143 +93,31 @@
     tether_space_nft: /etc/nftables.d/tether-space.nft
     tether_space_nft_src: "{{ playbook_dir }}/templates/tether-space.nft.j2"
     # Retired units and paths, removed by tasks/retired-and-drift.yml. Every
-    # path the old list named was absent from the box on 2026-11-01.
-    retired_units:
-      - fleet-runner-sandbox-apply.timer
-      - fleet-runner-sandbox-apply.service
-      - tincan-listen-issue-desk.service
-      # The nish-vault runner; its workflows run on GitHub-hosted runners
-      # (Nishfleet/nish-vault, fleet-ops#10935).
-      - actions.runner.nish3451-nish-vault.netcup-vault-1.service
-      # Hand-installed restic extras (JOB restic, fleet-ops#10935): backup's
-      # forget and verify's check cover maintenance, the monthly drill covers
-      # the restore test, and the backup's OnSuccess= starts the locked copy.
-      - restic-r2-maintenance.timer
-      - restic-r2-maintenance.service
-      - restic-r2-restore-test.timer
-      - restic-r2-restore-test.service
-      - restic-r2-size-guard.service
-      - restic-r2-locked-copy.timer
-      # The deploy mailbox: deploy-box starts fleet-host-config.service itself.
-      - fleet-deploy.path
-      - fleet-deploy.service
+    # entry the old lists named was absent from the box on 2026-11-05 (the deploy
+    # log showed `ok`, nothing to delete, for each), so the lists restarted empty.
+    retired_units: []
     retired_user_units:
-      - fleet-sync.service
-      - fleet-litellm-proxy-config.path
-      # The single router on :4000; two instances behind HAProxy replace it.
-      - fleet-litellm-proxy.service
-      - fleet-grafana-provisioning.path
-      # The VNC desktop; the box has no graphical desktop (fleet-ops#10935).
-      - tigervnc.service
-      # The host D1 restore drill; D1 Time Travel is the restore
-      # (https://developers.cloudflare.com/d1/reference/time-travel/).
-      - fleet-d1-restore-drill.timer
-      - fleet-d1-restore-drill.service
+      # Every image is digest-pinned and moves only by Renovate PR, so podman's
+      # auto-update timer has nothing to pull (podman-auto-update(1)).
+      - podman-auto-update.timer
     retired:
-      - /etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service
-      - /etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service.d
-      - /etc/systemd/system/multi-user.target.wants/actions.runner.nish3451-nish-vault.netcup-vault-1.service
-      - "{{ agent_runner_root }}/23"
-      # The nish runner jails, their re-apply timer and restart grant;
-      # fleet-runner@.service replaces them (fleet-ops#10935).
-      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d
-      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-9.service.d
-      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-10.service.d
-      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-11.service.d
-      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-12.service.d
-      - /etc/systemd/system/fleet-runner-sandbox-apply.service
-      - /etc/systemd/system/fleet-runner-sandbox-apply.timer
-      - /etc/systemd/system/timers.target.wants/fleet-runner-sandbox-apply.timer
-      - /etc/polkit-1/rules.d/50-fleet-runner-restart.rules
-      # The single review runner's plain unit; fleet-reviewer-runner@1 replaces it.
-      - /etc/systemd/system/fleet-reviewer-runner.service
-      # Hermes runs on the unit its own installer writes (`hermes gateway install
-      # --system`); our drop-ins on it and on hermes-serve went (fleet-ops#10935 D9).
-      - /etc/systemd/system/hermes-gateway.service.d/60-clean-sigterm.conf
-      - /etc/systemd/system/hermes-gateway.service.d/70-oom-protect.conf
-      - /etc/systemd/system/hermes-gateway.service.d/80-hardening.conf
-      - /etc/systemd/system/hermes-serve.service.d/80-hardening.conf
-      # Runner 1's pilot drop-in; fleet-runner@1.service runs it now (fleet-ops#10935).
-      - /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-1.service.d
-      # nish's deploy runner unit, its drop-ins (fleet-ci-2 and -3 were never live again)
-      # and its runner directories; fleet-ci-runner.service runs the copy as fleet-ci
-      # (tasks/runners.yml). The plaintext git credential block went with it: it only
-      # covered a runner on nish's uid.
-      - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-1.service
-      - /etc/systemd/system/multi-user.target.wants/actions.runner.Nishfleet.netcup-fleet-ci-1.service
-      - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-.service.d
-      - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-1.service.d
-      - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-2.service.d
-      - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-3.service.d
-      - "{{ agent_share }}/fleet-ci-runner"
-      - /etc/tmpfiles.d/no-plaintext-git-credentials.conf
-      - "{{ nish_home }}/.git-credentials"
-      # The Healthchecks fail ping; Prometheus SystemUnitFailed replaces it (E7).
-      - /etc/systemd/system/fleet-unit-failed@.service
-      - "{{ nish_home }}/.config/systemd/user/fleet-unit-failed@.service"
-      - /etc/systemd/system/restic-r2-backup.service.d/30-on-failure.conf
-      - /etc/systemd/system/restic-r2-locked-copy.service.d/30-on-failure.conf
-      - /etc/systemd/system/restic-r2-maintenance.service.d/30-on-failure.conf
-      - /etc/systemd/system/restic-r2-restore-test.service.d/30-on-failure.conf
-      - /etc/systemd/system/restic-r2-size-guard.service.d/30-on-failure.conf
-      - /etc/systemd/system/restic-r2-verify.service.d/30-on-failure.conf
-      - /etc/systemd/system/restic-r2-maintenance.service
-      - /etc/systemd/system/restic-r2-maintenance.timer
-      - /etc/systemd/system/restic-r2-maintenance.service.d
-      - /etc/systemd/system/timers.target.wants/restic-r2-maintenance.timer
-      - /etc/systemd/system/restic-r2-restore-test.service
-      - /etc/systemd/system/restic-r2-restore-test.timer
-      - /etc/systemd/system/restic-r2-restore-test.service.d
-      - /etc/systemd/system/timers.target.wants/restic-r2-restore-test.timer
-      - /etc/systemd/system/restic-r2-size-guard.service
-      - /etc/systemd/system/restic-r2-locked-copy.timer
-      - /etc/systemd/system/restic-r2-backup.service.d
-      - /etc/systemd/system/restic-r2-locked-copy.service.d
-      - /etc/restic/retention.env
-      - /etc/restic/netcup-r2-excludes
-      # The `ufw reload` drop-in: nftables.conf rebuilds only its own tables and
-      # never runs `flush ruleset`, so ufw's tables survive a reload.
-      - /etc/systemd/system/nftables.service.d
-      # Folded into rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades.
-      - /etc/apt/apt.conf.d/52nish-unattended-anthropic
-      - /etc/apt/apt.conf.d/52-auto-reboot
-      # Codex is retired here; its rules file left the repo (fleet-ops#10935 C5).
-      - "{{ nish_home }}/.codex/rules/fleet-floor.rules"
-      # The dead Max login's agents link and the tmpfiles line that made it (fleet-ops#11674).
-      - "{{ nish_home }}/.config/user-tmpfiles.d/claude-max-agents.conf"
-      - "{{ nish_home }}/.claude-max"
-      # The single router on :4000; fleet-litellm-proxy@4001 and @4002 replace it.
-      - "{{ nish_home }}/.config/containers/systemd/fleet-litellm-proxy.container"
-      # The VNC desktop unit and its enable link (fleet-ops#10935).
-      - "{{ nish_home }}/.config/systemd/user/tigervnc.service"
-      - "{{ nish_home }}/.config/systemd/user/default.target.wants/tigervnc.service"
-      # The host D1 restore drill and the App token unit only it used; D1 Time
-      # Travel is the restore.
-      - "{{ nish_home }}/.config/systemd/user/fleet-d1-restore-drill.service"
-      - "{{ nish_home }}/.config/systemd/user/fleet-d1-restore-drill.timer"
-      - "{{ nish_home }}/.config/systemd/user/timers.target.wants/fleet-d1-restore-drill.timer"
-      - "{{ nish_home }}/.config/systemd/user/fleet-worker-github-token@.service"
-      # Replaced by "Install the router config" and the Grafana reload in
-      # tasks/services.yml (fleet-ops#10935 E2).
-      - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.path"
-      - "{{ nish_home }}/.config/systemd/user/fleet-litellm-proxy-config.service"
-      - "{{ nish_home }}/.config/systemd/user/fleet-grafana-provisioning.path"
-      - "{{ nish_home }}/.config/systemd/user/fleet-grafana-provisioning.service"
-      - "{{ nish_home }}/.config/fleet-worker/bootstrap.html"
-      - "{{ nish_home }}/.cursor/hooks/guard_cursor_packet.py"
-      - "{{ nish_home }}/.cursor/rules/shared-memory.mdc"
-      # Disabled listener whose extension and prompt left the repo; box-only file.
-      - /etc/systemd/system/tincan-listen-issue-desk.service
-      # Read only by the hand-install drift check, deleted 2026-11-01.
-      - /etc/fleet-ops/box-only
-      # Unused Pi prompt; its source and install line left the repo (fleet-ops#10935).
-      - "{{ nish_home }}/.pi/agent/prompts/worker.md"
-      # The deploy mailbox; deploy-box starts fleet-host-config.service itself.
-      - /etc/systemd/system/fleet-deploy.path
-      - /etc/systemd/system/fleet-deploy.service
-      - /etc/systemd/system/paths.target.wants/fleet-deploy.path
-      - /etc/tmpfiles.d/fleet-deploy.conf
-      - /var/lib/fleet-deploy
+      # The single router's drop-in; systemd never reads foo.service.d/ for the
+      # foo@N.service instances that replaced it (systemd.unit(5), "Drop-in files").
+      - /etc/systemd/user/fleet-litellm-proxy.service.d
+      # Empty or orphaned drop-in folders: gpg-agent's live copy went in
+      # fleet-ops#10138, and fleet-agent-lock.service no longer exists.
+      - "{{ nish_home }}/.config/systemd/user/gpg-agent.service.d"
+      - /etc/systemd/system/fleet-agent-lock.service.d
+      # Read only by the deleted agent-dispatch workflow.
+      - "{{ nish_home }}/.config/fleet-ops/intake-repos.json"
+      # The full copy of Syncthing's packaged unit; the drop-in
+      # rootfs/etc/systemd/user/syncthing.service.d/override.conf replaces it.
+      - "{{ nish_home }}/.config/systemd/user/syncthing.service"
+      # aiostreams' hand-made Compose files; containers/quadlet/aiostreams.container
+      # runs it now ("Stop the Compose copy of aiostreams" stops it first).
+      - /srv/aiostreams/compose.yaml
+      - /srv/aiostreams/compose.yaml.bak-2026-10-22
+      - /srv/aiostreams/.env.bak-1789995543
       # The 0509 runner's lock tree; nothing uses /run/lock/0509 any more (fleet-ops#11714).
       - /etc/tmpfiles.d/github-runner-0509.conf
     nish_home: "{{ '~nish' | expanduser }}"
@@ -269,6 +155,7 @@
       - fc1c6a815b80
       - 7eda90c8dd97
     chrome_devtools_mcp_dir: "{{ nish_home }}/.local/share/chrome-devtools-mcp"
+    github_app_token_dir: "{{ nish_home }}/.local/share/github-app-token"
     chrome_devtools_mcp_bin: "{{ nish_home }}/.local/bin/chrome-devtools-mcp"
     chrome_devtools_mcp_args:
       - --headless
@@ -315,8 +202,6 @@
     - ansible.builtin.import_tasks: tasks/tincan-relay-policy.yml
 
     - ansible.builtin.import_tasks: tasks/runners.yml
-
-    - ansible.builtin.import_tasks: tasks/pilot-and-retired-runners.yml
 
     - ansible.builtin.import_tasks: tasks/system.yml
 
@@ -466,6 +351,12 @@
         name: htpdate.service
         state: restarted
 
+    # A quadlet's generated unit cannot be enabled; its [Install] WantedBy= starts it at
+    # boot, and this restart starts it on the first deploy and after each change.
+    # A failed restart fails the play.
+    - name: Restart aiostreams  # noqa: command-instead-of-module no-changed-when
+      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart aiostreams.service
+
     # A running Grafana keeps the secret files it was started with, so it is restarted
     # only after a change. A failed restart fails the play.
     - name: Restart fleet-grafana  # noqa: command-instead-of-module no-changed-when
@@ -497,4 +388,10 @@
     - name: Reload blackbox exporter
       ansible.builtin.systemd_service:
         name: prometheus-blackbox-exporter.service
+        state: restarted
+
+    # json_exporter reads its config only at start.
+    - name: Restart json exporter
+      ansible.builtin.systemd_service:
+        name: prometheus-json-exporter.service
         state: restarted

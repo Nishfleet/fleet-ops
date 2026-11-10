@@ -78,7 +78,8 @@ there, `config/user-tmpfiles.d/claude-max-agents.conf` links
 `~/.claude-max/agents` to `~/.claude/agents` (step 5), and step 5b fails the
 sync if that path is anything but the link. Edit an agent here, by PR; a hand
 edit of the live file is overwritten on the next sync.
-`tests/test_claude_max_agents.py` runs those unit lines against a temp home.
+`tests/test_claude_max_agents.py` ran those unit lines against a temp home before
+the 2026-11-01 reset deleted it.
 
 Switch off: delete the three step-2d install lines and step 5b, the tmpfiles
 file and its live copy in `~/.config/user-tmpfiles.d/`, then
@@ -109,8 +110,7 @@ disabled (--setting-sources) and no enabled source provides
 cleanupPeriodDays." With the pin installed the key sits in a source those
 lanes do not disable, so they sweep at 30 instead of skipping — every worker,
 review and tincan lane on this box starts with `--setting-sources
-project,local` (agent.yml's review job, agent-dispatch.yml's claude lanes,
-the tincan listener commands).
+project,local` (agent.yml's review job and the tincan listener commands).
 
 The sweep is Claude Code's, not a fleet unit: it runs at most once per 24 hours
 (marker `~/.claude/.last-cleanup`), is triggered by the first prompt submit in

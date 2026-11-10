@@ -11,7 +11,7 @@ read from memory. Vault files cited below live under
 `nish-vault/_system/shared-memory/`.
 
 **No clock is added on this box.** No task moves to a VPS timer, so nothing is
-built here (the GLUE-ZERO rule in `docs/ARCHITECTURE.md`). All 11 leave the
+built here (the stock-features rule in `AGENTS.md`). All 11 leave the
 Mac, and all 11 are retired. Ten were retired outright, one of those ten — the
 weekly gardener — earlier than the rest. The last one, the weekly `seofixkit`
 database export, is retired too, by the product repo itself: that repo deleted
@@ -98,15 +98,12 @@ this repo: `config/hermes/<job name>.md`. The
 live copies under `~/.hermes/cron/jobs.json` on this box are applied from these
 files by `ansible/host.yml`, never edited by hand:
 
-1. Edit the file under `config/hermes/` and land it through a PR (the shape
-   gate `tests/test_digest_reply_shape.py` and the check gate
-   `tests/test_digest_checks.py` run in CI; the first fails a prompt that drops
-   the reply contract, the second fails a prompt that reads the wrong feed or
-   uses a command the Hermes shell guard blocks). The shape gate flags a reply
-   with sections, internal names, questions or asks, config advice, commands or
-   paths, a first-person voice, a line whose only point is that a check passed
-   or a service is live, up or running, a line that only says nothing happened,
-   and any line written before the reply itself (fleet-ops#9921).
+1. Edit the file under `config/hermes/` and land it through a PR; no CI gate
+   checks the prompt since the 2026-11-01 reset. The reply contract still holds:
+   no sections, internal names, questions or asks, config advice, commands or
+   paths, first-person voice, a line whose only point is that a check passed or
+   a service is live, up or running, a line that only says nothing happened, or
+   any line written before the reply itself (fleet-ops#9921).
 2. The deploy applies it: `fleet-host-config.service` (started on every push to
    main) runs `ansible/host.yml`, whose task "Apply config/hermes/digest-*.md to
    the live digest jobs" runs the stock `hermes cron edit <job id> --prompt`
@@ -124,10 +121,9 @@ To check the live copy still matches the canonical file, diff them:
 `diff <(jq -r '.jobs[] | select(.name=="digest-<which>") | .prompt' ~/.hermes/cron/jobs.json) config/hermes/digest-<which>.md` — no output means they match.
 
 To switch a digest off: `hermes cron pause <job id>` stops it without deleting
-anything, and `hermes cron resume <job id>` brings it back. To restore the
-previous wording, `~/.hermes/cron/jobs.json.bak-9706` holds the pre-#9706
-prompts (copy the old `prompt` value back with the same `hermes cron edit`
-command).
+anything, and `hermes cron resume <job id>` brings it back. To restore earlier
+wording, revert `config/hermes/digest-<which>.md` in a PR: the deploy applies
+that file on every run, so git history is the record of past prompts.
 
 ## Checked, not assumed
 

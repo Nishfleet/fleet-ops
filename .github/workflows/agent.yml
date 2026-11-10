@@ -11,7 +11,8 @@ run-name: "agent #${{ github.event.issue.number || inputs.issue }} engine=${{ in
 # isolate it"). Every step that needs the App token runs on a GitHub-hosted runner: a fresh
 # VM per job that the box, and so the worker, cannot reach. The App key is a secret of
 # environment `agent`, which only main may deploy to; called from a product repo, the
-# caller's own `agent` environment answers. The worker job on the box gets the repo and
+# caller's own `agent` environment answers,
+# and the caller passes APP_PRIVATE_KEY by name. The worker job on the box gets the repo and
 # hands back its commits as git bundles through artifacts, so its runner has no key file,
 # no token in any process it can read, and no git credential. Same split as review.yml.
 # https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
@@ -31,6 +32,11 @@ on:
       issue: {description: issue number in the calling repo, required: true, type: string}
       pr: {description: the agent PR whose review to answer, type: string, default: ''}
       engine: {description: pi or claude, type: string, default: pi}
+    # A called workflow gets only the secrets its caller passes, even an environment secret;
+    # required makes a caller that forgets it fail loudly instead of reading an empty key.
+    # https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#using-inputs-and-secrets-in-a-reusable-workflow
+    secrets:
+      APP_PRIVATE_KEY: {required: true}
   workflow_dispatch:
     inputs:
       issue: {description: issue number, required: true, type: string}
@@ -85,7 +91,7 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           permission-contents: read
           permission-issues: write
-          permission-pull-requests: read
+          permission-pull-requests: write
       # Strangers' text never reaches the worker (fleet-ops#9978). As Copilot cloud agent and
       # claude-code-action do, a run needs write access (maintain reads as write, triage as read):
       # the actor who started it AND the issue's author, whose title and body become the packet.
@@ -276,11 +282,17 @@ jobs:
           if [ -n "$PR" ]; then gh pr comment "$PR" -R "$REPO" --body "agent: pushed the answer; CI and the re-review run next"; exit 0; fi
           title=$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)
           pr=$(gh pr create -R "$REPO" --head "agent/issue-$ISSUE" --title "$title" --body "Closes #$ISSUE"$'\n\n'"Built by the agent lane: $run"$'\n\n'"$proof")
-          gh pr merge "$pr" -R "$REPO" --auto || true
           gh issue comment "$ISSUE" -R "$REPO" --body "agent: PR $pr"
+          # https://cli.github.com/manual/gh_pr_merge: with a merge queue --auto queues the PR.
+          # A failure fails the job, so park labels the issue agent-blocked.
+          gh pr merge "$pr" -R "$REPO" --auto
   park:
     needs: [claim, work, push]
-    if: failure()
+    # A job past timeout-minutes ends `cancelled`, and failure() is false for it, so the
+    # needs results are read too. !cancelled() keeps a run cancelled by hand from parking.
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#needs-context
+    if: ${{ !cancelled() && (failure() || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     environment: agent
     timeout-minutes: 5
@@ -296,5 +308,5 @@ jobs:
       - name: Park on failure
         env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
         run: |
-          gh issue edit "$ISSUE" -R "$REPO" --add-label agent-blocked --remove-label agent-in-progress || true
-          gh issue comment "$ISSUE" -R "$REPO" --body "agent: run failed, see $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID; add agent-ready to retry" || true
+          gh issue edit "$ISSUE" -R "$REPO" --add-label agent-blocked --remove-label agent-in-progress
+          gh issue comment "$ISSUE" -R "$REPO" --body "agent: run failed, see $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID; add agent-ready to retry"

@@ -1,13 +1,13 @@
-# Fleet plumbing needs the owner's approval (Nish, 2026-11-01: "make sure it stays this
-# way, the other agents don't bloat it up ever again"). GitHub's code-owner review is the
-# gate: a PR that touches these paths cannot merge without Nish. The reviewer App covers
-# everything else.
-/.github/           @nish3451
-/ansible/           @nish3451
-/systemd/           @nish3451
-/rootfs/            @nish3451
-/containers/        @nish3451
-/config/            @nish3451
-/infra/             @nish3451
-/AGENTS.md          @nish3451
-/docs/review-bar.md @nish3451
+# Fleet plumbing needs a code-owner approval (Nish, 2026-11-01: "make sure it stays this
+# way, the other agents don't bloat it up ever again"). Nish, 2026-11-07 ("Yes, add it"):
+# the approver bot co-owns these paths too, so the server can approve after the one review;
+# review.yml still holds owner-reserved changes for Nish.
+/.github/           @nish3451 @nishfleet-approver
+/ansible/           @nish3451 @nishfleet-approver
+/systemd/           @nish3451 @nishfleet-approver
+/rootfs/            @nish3451 @nishfleet-approver
+/containers/        @nish3451 @nishfleet-approver
+/config/            @nish3451 @nishfleet-approver
+/infra/             @nish3451 @nishfleet-approver
+/AGENTS.md          @nish3451 @nishfleet-approver
+/docs/review-bar.md @nish3451 @nishfleet-approver
