@@ -3,21 +3,18 @@
 # because `semgrep --test .semgrep` on a dot-directory finds no tests (semgrep's
 # test discovery skips config files whose parent starts with "."), and this is
 # the same form this repo's pre-delete CI used.
-# Every code line of a script in the no-glue paths is a finding, so each quoted
-# line carries its annotation. The quoted lines are the head of
-# scripts/rewrite-0509-author.sh (fleet-ops#5385), a home-made history-rewrite
-# wrapper deleted in commit 6fee069b (fleet-ops#7907, "cut(no-glue 3): delete
-# dead scripts, hooks, shims and their orphaned tests", 2026-09-19): the
-# restored check must flag it.
+# Every code line of a script in the no-glue paths is a finding, so each line
+# below carries its annotation. The lines are neutral dummies shaped like the
+# head of a home-made shell wrapper: the restored check must flag them.
 #!/usr/bin/env bash
 # ruleid: no-script-files
 set -Eeuo pipefail
 # ruleid: no-script-files
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 # ruleid: no-script-files
-PATH="$HOME/.local/bin:$PATH"
+PATH="/opt/example/bin:$PATH"
 # ruleid: no-script-files
-REPO=Nishfleet/0509 ISSUE=5385 RULESET=21391031
+NAME=example COUNT=1 LIMIT=10
 # ruleid: no-script-files,no-inline-program
 run: python3 -c 'import json,sys; sys.exit(1)'
 # ruleid: no-script-files,no-inline-program
