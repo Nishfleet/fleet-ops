@@ -3,7 +3,7 @@
 Runs the review steps' real shell with a fake `gh` and `pi` over the records GitHub keeps (the
 branch's push log and the agent.yml run names), and checks the router rows, the one review
 fallback and the schema guards that keep a review away from a builder's row. A pi build reaches
-Claude then Qwen, any other build reaches Qwen, GLM or DeepSeek, and Grok answers only when the
+Claude then Qwen, any other build reaches Qwen or DeepSeek, and Grok answers only when the
 router step failed (owner 2026-11-04: "need the others as backup", never MiniMax).
 https://docs.litellm.ai/docs/proxy/reliability#fallbacks
 https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepscontinue-on-error
@@ -135,7 +135,7 @@ def test_the_review_groups_hold_their_families():
     groups = {g: [r["litellm_params"]["model"] for r in ROUTER["model_list"] if r["model_name"] == g]
               for g in ("review-claude", "review-qwen", "review-any")}
     assert groups == {"review-claude": ["anthropic/claude-sonnet-5-5"], "review-qwen": ["openai/qwen3.8-max"],
-                      "review-any": ["openai/qwen3.8-max", "openai/glm-5.3-flash", "openai/deepseek-v4.1-flash"]}
+                      "review-any": ["openai/qwen3.8-max", "openai/deepseek-v4.1-flash"]}
 
 
 def reachable(group):
