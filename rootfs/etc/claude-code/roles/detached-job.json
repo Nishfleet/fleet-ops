@@ -5,8 +5,6 @@
       "Bash",
       "Edit(~/workspaces/**)",
       "Edit(//tmp/**)",
-      "Write(~/workspaces/**)",
-      "Write(//tmp/**)",
       "Glob",
       "Grep",
       "Read",

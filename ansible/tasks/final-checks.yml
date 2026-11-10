@@ -109,6 +109,7 @@
       become_user: nish
       check_mode: false
       no_log: true
+      diff: false
       ansible.builtin.copy:
         dest: "{{ grafana_ro_probe_pgpass.path }}"
         mode: "0600"

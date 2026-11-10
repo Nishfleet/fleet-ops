@@ -118,6 +118,8 @@
       - /srv/aiostreams/compose.yaml
       - /srv/aiostreams/compose.yaml.bak-2026-10-22
       - /srv/aiostreams/.env.bak-1789995543
+      # The 0509 runner's lock tree; nothing uses /run/lock/0509 any more (fleet-ops#11714).
+      - /etc/tmpfiles.d/github-runner-0509.conf
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"
