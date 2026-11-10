@@ -9,4 +9,4 @@ Write each finding with file, line, one-line reason and the smallest fix. Then t
 VERDICT: APPROVE
 VERDICT: CHANGES
 VERDICT: HOLD-OWNER
-Use CHANGES for a real finding, never for taste. Use HOLD-OWNER for point 4, or for a finding you keep open after the author answered it. If a real finding the author can fix is open, use CHANGES, even when point 4 also applies. Use HOLD-OWNER when only the owner's part is left, or after the round cap.
+Use CHANGES for a real finding, never for taste. Use HOLD-OWNER for point 4, or for a finding you keep open after the author answered it. If a real finding the author can fix is open, use CHANGES, even when point 4 also applies. Use HOLD-OWNER when only the owner's part is left.
