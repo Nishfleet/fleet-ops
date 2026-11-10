@@ -93,9 +93,14 @@
     tether_space_nft: /etc/nftables.d/tether-space.nft
     tether_space_nft_src: "{{ playbook_dir }}/templates/tether-space.nft.j2"
     # Retired units and paths, removed by tasks/retired-and-drift.yml. Every
-    # entry the old lists named was absent from the box on 2026-11-05 (the deploy
-    # log showed `ok`, nothing to delete, for each), so the lists restarted empty.
-    retired_units: []
+    # entry named before 2026-11-05 was absent from the box (the deploy log
+    # showed `ok`, nothing to delete, for each), so the lists restarted empty;
+    # the ones since then retire an engine or file still on the box.
+    retired_units:
+      # The drive eval's rootless Docker engine (fleet-ops#9983); the eval moved
+      # off the box in October and the engine has run with no containers since
+      # (fleet-ops#11853). Removed with its data in `retired` below.
+      - dockerd-eval.service
     retired_user_units:
       # Every image is digest-pinned and moves only by Renovate PR, so podman's
       # auto-update timer has nothing to pull (podman-auto-update(1)).
@@ -120,6 +125,16 @@
       - /srv/aiostreams/.env.bak-1789995543
       # The 0509 runner's lock tree; nothing uses /run/lock/0509 any more (fleet-ops#11714).
       - /etc/tmpfiles.d/github-runner-0509.conf
+      # The retired eval engine dockerd-eval.service (fleet-ops#11853): its unit,
+      # the runtime-directory and data-root tmpfiles entry, the eval's nft table
+      # and the config the unit read. /run/dockerd-eval was created by that
+      # tmpfiles entry, so it stays until it is listed here.
+      - /etc/systemd/system/dockerd-eval.service
+      - /etc/tmpfiles.d/dockerd-eval.conf
+      - /etc/nftables.d/evalnet.nft
+      - /etc/fleet-ops/dockerd-eval.json
+      - /run/dockerd-eval
+      - "{{ nish_home }}/.local/share/dockerd-eval"
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"

@@ -28,7 +28,7 @@ def test_the_apply_reads_the_dirs_before_it_applies_tmpfiles() -> None:
         assert f"- {tail}\n" in stat_text, tail
     assert "follow: false" in stat_text
     applied = play.index("- name: Apply tmpfiles on every run")
-    apply_text = play[applied:play.index("- name: Create the fleet-ops config directory")]
+    apply_text = play[applied:play.index("- name: Install uidmap for rootless podman")]
     assert "systemd-tmpfiles --create" in apply_text
     check = play.index("- name: Fail when a config dir was not nish-owned when the apply started")
     assert found < applied < check

@@ -90,30 +90,12 @@
   ansible.builtin.command: /usr/bin/systemd-tmpfiles --create
   changed_when: false
 
-# The rootless Docker engine for the drive eval (fleet-ops#9983) reads this
-# config instead of the host's /etc/docker/daemon.json, which sets the runsc
-# runtime. rootlesskit comes from apt: the unit runs dockerd under it.
-- name: Create the fleet-ops config directory
-  ansible.builtin.file:
-    path: /etc/fleet-ops
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-
-- name: Install the rootless Docker engine's config
-  ansible.builtin.copy:
-    src: "{{ rootfs }}/etc/fleet-ops/dockerd-eval.json"
-    dest: /etc/fleet-ops/dockerd-eval.json
-    owner: root
-    group: root
-    mode: "0644"
-
-- name: Install rootlesskit, slirp4netns and uidmap for the rootless Docker engine
+# rootless podman (the quadlet containers in tasks/user-files.yml) needs
+# newuidmap for its user namespace (uidmap(1)); the drop-in
+# 90-podman-newuidmap.conf whitelists it for the user sandbox.
+- name: Install uidmap for rootless podman
   ansible.builtin.apt:
     name:
-      - rootlesskit
-      - slirp4netns
       - uidmap
     state: present
     update_cache: true
@@ -224,6 +206,8 @@
 # The GStreamer base plugins, libhyphen0, libharfbuzz-icu0 and libwebpdemux2 are
 # not listed: LibreOffice and Pillow above depend on them, and removing a
 # library removes the packages that depend on it.
+# rootlesskit and slirp4netns were the retired eval engine dockerd-eval's
+# runtime, with only that unit calling them (fleet-ops#11853).
 - name: Remove packages nothing on the box uses
   ansible.builtin.apt:
     name:
@@ -267,10 +251,23 @@
       - fonts-jetbrains-mono
       - xfonts-cyrillic
       - xfonts-scalable
+      - rootlesskit
+      - slirp4netns
     state: absent
     purge: true
     autoremove: true
     lock_timeout: 300
+
+# The nftables include directory (/etc/nftables.d/*.nft is pulled in by
+# nftables.conf) holds tether's Cua Space fence file, rendered by
+# tasks/tether.yml.
+- name: Create the nftables include directory
+  ansible.builtin.file:
+    path: /etc/nftables.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
 
 - name: Install sysctl settings
   ansible.builtin.copy:
