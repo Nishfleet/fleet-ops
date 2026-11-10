@@ -36,8 +36,8 @@ Environment=ANSIBLE_PIPELINING=1
 Environment=ANSIBLE_LOG_PATH=/var/lib/fleet-ops/fleet-update.log
 ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout main --directory /var/lib/fleet-ops/update-repo --clean --verify-commit --inventory localhost, ansible/update.yml
 # Success ping, only after ExecStart succeeded (the playbook's final assert is
-# inside it), so a green ping means a fully green run. OnFailure= covers a
-# failed run; this covers a run that never starts at all (dead timer, box
+# inside it), so a green ping means a fully green run. The SystemUnitFailed rule
+# covers a failed run; this covers a run that never starts at all (dead timer, box
 # down): the check's 1-day period and 7h grace go stale instead. curl --config
 # keeps the check's UUID out of argv (fleet-ops#8403). A missing config file
 # makes curl fail and the - prefix ignores it; an unreachable healthchecks.io does not fail the update, a stale check is

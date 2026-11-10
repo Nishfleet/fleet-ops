@@ -255,8 +255,9 @@ changes nothing on a healthy apply.
 The `precondition` on the token resource stays: with `vps_only =
 true` and an empty `vps_cidrs`, the plan fails (fail-closed) instead of minting
 an unlocked token. That failure stops the whole apply, so no other token is
-renewed either; it is loud (the unit's `OnFailure=` fires the healthchecks fail
-ping) and the tokens keep working until 45 days after their last rotation, which
+renewed either; it is loud (the unit shows in
+`systemctl --user list-units --state=failed`) and the tokens keep working until
+45 days after their last rotation, which
 leaves about two weeks to place the file after the first failed weekly run.
 
 ## Rotation
@@ -310,9 +311,9 @@ for three weeks, then replaces them, and two missed weeks still leave slack.
   the same file as a hand apply. The provider cache goes to
   `~/.cache/fleet-ops/cloudflare-tokens-tofu` (`TF_DATA_DIR`) because the root-owned checkout is read-only to nish.
   `ExecStartPre` runs `tofu init`.
-- Failure is loud: `OnFailure=fleet-unit-failed@%N.service` sends the
-  healthchecks.io fail ping (fleet-ops#9033), and the unit shows in
-  `systemctl --user list-units --state=failed`. Logs:
+- Failure is loud: the unit shows in
+  `systemctl --user list-units --state=failed` (a user unit is not scraped, so
+  no alert fires on it). Logs:
   `journalctl --user -u cloudflare-tokens-apply.service`.
 - `tofu` is installed to `~/.local/bin/tofu` by `ansible/host.yml` (root, on the
   `fleet-host-config` run after merge). Until then the unit fails on a missing
