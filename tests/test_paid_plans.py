@@ -69,10 +69,11 @@ def test_paid_plan_idle_alert_covers_every_paid_router_endpoint():
     """
     alerts = [r for g in yaml.safe_load((ROOT / "rootfs/etc/prometheus/fleet_rules.yml").read_text())["groups"] for r in g["rules"] if r.get("alert") == "PaidPlanIdle"]
     assert len(alerts) == 1, "PaidPlanIdle is missing from fleet_rules.yml"
-    match = re.search(r'api_base=~"([^"]+)"', alerts[0]["expr"])
-    assert match, "PaidPlanIdle must select endpoints by the router's api_base label"
+    found = re.findall(r'api_base=~"([^"]+)"', alerts[0]["expr"])
+    assert found, "PaidPlanIdle must select endpoints by the router's api_base label"
+    assert len(set(found)) == 1, f"PaidPlanIdle's {len(found)} api_base regexes differ; every copy in its expr must be identical"
     # The expr is a PromQL string: "\\." there is the regex "\\.".
-    pattern = match.group(1).replace("\\\\", "\\")
+    pattern = found[0].replace("\\\\", "\\")
     uncovered = [
         p["name"] for p in _plans()
         if p.get("via") != "pi-provider" and not re.fullmatch(pattern, p["api_base"] + "/v1/messages")
