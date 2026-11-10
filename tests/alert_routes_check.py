@@ -64,11 +64,6 @@ ERR = ("DatasourceError", "DatasourceNoData")
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 RETIRED_DATASOURCES = {"fleet-github-personal": "fleet-github"}
 RETIRED_OWNERS = {"nish3451": "Nishfleet"}
-# upstream: https://github.com/grafana/grafana/blob/main/pkg/expr/service.go
-# upstream: https://github.com/grafana/grafana/blob/main/pkg/tsdb/grafanads/grafana.go
-# - Grafana names its built-in data sources several ways (the expression engine
-# uses __expr__ and the older -100, the built-in data source uses -- Grafana --
-# and id -1), so a rule may read any of these uids.
 BUILTIN_DATASOURCES = {"-- Mixed --", "-- Dashboard --", "-- Grafana --", "__expr__", "-100", "grafana"}
 
 

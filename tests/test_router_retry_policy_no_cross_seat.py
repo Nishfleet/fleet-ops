@@ -140,9 +140,6 @@ REJECTS_GLOB = "config/litellm-proxy.schema.rejects/retry-policy-*.yaml"
 
 PINNED_LITELLM = "1.105.0"
 
-SHUFFLE_SEED = 9375
-SEED_FALLBACK = 10178
-
 RP_SHIPPED = {
     "AuthenticationErrorRetries": 2,
     "RateLimitErrorRetries": 2,
@@ -180,13 +177,7 @@ def _counts(paths: list[str]) -> dict:
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
-    """The HTTP mock the drills below run against.
-
-    /fail -> 429 wall, /okcapable -> 200, /okcheap -> 200,
-    /gone403 -> 403, /gone404 -> 404, /synwall -> 429 subscription wall,
-    /synburst -> 429 provider concurrency 429 ("Too many concurrent requests").
-
-    It answers the /fail rows with a real 429 JSON body so LiteLLM raises
+    """Answers the /fail rows with a real 429 JSON body so LiteLLM raises
     RateLimitError (an HTML/empty 429 body is re-read as OpenAIException ->
     APIError 501, which is a different code path)."""
 
@@ -196,14 +187,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if not _CURRENT_SERVER:
             raise RuntimeError("_Handler fired with no _CURRENT_SERVER registered; "
                                "append the server in the test's try block")
-        # upstream: https://docs.python.org/3/library/http.server.html
-        # - the body must be read before the response is written. The server holds
-        # the connection open (HTTP/1.1), so if those bytes stay in the socket buffer
-        # the next request on this connection is parsed as
-        # '<body>POST /path HTTP/1.1' and the stdlib answers 501 'Unsupported
-        # method' - no hit is recorded, so a real retry is silently dropped from
-        # the count these tests are built on. See
-        # test_the_mock_reads_the_request_body.
         length = int(self.headers.get("Content-Length") or 0)
         if length:
             self.rfile.read(length)
@@ -234,10 +217,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if "/gone404" in path:
-            # upstream: https://docs.litellm.ai/docs/exception_mapping
-            # - the body carries code "model_not_found" because litellm reads it to
-            # map a 404 to NotFoundError; without the code the same status arrives
-            # as BadRequestError and skips the NotFoundError piece of this test.
             body = json.dumps({"error": {
                 "message": "This model is unavailable for free. The paid version is available now - use this slug instead: inclusionai/ling-3.0-flash-sante",
                 "type": "invalid_request_error",
@@ -301,11 +280,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 class _Server:
-    """Tiny per-call HTTP mock that records the path of every upstream POST.
-
-    fail_first_only makes the /fail row 429 once and then answer 200, to probe
-    whether litellm retries the same row; /failcapable always 429s.
-    """
+    """Tiny per-call HTTP mock that records the path of every upstream POST."""
 
     def __init__(self):
         srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _Handler)
@@ -359,19 +334,10 @@ async def _run(server, retry_policy, sid, park_on_first_429=False, rows=None, ca
     """Run `calls` calls against one Router instance (the 404 and 401 park drills
     need a second call on the same router to prove the parked lane stays out). With
     calls == 1 the return keeps the old (attempts, outcome, pin) shape; with a
-    higher count it returns ([attempts per call], [outcome per call], pin).
-
-    The Router values mirror prod router_settings: num_retries 0, allowed_fails 1,
-    cooldown_time 60, optional_pre_call_checks ["prompt_caching",
-    "session_affinity"], and the default deployment_affinity_ttl_seconds (3600).
-    The one difference is redis_url (prod uses it, this test does not), so what is
-    exercised is the affinity lookup the routing decision depends on and the
-    routing decision itself - not the Redis Lua-script claim, which is out of scope
-    for these tests.
-    """
+    higher count it returns ([attempts per call], [outcome per call], pin)."""
     server.hits.clear()
     saved_callbacks = litellm.callbacks
-    random.seed(SHUFFLE_SEED)
+    random.seed(9375)
     _CURRENT_SERVER.append(server)
     litellm.callbacks = []
     try:
@@ -412,7 +378,7 @@ async def _run(server, retry_policy, sid, park_on_first_429=False, rows=None, ca
 async def _run_no_fallback(server, retry_policy, sid, seat_a_lane="/fail"):
     server.hits.clear()
     saved_callbacks = litellm.callbacks
-    random.seed(SEED_FALLBACK)
+    random.seed(10178)
     _CURRENT_SERVER.append(server)
     litellm.callbacks = []
     try:
@@ -443,7 +409,6 @@ async def _run_no_fallback(server, retry_policy, sid, seat_a_lane="/fail"):
 
 
 def _load_retry_policy():
-    """The retry_policy block the live config ships."""
     with open(CONFIG_PATH, "rb") as fh:
         cfg = yaml.safe_load(fh)
     return cfg["router_settings"]["retry_policy"]
@@ -466,13 +431,6 @@ def test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on():
 
 
 def test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule():
-    """Unit-level: the retry count the Router actually resolves per error class.
-
-    The reject fixtures are minimal files, so each also trips unrelated keywords
-    (the judge-row minContains). `check-jsonschema` would pass such a fixture even
-    with the retry_policy rule deleted. Name the failing path instead: every
-    retry-policy-* fixture must produce an error at router_settings[/retry_policy].
-    """
     with open(SCHEMA_PATH, "rb") as fh:
         schema = json.load(fh)
     jsonschema.Draft202012Validator.check_schema(schema)
@@ -505,12 +463,6 @@ def test_rate_limit_gets_two_retries():
 
 
 def test_the_same_row_retry_has_no_backoff():
-    # upstream: https://github.com/BerriAI/litellm/blob/v1.105.0/litellm/router.py
-    # - Router._time_to_sleep_before_retry returns 0 the moment the group still has
-    # one healthy row (litellm/router.py: "return 0" when healthy_deployments is
-    # non-empty), so the retry the issue asks for lands immediately. That is why
-    # the fix counts rows and not seconds, and why "after the backoff" is only
-    # half satisfied: the backoff sits in Pi's own retry, not in the router.
     router = Router(model_list=_rows(0), routing_strategy="simple-shuffle", num_retries=0,
                     retry_policy=RP_PROPOSED)
     exc = RateLimitError(message="x", llm_provider="openai", model="m")
@@ -521,11 +473,6 @@ def test_the_same_row_retry_has_no_backoff():
 
 
 def test_the_mock_reads_the_request_body():
-    # upstream: https://docs.python.org/3/library/http.server.html
-    # - a handler that never reads the request body leaves it in the socket buffer
-    # and the next request on the same keep-alive connection is answered 501 with
-    # no hit recorded, so the router's real in-group pick count came out one lower
-    # than it is.
     server = _Server()
     try:
         _CURRENT_SERVER.append(server)
@@ -545,26 +492,13 @@ def test_the_mock_reads_the_request_body():
 
 
 def test_internal_server_error_retry_is_live_on_litellm_1_105_0():
-    # upstream: https://github.com/BerriAI/litellm/blob/v1.105.0/litellm/router_utils/get_retry_from_policy.py
-    # - litellm 1.98.0's get_num_retries_from_retry_policy had no InternalServerError
-    # branch, so InternalServerErrorRetries was dead config there (one attempt, then the
-    # fallback group). litellm 1.105.0 reads it: the shipped value 1 now gives a 5xx one
-    # in-group retry before the fallback group answers. That is the forward value the
-    # config comment names, measured here on 1.105.0.
-    #
-    # This and test_the_same_row_retry_has_no_backoff read litellm internals, so
-    # both are the litellm upgrade tripwires: a litellm bump that changes either
-    # shape fails CI and the numbers in this file and in the config comment must
-    # be re-measured.
     rp = RetryPolicy(**RP_PROPOSED)
     exc = InternalServerError(message="x", llm_provider="openai", model="m", response=None)
     assert get_num_retries_from_retry_policy(exc, rp) == 1
 
 
 def _in_group(attempts):
-    """End-to-end: a pinned seat that 429s on every attempt (a rate-limited wall).
-
-    Picks that stayed in the worker-capable group (seat-a / seat-c) as opposed to
+    """Picks that stayed in the worker-capable group (seat-a / seat-c) as opposed to
     the worker-cheap fallback."""
     return [p for p in attempts if "/fail" in p]
 
@@ -587,7 +521,7 @@ def test_shipped_policy_spends_two_retries_on_two_seats_on_a_429_wall():
     _assert_first_pick_is_the_pinned_seat(attempts)
     ing = _in_group(attempts)
     assert len(ing) == 3, attempts
-    assert len(set(ing)) == 2, attempts
+    assert len(set(ing)) == 2, attempts          # two different seats attempted
     assert attempts.count("/okcheap/chat/completions") == 1, attempts
     assert outcome == "ok"
     assert pin == {"model_id": "seat-a"}, pin
@@ -618,8 +552,8 @@ def test_a_transient_429_recovers_on_the_row_it_hit():
         server.close()
     _assert_first_pick_is_the_pinned_seat(attempts)
     ing = _in_group(attempts)
-    assert len(ing) == 2 and all(p.startswith("/fail/") for p in ing), attempts
-    assert not any("failcapable" in p for p in attempts), attempts
+    assert len(ing) == 2 and all(p.startswith("/fail/") for p in ing), attempts  # both on seat-a
+    assert not any("failcapable" in p for p in attempts), attempts            # seat-c never touched
     assert attempts.count("/okcheap/chat/completions") == 0, attempts
     assert outcome == "ok"
     assert pin == {"model_id": "seat-a"}, pin
@@ -649,7 +583,7 @@ def test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself():
     _assert_first_pick_is_the_pinned_seat(attempts)
     ing = _in_group(attempts)
     assert len(ing) == 3, attempts
-    assert len(set(ing)) == 2, attempts
+    assert len(set(ing)) == 2, attempts          # the retry left the failed row
     assert attempts[1].startswith("/failcapable/"), attempts
     assert attempts.count("/okcheap/chat/completions") == 1, attempts
     assert outcome == "ok"

@@ -75,8 +75,7 @@ def test_hermes_login_unit_writes_the_hosts_yml_gh_reads(mint):
         assert re.fullmatch(r"github\.com:\n {4}user: nishfleet-worker\n {4}oauth_token: ghs_stub_\d+\n {4}git_protocol: https\n", body), body
         assert sh([*SUDO, "stat", "-c", "%a", str(hosts)]).stdout.strip() == "600"
         assert sh([*SUDO, "stat", "-c", "%a", str(run)]).stdout.strip() == "700"
-        skip_window = int(re.search(r"-lt (\d+)", text).group(1))
-        sh([*SUDO, "touch", "-d", f"@{int(time.time()) - skip_window - 60}", str(hosts)], check=True)
+        sh([*SUDO, "touch", "-d", f"@{int(time.time()) - 1000}", str(hosts)], check=True)
         mint.mode.write_text("fail\n")
         start = ctl("start", unit.name)
         assert start.returncode != 0, "a fresh token file made this start skip instead of minting"

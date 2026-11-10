@@ -5,14 +5,6 @@ the repo said what the gate was and a new agent silently reached every other
 agent. config/tincan-relay/policy.jq now renders it from
 config/tincan-relay/agents.txt and ansible/tasks/tincan-relay-policy.yml installs the result. These
 checks read the roster, the jq program and the two playbooks.
-
-The live authority for the roster is `tincan agents --json --socket
-~/.local/state/tincan-relay/admin.sock`, which CI cannot reach (CI runs on
-GitHub's runners, not the box). The list it answered on 2026-10-30 (amp,
-cursor-mac and droid-mac gone from the mesh) is pinned in
-test_the_roster_is_the_relays_agent_list, and the ansible play checks the live
-one on every playbook run. A roster edit that is not a deliberate agent change
-fails that test until the list is re-captured with that command.
 """
 import json
 import pathlib
@@ -167,12 +159,6 @@ def test_the_host_playbook_renders_installs_and_checks_the_policy():
 
 @pytest.mark.skipif(not (shutil.which("ansible-playbook") and shutil.which("yq")), reason="ansible or yq is not installed")
 def test_the_host_playbook_installs_the_render_byte_for_byte(tmp_path):
-    # upstream: https://github.com/ansible/ansible/blob/devel/lib/ansible/modules/command.py
-    # - the render runs under ansible.builtin.command, whose result strips the
-    # trailing newline off stdout, so the render is written with jq -j and the
-    # install takes the registered stdout verbatim. Running the two real tasks is
-    # the only way to see that: a policy that is one line long is still valid
-    # JSON, so the loud check below would pass while the box's gate had drifted.
     state = tmp_path / ".local/state/tincan-relay"
     state.mkdir(parents=True)
     play = json.loads(

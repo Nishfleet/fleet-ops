@@ -89,8 +89,6 @@ def test_removed_provider_match_is_exact_on_hostname():
 
 
 def test_every_thinking_budget_row_drops_caller_reasoning_effort():
-    # upstream: https://www.alibabacloud.com/help/en/model-studio/error-code
-    # - DashScope answers 400 when a request carries reasoning_effort next to a row's thinking_budget.
     rows = [r for r in _model_list() if "thinking_budget" in (r["litellm_params"].get("extra_body") or {})]
     assert rows, "no row sets thinking_budget"
     bad = [r["model_info"]["id"] for r in rows if "reasoning_effort" not in r["litellm_params"].get("additional_drop_params", [])]

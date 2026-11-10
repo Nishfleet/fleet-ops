@@ -128,8 +128,6 @@ def test_only_a_go_starts_the_worker():
 
 
 # upstream: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability
-# The claim job's `go` is one step output from a step that always runs, so an issue run gets
-# go=true without reading any review.
 def test_an_issue_run_is_a_go_from_the_always_run_round_step(tmp_path):
     claim = WF["jobs"]["claim"]
     assert claim["outputs"]["go"] == "${{ steps.round.outputs.go }}"
@@ -144,15 +142,13 @@ def push_step():
 
 
 # upstream: https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request
-# The push starts the re-review, and review.yml reads the PR body live, so this run's proof
-# is in the body before the push.
 @pytest.mark.parametrize(("proof", "tail"), [
     ("run-proof: pytest -q -> 9 passed", "run-proof: pytest -q -> 9 passed"),
     ("", "The worker wrote no run-proof line, so the reviewer bot will not approve."),
 ])
 def test_a_review_answer_appends_its_proof_to_the_body_before_the_push(tmp_path, proof, tail):
     data = {"repos/o/r/pulls/12": {"body": "Closes #7\n\nrun-proof: old -> 1 passed"}}
-    (tmp_path / "push").mkdir()
+    (tmp_path / "push").mkdir()  # the stub git does not create it
     proc, _, calls = run_step(tmp_path, push_step(), data, stubs=("git",), ISSUE="7", PR="12", BASE=SHA, PROOF=proof)
     assert proc.returncode == 0, proc.stderr
     edit = calls.index(["api", "-X", "PATCH", "repos/o/r/pulls/12", "-f",
