@@ -24,24 +24,6 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "Caches: direct probe 2026-10-15 on api.commandcode.ai z-ai/glm-5.3-flash, 3 calls on a 19287-token prefix, cached_tokens 0/19264/19264 (fleet-ops#9744)."
     id: commandcode-glm53flash-worker-capable
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/z-ai/glm-5.3-flash
-    api_base: https://api.commandcode.ai/provider/v1
-    api_key: os.environ/COMMANDCODE_API_KEY
-    tags:
-    - prepaid
-    - commandcode
-    input_cost_per_token: 3e-07
-    cache_read_input_token_cost: 6e-09
-    output_cost_per_token: 1.2e-06
-    max_budget: 10.0
-    budget_duration: 1d
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: direct probe 2026-10-15 on api.commandcode.ai z-ai/glm-5.3-flash, 3 calls on a 19287-token prefix, cached_tokens 0/19264/19264 (fleet-ops#9744)."
-    id: commandcode-glm53flash-worker-cheap
 - model_name: worker-capable
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
@@ -60,24 +42,6 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "Caches: direct probe 2026-10-15 on api.commandcode.ai z-ai/glm-5.3-flash, 3 calls on a 19287-token prefix, cached_tokens 0/19264/19264 (fleet-ops#9744)."
     id: commandcode-glm53flashb-worker-capable
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/z-ai/glm-5.3-flash
-    api_base: https://api.commandcode.ai/provider/v1
-    api_key: os.environ/COMMANDCODE_API_KEY
-    tags:
-    - prepaid
-    - commandcode
-    input_cost_per_token: 3e-07
-    cache_read_input_token_cost: 6e-09
-    output_cost_per_token: 1.2e-06
-    max_budget: 10.0
-    budget_duration: 1d
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: direct probe 2026-10-15 on api.commandcode.ai z-ai/glm-5.3-flash, 3 calls on a 19287-token prefix, cached_tokens 0/19264/19264 (fleet-ops#9744)."
-    id: commandcode-glm53flashb-worker-cheap
 - model_name: worker-capable
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -111,11 +75,17 @@ model_list:
     cache_proof: "Same gateway and model as the removed key-2 rows (88.4% cache-read 7d, #9357 scoreboard); this row is the monthly-quota-walled Go endpoint (#9122) with little traffic of its own."
     id: opencodego-ds41flash-worker-cheap
 - model_name: worker-capable
-  # z.ai Coding Plan slot (fleet-ops#10566, #10608).
+  # z.ai Coding Plan slot (fleet-ops#10566, #10608). The one coding-plan key is paced: since
+  # 2026-11-05 its rows made 94% of the router's failed attempts, and the plan's own limit leaves
+  # no throughput in rows beyond 2, so only these two rows are kept on the key (owner decision
+  # 2026-11-10, the audit, decision 14; details off this public repo). Both carry
+  # max_parallel_requests: 1 (LiteLLM docs, Router: max_parallel_requests,
+  # https://docs.litellm.ai/docs/routing), so the failure share follows the plan, not the row count.
   litellm_params:
     model: openai/glm-5.3-flash
     api_base: https://api.z.ai/api/coding/paas/v4
     api_key: os.environ/ZAI_API_KEY
+    max_parallel_requests: 1
     tags:
     - prepaid
     - zai
@@ -129,6 +99,7 @@ model_list:
     model: openai/glm-5.3-flash
     api_base: https://api.z.ai/api/coding/paas/v4
     api_key: os.environ/ZAI_API_KEY
+    max_parallel_requests: 1
     tags:
     - prepaid
     - zai
@@ -137,123 +108,6 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
     id: zai-glm53flash-worker-capable
-- model_name: worker-capable
-  litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: https://api.z.ai/api/coding/paas/v4
-    api_key: os.environ/ZAI_API_KEY
-    tags:
-    - prepaid
-    - zai
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
-    id: zai-glm53flashb-worker-capable
-- model_name: worker-capable
-  litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: https://api.z.ai/api/coding/paas/v4
-    api_key: os.environ/ZAI_API_KEY
-    tags:
-    - prepaid
-    - zai
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
-    id: zai-glm53flashc-worker-capable
-- model_name: worker-capable
-  litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: https://api.z.ai/api/coding/paas/v4
-    api_key: os.environ/ZAI_API_KEY
-    tags:
-    - prepaid
-    - zai
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
-    id: zai-glm53flashd-worker-capable
-- model_name: worker-capable
-  litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: https://api.z.ai/api/coding/paas/v4
-    api_key: os.environ/ZAI_API_KEY
-    tags:
-    - prepaid
-    - zai
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
-    id: zai-glm53flashe-worker-capable
-- model_name: worker-capable
-  litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: https://api.z.ai/api/coding/paas/v4
-    api_key: os.environ/ZAI_API_KEY
-    tags:
-    - prepaid
-    - zai
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
-    id: zai-glm53flashf-worker-capable
-- model_name: worker-capable
-  litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: https://api.z.ai/api/coding/paas/v4
-    api_key: os.environ/ZAI_API_KEY
-    tags:
-    - prepaid
-    - zai
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
-    id: zai-glm53flashg-worker-capable
-- model_name: worker-capable
-  litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: https://api.z.ai/api/coding/paas/v4
-    api_key: os.environ/ZAI_API_KEY
-    tags:
-    - prepaid
-    - zai
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
-    id: zai-glm53flashh-worker-capable
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: https://api.z.ai/api/coding/paas/v4
-    api_key: os.environ/ZAI_API_KEY
-    tags:
-    - prepaid
-    - zai
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
-    id: zai-glm53flash-worker-cheap
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: https://api.z.ai/api/coding/paas/v4
-    api_key: os.environ/ZAI_API_KEY
-    tags:
-    - prepaid
-    - zai
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
-    id: zai-glm53flashb-worker-cheap
 # MiniMax token plan (the portal's Yearly Plus flat plan): the plan's quota is the cap, so no max_budget.
 - model_name: worker-capable
   litellm_params:
@@ -306,23 +160,6 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "2026-10-07 #9357 scoreboard: 93.4% cache-read 7d on real router traffic."
     id: minimax-m31-worker-cheap
-- model_name: worker-cheap
-  litellm_params:
-    model: anthropic/MiniMax-M3.1-Flash-Preview
-    api_base: https://api.minimax.io/anthropic
-    api_key: os.environ/MINIMAX_API_KEY
-    input_cost_per_token: 3e-07
-    output_cost_per_token: 1.2e-06
-    cache_read_input_token_cost: 6e-08
-    cache_creation_input_token_cost: 3.75e-07
-    tags:
-    - prepaid
-    - minimax
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "2026-10-07 #9357 scoreboard: 93.4% cache-read 7d on real router traffic."
-    id: minimax-m31b-worker-cheap
 # Alibaba Token Plan: Qwen answers Hermes chat and judge calls (alias below), never a worker group (fleet-ops#10608); prepaid, so no max_budget.
 - model_name: assistant
   litellm_params:
@@ -451,28 +288,11 @@ model_list:
     cache_proof: "Same model and endpoint as alibaba-qwen38max-assistant: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%)."
     id: alibaba-qwen38max-review
 # The review job's group for every PR a pi run did not build (owner 2026-11-04: "need the others
-# as backup", never MiniMax). Qwen and DeepSeek rows: a failed row cools and the next call
-# takes another row (https://docs.litellm.ai/docs/routing). No Claude row, because Claude builds
-# these PRs, no GLM row (GLM-5.3-Flash is a worker model only, fleet-ops#11847), and no fallback.
+# as backup", never MiniMax). One DeepSeek row: the Qwen row has never served a call and left on
+# the owner's 2026-11-10 audit (decision 14; details off this public repo). A failed row cools
+# (https://docs.litellm.ai/docs/routing). No Claude row, because Claude builds these PRs,
+# no GLM row (GLM-5.3-Flash is a worker model only, fleet-ops#11847), and no fallback.
 # A pi build never asks for this group. Rows copy their source row.
-- model_name: review-any
-  litellm_params:
-    model: openai/qwen3.8-max
-    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
-    api_key: os.environ/ALIBABA_CODING_API_KEY
-    tags:
-    - prepaid
-    - alibaba
-    extra_body:
-      enable_thinking: true
-      thinking_budget: 2048
-    additional_drop_params:
-    - reasoning_effort
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Same model and endpoint as alibaba-qwen38max-assistant: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%)."
-    id: alibaba-qwen38max-review-any
 - model_name: review-any
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -523,12 +343,13 @@ router_settings:
   num_retries: 0
   timeout: 1800
   enable_tag_filtering: false
-  # worker-capable has no fallback, so a 429 retries once per other row and walks past every parked row (fleet-ops#11723).
+  # worker-capable has no fallback, so a 429 retries once per other row (7 rows: 6, the
+  # 2026-11-10 rows cut) and walks past every parked row (fleet-ops#11723).
   # Keyed by requested name, so each alias needs its own entry. Single-row groups keep retry_policy: 13 retries there sleep 92 s.
   model_group_retry_policy:
     worker-capable: &worker-capable-walk
       AuthenticationErrorRetries: 1
-      RateLimitErrorRetries: 13
+      RateLimitErrorRetries: 6
       TimeoutErrorRetries: 1
       InternalServerErrorRetries: 1
       BadRequestErrorRetries: 1

@@ -46,7 +46,7 @@ def test_every_prepaid_row_is_a_listed_plan():
     assert not unlisted, f"prepaid rows not in config/paid-plans.json: {unlisted}. Changing config/paid-plans.json needs Nish (CODEOWNERS)"
 
 
-SINGLE_ROW_TIERS = {"tether", "assistant", "review-claude", "review-qwen"}
+SINGLE_ROW_TIERS = {"tether", "assistant", "review-claude", "review-qwen", "review-any"}
 
 
 def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exists():
@@ -56,7 +56,7 @@ def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exist
     for row in _model_list():
         tiers[row["model_name"]] = tiers.get(row["model_name"], 0) + 1
     thin = {t: n for t, n in tiers.items() if n < (1 if t in SINGLE_ROW_TIERS else 2)}
-    assert not thin, f"router tiers below their floor (2 rows, tether and assistant 1): {thin}. Only tether, assistant, review-claude and review-qwen (review-claude falls back to review-qwen, and review-qwen to nothing, owner 2026-11-04) may hold one row (fleet-ops#9980; assistant since OpenCode Go key 2 left on 2026-10-26, and it falls to worker-capable)"
+    assert not thin, f"router tiers below their floor (2 rows, tether and assistant 1): {thin}. Only tether, assistant, review-claude, review-qwen and review-any may hold one row (review-claude falls back to review-qwen, and review-qwen to nothing, owner 2026-11-04; assistant since OpenCode Go key 2 left on 2026-10-26, and it falls to worker-capable; review-any since the Qwen row left on the owner's 2026-11-10 audit, decision 14: it has never served a call, fleet-ops#11876)"
     groups = {row["model_name"] for row in _model_list()}
     missing = [(src, dst) for entry in json.loads(cfg_out) for src, dsts in entry.items() for dst in dsts if dst not in groups]
     assert not missing, f"fallbacks naming a group with no row: {missing}"
