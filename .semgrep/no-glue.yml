@@ -1,0 +1,55 @@
+# No glue (global-standing-rules.md "No glue"; Nish 2026-09-29: non-negotiable,
+# enforced by a machine, not by review). Created as .semgrep/no-glue.yml in
+# fleet-ops#8980, deleted with the 2026-11-01 bulk clean (fleet-ops#10935),
+# restored by fleet-ops#11844 with `semgrep --test` fixtures. ci.yml runs this
+# folder with `semgrep scan --error`; the fixtures in this folder prove the
+# rules. Only the no-glue rules are restored: the two hard blocks that rode in
+# the old file (no-amtool-escalation, no-yt-dlp-self-update) are not no-glue
+# rules, and ci.yml's own alertmanager step now runs `amtool` for its check.
+rules:
+  - id: no-script-files
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      No glue: no scripts, wrappers or script directories. Use a stock tool's own
+      config, a unit line, a prompt line, or the product's own code. A new organ
+      needs Nish's explicit yes.
+    # The original rule matched the whole file ('(?s)\A.'), which no `ruleid`
+    # test annotation can cover: the match always reports line 1, and an
+    # expectation can never name line 1. This form flags the same files - every
+    # code line (non-comment, non-blank) of every script in the paths below is a
+    # finding - and `semgrep --test` can pin it. Comment-only or empty files pass.
+    pattern-regex: '(?m)^(?![ \t]*#)[^\n]*\S'
+    paths:
+      include:
+        - "*.sh"
+        - "*.bash"
+        - "*.zsh"
+        - "*.py"
+        - "*.pl"
+        - "*.rb"
+        - "/bin/"
+        - "/scripts/"
+        - "/libexec/"
+        - "/lib/"
+        - "/ops/"
+        - "/hooks/"
+        - "/.github/scripts/"
+        - "/tools/"
+        - "/.fleet/"
+        - "/template/extensions/"
+  - id: no-inline-program
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      No glue: no interpreter program inline in a workflow, unit or prompt
+      (python -c, node -e, a heredoc fed to an interpreter). Use a stock tool's
+      flag or the product's own code.
+    pattern-regex: '(?m)^[ \t]*(?:-[ \t]+run:[ \t]*|run:[ \t]*|Exec\w*=[ \t]*|\$[ \t]+)?(?:python3?|node|perl|ruby|deno|bun)[ \t]+(?:-c|-e|-p|-)(?:[ \t]|$)|(?:python3?|node|perl|ruby|bash|sh)[ \t]+-?[ \t]*<<-?[ \t]*[''"]?\w+'
+    paths:
+      include:
+        - "/.github/workflows/"
+        - "/systemd/"
+        - "/prompts/"
+        - "/rootfs/"
+        - "/ansible/"
