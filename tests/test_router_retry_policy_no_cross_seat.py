@@ -76,7 +76,8 @@ is a cross-seat hop.
 Two cross-seat re-sends become one, and a briefly-limited row is no longer kicked
 to another seat at all.
 
-These tests run in-process against litellm 1.105.0 (the version pinned for prod)
+These tests run in-process against the litellm the proxy image pins (the version
+read by tests/router_litellm_pin.py from the image tag the deploy serves)
 and need no Redis: with `optional_pre_call_checks: ["session_affinity"]` and no
 redis_url the DeploymentAffinityCheck degrades to a pod-local pin. The affinity
 lookup the routing decision depends on is the same code path the proxy uses, and
@@ -85,20 +86,19 @@ claim (first-writer-wins across proxy replicas) is NOT exercised here, so nothin
 below is a claim about it. They also run without a network - a plain
 http.server answers one row 429 and the peers 200.
 
-CI does not run this file yet: https://github.com/Nishfleet/fleet-ops/issues/9427
-carries the job. Since 2026-11-10 the lane's push token may push workflow files,
-so a worker can open the ci.yml PR that would run it (the merge still needs a
-code-owner approval). Until that lands, the
-pick counts below are only as live as the last hand run, and the run command
-runs the suite in the pinned litellm 1.105.0 interpreter (the image's own
-python, or any venv with litellm==1.105.0 installed; the version is asserted
-by test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on):
+CI runs this file: the unit job finds every test under tests/ (fleet-ops#10721)
+and installs the litellm the image tag holds through tests/router_litellm_pin.py,
+the same helper this file reads, so a tag bump changes the Image= line only. A
+hand run runs the suite in the interpreter of the litellm the proxy image pins
+(the image's own python, or any venv with that litellm installed; the version is
+asserted by test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on):
 
-  <litellm-1.105.0-python> -m pytest -q tests/test_router_retry_policy_no_cross_seat.py
+  uvx --with "litellm==$(python tests/router_litellm_pin.py)" python -m pytest \
+      -q tests/test_router_retry_policy_no_cross_seat.py
 
-The 1.105.0 numbers for fleet-ops#9050 and the #9375 re-measure were both taken
-with the PyPI wheel of litellm 1.105.0, the same package version the pinned
-ghcr.io/berriai/litellm:v1.105.0 image contains.
+The 1.98.0 numbers and the 1.105.0 re-measure were taken on the PyPI wheels of
+those releases, the same package version the pinned ghcr.io/berriai/litellm
+image contains.
 """
 from __future__ import annotations
 
@@ -112,7 +112,7 @@ import random
 import socketserver
 import threading
 
-from router_litellm_pin import require_pinned_litellm
+from router_litellm_pin import pinned_litellm, require_pinned_litellm
 
 require_pinned_litellm(__file__)
 
@@ -139,16 +139,14 @@ CONFIG_PATH = "config/litellm-proxy.yaml"
 SCHEMA_PATH = "config/litellm-proxy.schema.json"
 REJECTS_GLOB = "config/litellm-proxy.schema.rejects/retry-policy-*.yaml"
 
-# The litellm the proxy runs, as of this commit. Every behavioural number in this
-# file and in the retry_policy comment in config/litellm-proxy.yaml is a
-# measurement of this version, so the version is asserted rather than described:
-# a bump that changes the same-row retry, the fallback timing, or the inert
-# InternalServerErrorRetries field fails here instead of quietly making those
-# comments wrong. Bump it in the same PR that re-measures, never on its own.
-# This constant is also the one home for the version: the CI job that will run
-# this file reads the pin from here (issue 9427), so the pin and the test cannot
-# drift apart.
-PINNED_LITELLM = "1.105.0"
+# The litellm the proxy runs, read from the image tag in
+# containers/quadlet/fleet-litellm-proxy@.container through tests/router_litellm_pin.py,
+# which the CI install step reads too: the version is written once, in the image tag,
+# so a bump edits one line and never leaves this file running a different release. The
+# version remains a gate, not prose: a bump that changes the behavioural numbers of
+# this file or of the retry_policy comment in config/litellm-proxy.yaml fails the tests
+# below (fleet-ops#11843), and re-measuring is the PR body's job.
+PINNED_LITELLM = pinned_litellm()
 
 # fleet-ops#9375 as written in this PR (the "old" values the audit measured).
 RP_SHIPPED = {
@@ -471,12 +469,14 @@ def test_config_retry_policy_is_the_fleet_ops_9375_fix():
 
 def test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on():
     # The behavioural tests below assert pick counts and a same-row retry, which
-    # are litellm-version facts. A silent bump invalidates every number in this
-    # file and in the retry_policy comment in config/litellm-proxy.yaml, so the
-    # version is a gate, not prose.
+    # are litellm-version facts. Their version is the proxy image's, read through
+    # tests/router_litellm_pin.py (the CI install step reads it too), so the
+    # numbers below answer the release the proxy serves and the drift fleet-ops
+    # #10710 logged (a venv against a release the proxy does not serve) cannot
+    # re-enter through a hand-written pin.
     assert importlib.metadata.version("litellm") == PINNED_LITELLM, (
         f"litellm {importlib.metadata.version('litellm')} != {PINNED_LITELLM}; "
-        "re-measure the picks and update PINNED_LITELLM in the same PR")
+        "run on the litellm the proxy image's tag holds")
 
 
 # --------------------------------------------------------------------------- #
