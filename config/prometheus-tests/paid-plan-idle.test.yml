@@ -1,0 +1,71 @@
+# promtool test rules config/prometheus-tests/paid-plan-idle.test.yml (CI runs it).
+# PaidPlanIdle (fleet-ops#11845): a paid endpoint that keeps taking calls never
+# alerts, one idle for 24 hours does, and a row the success counter has never
+# seen (no successful call since the last router restart) fires off
+# litellm_deployment_state, while an endpoint outside config/paid-plans.json
+# stays quiet. https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
+rule_files:
+  - ../../rootfs/etc/prometheus/fleet_rules.yml
+
+evaluation_interval: 1h
+
+tests:
+  # opencode.ai takes calls the whole time and stays quiet; anthropic has been
+  # idle longer than the window and fires; commandcode stops at t=4h, so its
+  # 24-hour window empties and it fires too, while nothing else does.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://opencode.ai/zen/go/v1"}'
+        values: '0+10x30'
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4002",api_base="https://api.anthropic.com/v1/messages"}'
+        values: '42x30'
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.commandcode.ai/provider/v1"}'
+        values: '10+5x4 30x25'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://api.anthropic.com/v1/messages
+            exp_annotations:
+              summary: "paid plan https://api.anthropic.com/v1/messages has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com/v1/messages in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+      - eval_time: 28h
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://api.anthropic.com/v1/messages
+            exp_annotations:
+              summary: "paid plan https://api.anthropic.com/v1/messages has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com/v1/messages in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+          - exp_labels:
+              severity: warning
+              api_base: https://api.commandcode.ai/provider/v1
+            exp_annotations:
+              summary: "paid plan https://api.commandcode.ai/provider/v1 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.commandcode.ai/provider/v1 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+
+  # A row that has never succeeded since the router started has no success
+  # counter, only litellm_deployment_state: it fires. A busy paid endpoint and
+  # an endpoint that is not in config/paid-plans.json (the vercel eval gateway)
+  # stay quiet.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.z.ai/api/coding/paas/v4"}'
+        values: '0+5x10'
+      - series: 'litellm_deployment_state{job="litellm",instance="127.0.0.1:4001",api_base="https://api.minimax.io/anthropic/v1/messages",model_id="minimax-m31-worker-capable",litellm_model_name="MiniMax-M3.1-Flash-Preview"}'
+        values: '0x10'
+      - series: 'litellm_deployment_state{job="litellm",instance="127.0.0.1:4001",api_base="https://ai-gateway.vercel.sh/v4/ai/evaluation-model",litellm_model_name="jev-latest"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://api.minimax.io/anthropic/v1/messages
+            exp_annotations:
+              summary: "paid plan https://api.minimax.io/anthropic/v1/messages has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.minimax.io/anthropic/v1/messages in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
