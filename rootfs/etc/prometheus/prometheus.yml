@@ -52,10 +52,7 @@ scrape_configs:
   # samples while still reporting the target up (fleet-ops#4174 reopen).
   # The endpoint requires a router key since fleet-ops#11847 (LiteLLM's
   # require_auth_for_metrics_endpoint, https://docs.litellm.ai/docs/proxy/prometheus):
-  # the page lists every seat, hashed key and caller address. The key in the
-  # credentials file must belong to a user with the admin or admin-viewer role,
-  # or the scrape takes a 401 (LiteLLM docs, "Prometheus metrics", auth on /metrics).
-  # The key comes from a
+  # the page lists every seat, hashed key and caller address. The key comes from a
   # 0600 file owned by the prometheus user (/etc/prometheus/litellm_metrics_key),
   # placed on the box like the other /etc/prometheus credentials and never from this
   # repo. Place it before the deploy: the play's promtool check opens this path

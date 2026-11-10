@@ -136,13 +136,6 @@
       - /etc/fleet-ops/dockerd-eval.json
       - /run/dockerd-eval
       - "{{ nish_home }}/.local/share/dockerd-eval"
-      # The 2026-11-10 hand-placed hermes-gateway.service.d drop-in that carried
-      # the dashboard login settings during #11900's crash loop. The shared
-      # hermes-.service.d/sandbox.conf loads the same file for both Hermes
-      # units now, so the folder goes once that line is live. The folder held
-      # only that one file, and the shared drop-in folder stays, so the folder
-      # can go whole (the gpg-agent.service.d precedent above).
-      - /etc/systemd/system/hermes-gateway.service.d
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"
