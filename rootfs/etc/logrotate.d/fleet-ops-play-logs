@@ -1,0 +1,11 @@
+# Rotates the ansible-pull logs of the box's two play units:
+# fleet-host-config.service and fleet-update.service point ANSIBLE_LOG_PATH
+# at these files (fleet-ops#11863). logrotate(8).
+/var/lib/fleet-ops/*.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    create 0600 root root
+}
