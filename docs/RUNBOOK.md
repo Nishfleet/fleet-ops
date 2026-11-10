@@ -197,9 +197,8 @@ the prefix" (systemd.unit(5)), so `20` for `-20.service`. The bind used to name
 `runsvc.sh` through it, which took the pool offline until each was restored from
 its own `bin/runsvc.sh`. A runner's self-update and restarts are unaffected:
 `bin.<ver>`/`externals.<ver>` and their links live in the runner's own dir.
-`test_the_agent_pool_binds_only_each_runners_own_dir` in
-`tests/test_runner_jail_start_state.py` fails the PR if the line is widened;
-detection that catches it live is `fleet-sync`'s STUB-GUARD (fleet-ops#11483).
+The 2026-11-01 reset deleted the test that pinned the line; this paragraph
+is the record of the gate as it stood.
 
 ## Dashboards
 
@@ -320,8 +319,8 @@ Nishfleet/fleet-ops` runs the deploy's proof by hand. Switch off: `systemctl dis
 fleet-hermes-github-token.timer` and `systemctl mask fleet-hermes-github-token.service` (they only `Wants=` it, so the mask stops the refreshes and the last token dies within an
 hour; `systemctl stop hermes-gateway.service hermes-serve.service` stops them), then remove
 the `Wants=`
-and `After=` lines, `GH_CONFIG_DIR` and the `InaccessiblePaths=` line from the drop-in. CI proof: `tests/test_worker_github_token.py`, which `ci.yml` already runs, starts
-this unit under systemd against `tests/github_app_stub.py` and checks the `hosts.yml` it writes.
+and `After=` lines, `GH_CONFIG_DIR` and the `InaccessiblePaths=` line from the drop-in. No CI test covers this now; the deploy's own mint and
+`gh issue view` above are the proof.
 
 ## Sentry monitors (org 0509-gg)
 
@@ -698,9 +697,9 @@ cost: the netcup provider VNC console.
   game-day). Panel login lives in Nish's password manager; never here.
 - The bind is repo config: `rootfs/etc/systemd/system/ssh.socket.d/override.conf`
   is installed to `/etc/systemd/system/ssh.socket.d/override.conf` by
-  `ansible/host.yml`, which restarts `ssh.socket` when it changes, and
-  `tests/test_systemd_unit_keys.py` fails if the file ever names a wildcard
-  address (fleet-ops#10541). Edit it there, never by hand.
+  `ansible/host.yml`, which restarts `ssh.socket` when it changes. No test pins
+  the address since the 2026-11-01 reset (fleet-ops#10541). Edit it there, never
+  by hand.
 
 ## Rebuild the box from nothing
 

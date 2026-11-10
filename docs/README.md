@@ -20,8 +20,8 @@ live file disagree, the live file wins. Postmortems stay in `docs/incidents/`.
 
 1. An issue says what to change.
 2. A branch and a pull request make the change.
-3. GitHub's own gate merges it: the required `ci` and `Gitleaks` checks, then
-   the merge queue (`gh pr merge --auto`).
+3. GitHub's own gate merges it: the one required `ci` check, then the merge
+   queue (`gh pr merge --auto`); secret scanning and push protection are on.
 4. A push to `main` is the deploy: the box fetches `main` and applies it.
 
 Nothing changes the box by hand. A hand fix is lost on the next deploy.

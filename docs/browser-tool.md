@@ -46,10 +46,8 @@ credential file does not hold them back.
   line).
 - Delete it all: remove the tasks from "Create the Chrome
   DevTools MCP install directory" through "Add the chrome-devtools entry under
-  Hermes' mcp_servers" in `ansible/tasks/mcp-and-agent-clis.yml`,
-  `config/chrome-devtools-mcp/` and `tests/test_chrome_devtools_mcp.py` with its
-  `ci.yml` step.
-- The check is the `ci` step "Chrome DevTools MCP is pinned once and wired into
-  every agent": the args match in every fragment, and the Codex and Hermes
-  tasks run twice against temp copies (the second run changes nothing).
+  Hermes' mcp_servers" in `ansible/tasks/mcp-and-agent-clis.yml` and
+  `config/chrome-devtools-mcp/`.
+- The check is CI's host-play `ansible-playbook --syntax-check` and
+  `ansible-lint`; no job asserts the MCP wiring since the 2026-11-01 reset.
 
