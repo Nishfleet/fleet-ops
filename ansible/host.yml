@@ -133,6 +133,15 @@
       - /etc/systemd/system/dockerd-eval.service
       - /etc/tmpfiles.d/dockerd-eval.conf
       - /etc/nftables.d/evalnet.nft
+      # The hand bridge placed on the box during the HermesGatewayDown incident
+      # (fleet-ops#11896, 2026-11-10): hermes-gateway.service restart failed without
+      # the dashboard login env file hermes-serve.service carries, and this
+      # hand-written drop-in loaded that file once, so the gateway started at its
+      # 18:08 UTC hand start and the alert cleared. The shared sandbox drop-in carries
+      # the line now (rootfs/etc/systemd/system/hermes-.service.d/sandbox.conf),
+      # so the play deletes the hand bridge and the box holds nothing the play
+      # does not own.
+      - /etc/systemd/system/hermes-gateway.service.d/10-dashboard-login.conf
       - /etc/fleet-ops/dockerd-eval.json
       - /run/dockerd-eval
       - "{{ nish_home }}/.local/share/dockerd-eval"

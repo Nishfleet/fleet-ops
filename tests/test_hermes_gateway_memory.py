@@ -39,3 +39,22 @@ def test_hermes_gateway_unit_stays_the_installers() -> None:
         "would put its versioned PATH back after an upgrade. Keep the caps in "
         "hermes-.service.d/sandbox.conf instead of checking in a copy of the unit."
     )
+
+
+# fleet-ops#11896: the installer-written gateway unit carries no EnvironmentFile, so the
+# deploy of 2026-11-10 that restarted Hermes onto a changed sandbox.conf left it refusing
+# to start for ~8 minutes and Prometheus fired HermesGatewayDown. The dashboard login env
+# file hermes-serve.service reads itself joined the shared drop-in instead, and the hand
+# bridge that restarted the gateway on the box was retired; both locks hold or it breaks
+# again.
+def test_the_shared_dropin_carries_the_gateway_login() -> None:
+    values = _service_values(DROPIN)
+    assert values["EnvironmentFile"] == ["-/home/nish/.hermes/secrets.env"]
+
+
+def test_no_per_unit_gateway_dropin_is_checked_in() -> None:
+    assert not (SYSTEM / "hermes-gateway.service.d").exists(), (
+        "the gateway's dashboard-login line lives in hermes-.service.d/sandbox.conf; "
+        "a per-unit hermes-gateway.service.d in rootfs/ would put the hand bridge "
+        "(fleet-ops#11896) back on the play as a checked-in file."
+    )
