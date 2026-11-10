@@ -27,6 +27,7 @@
       - gpg
       - iproute2
       - jq
+      - logrotate
       - nftables
       - openssh-server
       - podman

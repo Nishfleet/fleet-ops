@@ -20,16 +20,23 @@
 
 # Vault and agent memory. The standing rules name the vault as the durable
 # memory: one fact per file, edited in place. tooling/nish-vault is that vault
-# (35 MiB); the ~/nish-vault beside it is only the agent drop inbox.
+# (35 MiB); the ~/nish-vault beside it was only the agent drop inbox and is
+# dropped (dead since October — the live vault is the tooling one kept here).
 # workspaces/agent-memory is the one-line-per-fact memory dir, and the
 # nightly LiteLLM pg_dump lands in agent-state/backups.
 /home/nish/workspaces/tooling/nish-vault
 /home/nish/workspaces/agent-memory
-/home/nish/nish-vault
 /home/nish/workspaces/agent-state/_system
 /home/nish/workspaces/agent-state/backups
 /home/nish/.hermes
 /home/nish/.pi/agent
+
+# The Mac rescue proof archive (2026-10-09 bundles, tars, patches and the
+# recovered hermes-agent history). The only copy of work that is on no remote
+# (fleet-ops#9524), the detailed proof the Mac disposition docs cite, and it
+# stays off the public repos on purpose — so this list is the only copy off
+# the box: Syncthing carries just the vault, no sync covers this folder.
+/home/nish/workspaces/tooling/mac-rescue-20261009
 
 # Product working trees. Most of this is a git clone with a remote, but not
 # all of it: uncommitted edits, local-only branches and repos with no remote
