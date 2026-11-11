@@ -1,32 +1,45 @@
 name: answer
-# When nishfleet-approver requests changes on an agent/issue-* PR, dispatch agent.yml on main
-# to answer them. It cannot run here, because a pull_request_review run is on the PR's merge
-# ref, which environment `agent` (main only) refuses.
+# Two dead ends dispatch agent.yml on main: nishfleet-approver requesting changes on an
+# agent/issue-* PR, and CI completing with a failure on the head of one (the reviewer reads
+# green CI only, review.yml, so a red PR drew no review and no answer round). The hop cannot
+# run on the events themselves: a pull_request_review run is on the PR's merge ref and a
+# workflow_run run is on the default branch, both of which environment `agent` (main only)
+# refuses; a dispatch by GITHUB_TOKEN starts a run instead.
 # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_review
+# https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run
 # https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs
 on:
   pull_request_review:
     types: [submitted]
   workflow_call:
+  workflow_run: # zizmor: ignore[dangerous-triggers] nothing from the pull request is checked out or run
+    workflows: [CI]
+    types: [completed]
 permissions: {}
 jobs:
   dispatch:
     if: >-
-      github.event.review.state == 'changes_requested' &&
-      github.event.review.user.login == 'nishfleet-approver' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'agent/issue-')
+      (github.event_name == 'pull_request_review' &&
+        github.event.review.state == 'changes_requested' &&
+        github.event.review.user.login == 'nishfleet-approver' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        startsWith(github.event.pull_request.head.ref, 'agent/issue-')) ||
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'failure' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        startsWith(github.event.workflow_run.head_branch, 'agent/issue-'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {actions: write}
     steps:
-      - name: Dispatch the review round on the default branch
+      - name: Dispatch the agent lane on the default branch
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          NUMBER: ${{ github.event.pull_request.number }}
           MAIN: ${{ github.event.repository.default_branch }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch }}
+          NUMBER: ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number }}
         run: |
           set -euo pipefail
           issue=${HEAD_REF#agent/issue-}

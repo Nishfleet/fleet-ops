@@ -83,8 +83,16 @@ def review(state, sha=SHA, body="finding", user="nishfleet-approver"):
     return {"user": {"login": user}, "state": state, "commit_id": sha, "body": body}
 
 
-def round_data(reviews, ref="agent/issue-7"):
-    return {"repos/o/r/pulls/12": {"head": {"ref": ref, "sha": SHA}}, "repos/o/r/pulls/12/reviews?per_page=100": reviews}
+def round_data(reviews, ref="agent/issue-7", failing=(), red_answers=0):
+    # The round step reads the check runs of the head sha too, so a red CI head can be
+    # answered (failing = names of failed check runs). A green head by default.
+    return {"repos/o/r/pulls/12": {"head": {"ref": ref, "sha": SHA}},
+            "repos/o/r/pulls/12/reviews?per_page=100": reviews,
+            f"repos/o/r/commits/{SHA}/check-runs?per_page=100":
+                {"check_runs": [{"name": n, "status": "completed", "conclusion": "failure"}
+                                for n in failing]},
+            "repos/o/r/issues/12/comments?per_page=100":
+                [{"body": f"agent: answering red CI on {OLD} (ci): x"}] * red_answers}
 
 
 def labelled(calls):
@@ -121,6 +129,53 @@ def test_no_run_unless_the_bots_last_review_requests_changes_on_the_head(tmp_pat
 def test_a_pr_off_the_issues_branch_is_refused(tmp_path):
     proc, _, _ = run_step(tmp_path, step("claim", "round"), round_data([review("CHANGES_REQUESTED")], ref="feature"), ISSUE="7", PR="12")
     assert proc.returncode != 0
+
+
+# A red head can never carry the bot's change request (the reviewer reads green CI only), so
+# the round step answers a failed check run on it instead, under the same cap.
+# https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
+RED_COMMENT = ["api", "repos/o/r/issues/12/comments", "-f",
+               f"body=agent: answering red CI on {SHA} (ci): https://github.com/o/r/actions/runs/1"]
+
+
+def test_a_red_head_with_a_stale_change_request_still_runs_the_worker(tmp_path):
+    reviews = [review("CHANGES_REQUESTED", OLD)]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews, failing=("ci",)), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert "go=true" in out and "ref=agent/issue-7" in out
+    task = out.split("\n", 1)[1]
+    assert task.startswith(f"The CI on #12 is red on {SHA}; the failed jobs are: ci")
+    assert "run-proof" in task
+    assert RED_COMMENT in calls
+    assert labelled(calls) == []
+
+
+def test_a_red_head_on_a_fresh_pr_runs_too(tmp_path):
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data([], failing=("ci",)), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert out.endswith("go=true\n") and RED_COMMENT in calls and labelled(calls) == []
+
+
+def test_a_third_red_answer_after_the_change_requests_goes_to_the_owner(tmp_path):
+    reviews = [review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD)]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews, failing=("ci",)), ISSUE="7", PR="12")
+    assert proc.returncode == 0 and out == "go=false\n"
+    assert labelled(calls) == [["api", "repos/o/r/issues/12/labels", "-f", "labels[]=needs-owner"]]
+    assert RED_COMMENT not in calls
+
+
+def test_a_third_red_head_in_a_row_goes_to_the_owner(tmp_path):
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data([], failing=("ci",), red_answers=2), ISSUE="7", PR="12")
+    assert proc.returncode == 0 and out == "go=false\n"
+    assert labelled(calls) == [["api", "repos/o/r/issues/12/labels", "-f", "labels[]=needs-owner"]]
+    assert RED_COMMENT not in calls
+
+
+def test_a_green_head_without_a_change_request_still_runs_nothing(tmp_path):
+    reviews = [review("APPROVED")]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
+    assert proc.returncode == 0 and out == "go=false\n"
+    assert labelled(calls) == [] and RED_COMMENT not in calls
 
 
 def test_only_a_go_starts_the_worker():
@@ -160,10 +215,20 @@ def test_a_review_answer_appends_its_proof_to_the_body_before_the_push(tmp_path,
 
 def test_the_hop_fires_only_on_the_bots_change_request_and_holds_no_secret():
     hop = HOP["jobs"]["dispatch"]
-    assert HOP.get("on", HOP.get(True))["pull_request_review"] == {"types": ["submitted"]}
+    on = HOP.get("on", HOP.get(True))
+    assert on["pull_request_review"] == {"types": ["submitted"]}
+    # fleet-ops#11860: CI completing with a failure on an agent/issue-* head dispatches the
+    # lane too, because the reviewer reads green CI only, so a red PR drew no review.
+    assert on["workflow_run"] == {"workflows": ["CI"], "types": ["completed"]}
     for cond in ("github.event.review.state == 'changes_requested'", "github.event.review.user.login == 'nishfleet-approver'",
                  "startsWith(github.event.pull_request.head.ref, 'agent/issue-')",
                  "github.event.pull_request.head.repo.full_name == github.repository"):
+        assert cond in hop["if"]
+    for cond in ("github.event_name == 'workflow_run'",
+                 "github.event.workflow_run.conclusion == 'failure'",
+                 "github.event.workflow_run.event == 'pull_request'",
+                 "github.event.workflow_run.head_repository.full_name == github.repository",
+                 "startsWith(github.event.workflow_run.head_branch, 'agent/issue-')"):
         assert cond in hop["if"]
     assert hop["runs-on"] == "ubuntu-latest" and hop["permissions"] == {"actions": "write"}
     assert "environment" not in hop and "secrets." not in yaml.safe_dump(hop)

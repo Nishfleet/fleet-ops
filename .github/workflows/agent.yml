@@ -22,8 +22,9 @@ run-name: "agent #${{ github.event.issue.number || inputs.issue }} engine=${{ in
 # The lane answers the one review on its own PRs (global-standing-rules.md: the builder
 # answers each finding, the same reviewer signs off, hard cap 3 rounds). answer.yml
 # dispatches this workflow on main with `issue` and `pr` when nishfleet-approver requests
-# changes on an agent/issue-* PR; the run reads that review from the API, fixes the same
-# branch, and the push starts CI and the re-review.
+# changes on an agent/issue-* PR or when CI fails on its head; the run reads the review, or
+# the check runs against the head, fixes the same branch, and the push starts CI and the
+# re-review.
 on:
   issues:
     types: [labeled]
@@ -123,11 +124,11 @@ jobs:
           gh issue comment "$ISSUE" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           eof="ISSUE_$(openssl rand -hex 16)"
           { echo "issue<<$eof"; gh issue view "$ISSUE" -R "$REPO" --json title,body --template '{{.title}}'$'\n\n''{{.body}}'; echo; echo "$eof"; } >> "$GITHUB_OUTPUT"
-      # A review round: the task is the body of the bot's last review and nothing else. A
-      # round counts each change request from the bot; the third goes to the owner. This step
-      # always runs, so `go` is always one step output; an issue run is always a go.
+      # A review round: the task is the body of the bot's last review and nothing else. This
+      # step always runs, so `go` is always one step output; an issue run is always a go.
       # https://docs.github.com/en/rest/pulls/reviews#list-reviews-for-a-pull-request
-      - name: Read the bot's review
+      # https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
+      - name: Read the bot's review or the red CI
         id: round
         env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
         run: |
@@ -137,13 +138,31 @@ jobs:
           [ "$ref" = "agent/issue-$ISSUE" ] || { echo "::error::PR #$PR is on $ref, not agent/issue-$ISSUE"; exit 1; }
           gh api "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq '[.[] | select(.user.login == "nishfleet-approver")]' > "$RUNNER_TEMP/reviews.json"
           rounds=$(jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' "$RUNNER_TEMP/reviews.json")
-          if [ "$(jq -r 'last | "\(.state) \(.commit_id)"' "$RUNNER_TEMP/reviews.json")" != "CHANGES_REQUESTED $sha" ]; then
-            echo "the bot's last review is no change request on $sha; nothing to answer"; echo go=false >> "$GITHUB_OUTPUT"; exit 0
+          # A review round is the bot's last look asking for changes on this head. A red head
+          # cannot get one, the reviewer reads green CI only (review.yml), so the lane answers
+          # a failure the checks report on this sha instead: a check run with conclusion
+          # "failure" names the dead job. Both rounds ride the same cap of 3: each change
+          # request from the bot, each "answering red CI" comment this step left on the PR,
+          # and this red head itself count one round, so the third (say a red head after two
+          # change requests, or a third red head in a row) labels the PR needs-owner and runs
+          # nothing.
+          # https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
+          # https://docs.github.com/en/rest/issues/comments#list-issue-comments
+          failing=$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" --jq '[.check_runs[] | select(.conclusion == "failure") | .name] | join(" ")')
+          red=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --jq '[.[] | select(.body | startswith("agent: answering red CI on "))] | length')
+          rounds=$((rounds + red + (${#failing} > 0 ? 1 : 0)))
+          if [ -z "$failing" ] && [ "$(jq -r 'last | "\(.state) \(.commit_id)"' "$RUNNER_TEMP/reviews.json")" != "CHANGES_REQUESTED $sha" ]; then
+            echo "the bot's last review is no change request on $sha and its checks are green; nothing to answer"; echo go=false >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ "$rounds" -ge 3 ]; then
             gh api "repos/$REPO/issues/$PR/labels" -f 'labels[]=needs-owner' > /dev/null
             gh api "repos/$REPO/issues/$PR/comments" -f body="agent: review round $rounds still asks for changes; the cap is 3 rounds, so the owner decides." > /dev/null
             echo go=false >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -n "$failing" ]; then
+            gh api "repos/$REPO/issues/$PR/comments" -f body="agent: answering red CI on $sha ($failing): $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
+            eof="RED_$(openssl rand -hex 16)"
+            { echo "task<<$eof"; echo "The CI on #$PR is red on $sha; the failed jobs are: $failing. Fix the failures with the smallest change on this same branch and leave the run-proof line the prompt asks for."; echo "$eof"; echo "ref=$ref"; echo go=true; } >> "$GITHUB_OUTPUT"; exit 0
           fi
           gh api "repos/$REPO/issues/$PR/comments" -f body="agent: answering review round $rounds: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
           eof="REVIEW_$(openssl rand -hex 16)"
