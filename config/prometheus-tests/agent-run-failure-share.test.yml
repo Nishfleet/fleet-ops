@@ -43,6 +43,37 @@ tests:
         alertname: AgentRunFailureShare
         exp_alerts: []
 
+  # A one-day failure burst (fleet-ops#11915: ten failed runs on 2026-11-10, the push token
+  # missing workflows: write and a fleet-wide runner restart) fires only while the burst
+  # straddles both 24-hour windows, and clears as soon as the last 24 hours is clean - even
+  # though the 24 hours before is at its worst. The alert therefore keeps firing for hours
+  # after the fix lands and resolves itself; no change chases it.
+  - interval: 15m
+    input_series:
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="success"}'
+        values: '0+10x240'
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="failure"}'
+        values: '0x96 0+1x48 48x96'
+    alert_rule_test:
+      # The burst (hours 24-36) is only in the last window; the day before had none.
+      - eval_time: 45h
+        alertname: AgentRunFailureShare
+        exp_alerts: []
+      # The burst straddles the 24-hour boundary: both windows over 2%, so it fires.
+      - eval_time: 54h30m
+        alertname: AgentRunFailureShare
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "more than 2% of finished agent runs failed two days running"
+              description: "2.34% of finished agent.yml runs failed in the last 24 hours, and over 2% the 24 hours before. Find what fails most, fix it, and prove the share fell. Runs: https://github.com/Nishfleet/fleet-ops/actions/workflows/agent.yml"
+      # The burst has aged out of the last window: 1.6% now, quiet - the window before is
+      # still 3.2%, and the alert clears anyway.
+      - eval_time: 56h
+        alertname: AgentRunFailureShare
+        exp_alerts: []
+
   # No run finished for two days (dispatch paused): 0 of 0 is no share, so quiet.
   - interval: 15m
     input_series:
