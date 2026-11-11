@@ -119,7 +119,26 @@ jobs:
           # An assignment, so a failed call stops the job instead of approving.
           edits=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq "$TEST_EDITS")
           [ "$event" != APPROVE ] || [ -z "$edits" ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: this PR deletes or changes existing test lines.'; owner_hold=1; }
-          gh api "repos/$REPO/pulls/$PR/reviews" -f commit_id="$SHA" -f event="$event" -f body="$REVIEW"
+          new_id=$(gh api "repos/$REPO/pulls/$PR/reviews" -f commit_id="$SHA" -f event="$event" -f body="$REVIEW" --jq .id)
+          # A hold posts as a comment, and a comment does not replace the reviewer's own
+          # change request: GitHub keeps it in force until the same reviewer approves or
+          # the review is dismissed, so the owner's later approval could not merge
+          # (Nishfleet/0509#7947). Dismiss the reviewer's own change request that is still
+          # in force: its latest review that is not a comment. An APPROVE verdict already
+          # replaces it, and a new CHANGES verdict posts as REQUEST_CHANGES, which keeps
+          # it. https://docs.github.com/en/rest/pulls/reviews#dismiss-a-review-for-a-pull-request
+          if [ "$event" = COMMENT ]; then
+            reviewer=$(gh api user --jq .login) || reviewer=''
+            last=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+                --jq '.[] | select(.state != "COMMENTED") | [.id, .user.login, .state] | @tsv' \
+                | awk -F'\t' -v r="$reviewer" '$2 == r { id = $1; state = $3 } END { print state "\t" id }') || last=''
+            state=${last%%$'\t'*} id=${last#*$'\t'}
+            if [ "$state" = CHANGES_REQUESTED ]; then
+              gh api -X PUT "repos/$REPO/pulls/$PR/reviews/$id/dismissals" \
+                -f message="Dismissing this change request: superseded by review $new_id, the hold on $SHA." \
+                || echo "::warning::could not dismiss the reviewer's change request on #$PR"
+            fi
+          fi
           # A hold that only posts a comment told nobody: 34 pull requests sat held for a
           # week (2026-11-10). The label and the review request are stock gh; the request
           # itself raises the owner's GitHub notification. Approved pulls are not touched.
