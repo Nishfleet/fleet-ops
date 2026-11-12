@@ -308,6 +308,13 @@
         name: ssh.socket
         state: restarted
 
+    # The vendor timer is active on its daily schedule; restart it so the
+    # drop-in's Sunday OnCalendar takes effect before the next 06:00 run.
+    - name: Restart apt-daily-upgrade.timer
+      ansible.builtin.systemd_service:
+        name: apt-daily-upgrade.timer
+        state: restarted
+
     # systemd_service scope=user would reload root's user manager, not nish's.
     - name: Reload nish's user manager  # noqa: command-instead-of-module no-changed-when
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host daemon-reload

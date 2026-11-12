@@ -4,25 +4,39 @@
 It runs `ansible/update.yml` as root through `ansible-pull`:
 
 1. `npm update --global`, then `uv tool upgrade --all`, each capped at 900 s.
-2. Ubuntu packages update through `unattended-upgrades`, and Claude Code
-   through its own auto-updater, so this run does not touch them.
+2. Ubuntu packages update through `unattended-upgrades` (Sunday 03:00, see
+   below), and Claude Code through its own auto-updater, so this run does not
+   touch them.
 
 A failed run retries after 30 min, at most 3 starts in 4 h, and then stays
 `failed`, which `SystemUnitFailed` reads. A run that hangs fails at 45 min
 (`TimeoutStartSec=`).
 
-It never reboots. When a package needs a reboot, it opens one
-`needs-nish-decision` issue. The daily security updates (`unattended-upgrades`)
-stay on; `rootfs/etc/needrestart/conf.d/50-fleet.conf` makes them only list
-services on old libraries, so they never restart a service mid-job.
+`fleet-update.service` never reboots. A pending reboot is taken by the
+vendor's `unattended-upgrades` in the Sunday 03:30 quiet window:
+`Unattended-Upgrade::Automatic-Reboot "true"` and
+`Automatic-Reboot-Time "03:30"` in
+`rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades`. Its own
+`apt-daily-upgrade.timer` runs the upgrade at 03:00 that day
+(`rootfs/etc/systemd/system/apt-daily-upgrade.timer.d/50-fleet-weekly.conf`),
+because `Automatic-Reboot-Time` is a time of day, not a weekday. Both are the
+host's local time: the timer's `OnCalendar` names no timezone and `shutdown(8)`
+reads the reboot time in the same clock, so the two cannot drift apart. The
+box comes back in about a minute; `fleet-host-config-boot.timer` reapplies the
+host play three minutes after boot, which starts the runners, and GitHub's
+queue sends the pending jobs to them. The weekly security updates
+(`unattended-upgrades`) stay on; `rootfs/etc/needrestart/conf.d/50-fleet.conf`
+makes them only list services on old libraries, so they never restart a
+service mid-job.
 `hermes-gateway.service` and `hermes-serve.service` are not restarted by it
 either, so they run on old system libraries until the next reboot.
 `hermes-gateway.service` is the unit Hermes' own installer writes; `sudo hermes
 gateway restart --system` restarts it and rewrites it when Hermes changes it.
-`claude-remote-control.service` is never restarted, by either path. A change to
-it is therefore staged on merge: the file is copied in and the running server
-keeps its old session until Nish restarts it, because that restart cuts his
-phone link (#9425). The staged file as of 2026-10-08 adds
+`claude-remote-control.service` is never auto-restarted by needrestart: the
+only restarts are Nish's own and, in a week with security updates, the Sunday
+reboot. A change to it is therefore staged on merge: the file is copied in and
+the running server keeps its old session until Nish restarts it or a Sunday
+reboot applies it, because that restart cuts his phone link (#9425). The staged file as of 2026-10-08 adds
 `--no-create-session-in-dir`, so relayed coordinator work no longer piles into
 one standing session. Each request from the phone or a claude.ai/code project
 relay then gets its own session with a fresh context. The one standing session
