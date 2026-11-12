@@ -1,0 +1,32 @@
+# Safe updates merge themselves (fleet-ops#11920): a patch or minor bump with
+# green CI merges through the merge queue with no owner click; a major keeps
+# the owner hold. This is the stock pattern from GitHub Docs, "Automating
+# Dependabot with GitHub Actions" (enable auto-merge on a pull request),
+# `gh pr merge --auto` plus dependabot/fetch-metadata's update-type. No script,
+# poller or bot of our own. The bumps Dependabot opens in this repo touch only
+# action SHA pins in .github/workflows/** (see dependabot.yml), so a bump never
+# edits auth, billing or migration code and the owner hold on those is moot.
+name: Dependabot auto-merge
+on: pull_request
+permissions:
+  contents: write
+jobs:
+  dependabot:
+    name: Arm auto-merge on a patch or minor bump
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    steps:
+      - name: Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2.5.0
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+      - name: Enable auto-merge for patch and minor (majors keep the owner hold)
+        if: >-
+          contains(steps.metadata.outputs.update-type, 'version-update:semver-patch') ||
+          contains(steps.metadata.outputs.update-type, 'version-update:semver-minor')
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{github.event.pull_request.html_url}}
+          GH_TOKEN: ${{secrets.GITHUB_TOKEN}}
