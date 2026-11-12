@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Edit(//var/lib/fleet-runner/*/_work/**)",
+      "Glob",
+      "Grep",
+      "Read",
+      "Skill",
+      "TodoWrite"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "excludedCommands": [
+      "systemctl status *",
+      "systemctl list-units *",
+      "systemctl list-timers *",
+      "systemctl --user status *",
+      "systemctl --user list-units *",
+      "systemctl --user list-timers *"
+    ],
+    "filesystem": {
+      "allowWrite": [
+        "~/.npm"
+      ]
+    },
+    "network": {
+      "allowedDomains": [
+        "github.com",
+        "api.github.com",
+        "codeload.github.com",
+        "*.githubusercontent.com",
+        "registry.npmjs.org",
+        "pypi.org",
+        "files.pythonhosted.org",
+        "127.0.0.1:4000"
+      ]
+    }
+  }
+}

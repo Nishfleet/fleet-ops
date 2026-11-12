@@ -621,6 +621,7 @@ this repo under `rootfs/etc/claude-code/roles/`, installed to
 | --- | --- | --- |
 | `tincan-listen-claude-vps.service` | `tincan-listener.json` | `--settings /etc/claude-code/roles/tincan-listener.json` on `claude -p` |
 | `claude-remote-control.service` | `remote-control.json` | spawned sessions read `~/.claude/settings.json` (`claude remote-control` refuses `--settings`) |
+| agent lane's Claude engine (agent.yml, fleet-ops#11878) | `lane-worker.json` | `--permission-mode dontAsk --settings /etc/claude-code/roles/lane-worker.json --setting-sources project,local` on `claude -p`; file edits stop at the runners' `/var/lib/fleet-runner/*/_work/**`, sandbox as in `detached-job.json` |
 
 ### The browser MCP entry (fleet-ops#10222)
 
