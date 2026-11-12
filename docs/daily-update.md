@@ -32,10 +32,11 @@ service mid-job.
 either, so they run on old system libraries until the next reboot.
 `hermes-gateway.service` is the unit Hermes' own installer writes; `sudo hermes
 gateway restart --system` restarts it and rewrites it when Hermes changes it.
-`claude-remote-control.service` is never restarted, by either path. A change to
-it is therefore staged on merge: the file is copied in and the running server
-keeps its old session until Nish restarts it, because that restart cuts his
-phone link (#9425). The staged file as of 2026-10-08 adds
+`claude-remote-control.service` is never auto-restarted by needrestart: the
+only restarts are Nish's own and, in a week with security updates, the Sunday
+reboot. A change to it is therefore staged on merge: the file is copied in and
+the running server keeps its old session until Nish restarts it or a Sunday
+reboot applies it, because that restart cuts his phone link (#9425). The staged file as of 2026-10-08 adds
 `--no-create-session-in-dir`, so relayed coordinator work no longer piles into
 one standing session. Each request from the phone or a claude.ai/code project
 relay then gets its own session with a fresh context. The one standing session
