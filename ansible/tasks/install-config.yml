@@ -157,6 +157,7 @@
     owner: root
     group: root
     mode: preserve
+  register: fleet_runner_unit
   notify:
     - Reload systemd
     - Restart the agent runners

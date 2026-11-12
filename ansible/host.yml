@@ -265,15 +265,24 @@
         daemon_reload: true
 
     # A runner reads its unit, .env and .path only at start, so a change to one restarts it
-    # (fleet-ops#11715 left 15 runners on the old unit). The restart cancels the job the
-    # runner runs: GitHub documents no drain for a self-hosted runner. Handlers run in the
-    # order listed here, so systemd reloads first.
+    # (fleet-ops#11715 left 15 runners on the old unit). Only the runners whose .env or .path
+    # changed restart; the unit is one file every runner reads at start, so a unit change
+    # restarts the whole pool. Restarting runners whose file did not change cancels the jobs
+    # they run for nothing (fleet-ops#11932: the pool-to-30 deploy wrote runners 16 to 30
+    # their first .env and .path, restarted all 30, and the 5 agent.yml runs that were
+    # running failed). The restart cancels the job the runner runs: GitHub documents no
+    # drain for a self-hosted runner. Handlers run in the order listed here, so systemd
+    # reloads first.
     # https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_handlers.html
+    # https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_filters.html (ternary)
     - name: Restart the agent runners
       ansible.builtin.systemd_service:
         name: "fleet-runner@{{ item }}.service"
         state: restarted
-      loop: "{{ fleet_runner_ids }}"
+      loop: >-
+        {{ fleet_runner_unit.changed | ternary(fleet_runner_ids,
+        ((fleet_runner_env.results + fleet_runner_path.results) | selectattr('changed')
+        | map(attribute='item') | unique | list)) }}
 
     - name: Restart the review runners
       ansible.builtin.systemd_service:
