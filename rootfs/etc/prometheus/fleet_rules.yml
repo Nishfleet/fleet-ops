@@ -202,20 +202,28 @@ groups:
       # (https://api.minimax.io/anthropic), while the counter carries the runtime URL
       # the Anthropic provider built (https://api.minimax.io/anthropic/v1/messages),
       # so an exact `unless on (api_base)` join missed a plan that had thousands of
-      # successful calls and fired anyway. label_replace strips a trailing
-      # "/v1/messages" (the only runtime suffix the exporter adds) from the raw
-      # series first, so both label sets for one plan collapse into the same
-      # api_base in the sum by, both branches name the plan the way
-      # config/paid-plans.json does, and the join is a plan-level one.
+      # successful calls and fired anyway. And the runtime suffix is not one string
+      # (fleet-ops#11943, seen live 2026-11-12): CommandCode's OpenAI provider serves
+      # some calls through the Responses API, so the exporter labels those deployments'
+      # state with the runtime URL plan api_base + "/v1/responses" while the counter
+      # stays at the configured one, and a "/v1/messages"-only strip fired CommandCode
+      # — a plan with thousands of successful calls — all the same. The two suffixes
+      # are not shaped alike (the Anthropic provider appends "/v1/messages" to a base
+      # without one; the OpenAI one appends "/responses" to a base that already ends
+      # in "/v1"), so label_replace chains two strips on the raw series: a trailing
+      # "/v1/messages", then a trailing "/responses" after a kept "/v1". Both label
+      # sets for one plan collapse into the same api_base in the sum by, both branches
+      # name the plan the way config/paid-plans.json does, and the join is a
+      # plan-level one.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       - alert: PaidPlanIdle
         expr: |
           (
-            sum by (api_base) (label_replace(increase(litellm_deployment_success_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}[24h]), "api_base", "$1", "api_base", "(.*)/v1/messages")) == 0
+            sum by (api_base) (label_replace(label_replace(increase(litellm_deployment_success_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}[24h]), "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses")) == 0
             or
-            sum by (api_base) (label_replace(litellm_deployment_state{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}, "api_base", "$1", "api_base", "(.*)/v1/messages"))
+            sum by (api_base) (label_replace(label_replace(litellm_deployment_state{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}, "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses"))
             unless on (api_base)
-            sum by (api_base) (label_replace(increase(litellm_deployment_success_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}[24h]), "api_base", "$1", "api_base", "(.*)/v1/messages"))
+            sum by (api_base) (label_replace(label_replace(increase(litellm_deployment_success_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}[24h]), "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses"))
           )
         labels:
           severity: warning
