@@ -1,0 +1,111 @@
+name: product-ci
+# The one shared build-check set every product repo calls (fleet-ops#11924;
+# owner "yes to all 5", 2026-11-12): lint, typecheck, test, build, nothing
+# else. GitHub's stock reusable workflow is the only feature that shares CI
+# across repos; a ruleset can only require a check to pass, it cannot run one
+# for a repo that has none:
+# https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
+# A product ci.yml calls this pinned to a commit SHA, never @main (#9705), and
+# passes inputs; a caller never overrides steps. An empty command skips its
+# job; the changes job always runs, so every check still reports — a skipped
+# required check passes, but a workflow that never starts hangs the merge
+# queue, which is what trigger-level path filters did to five repos (#9310):
+# https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches
+on:
+  workflow_call:
+    inputs:
+      node-version: {description: Node version to set up; empty skips setup, type: string, default: "24"}
+      install-command: {description: dependency install; empty skips it, type: string, default: "npm ci"}
+      lint-command: {description: lint; empty skips the job, type: string, default: "npm run lint"}
+      typecheck-command: {description: typecheck; empty skips the job, type: string, default: "npx tsc --noEmit"}
+      test-command: {description: tests; empty skips the job, type: string, default: "npm test"}
+      build-command: {description: build; empty skips the job, type: string, default: "npm run build"}
+permissions: {contents: read}
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  changes:
+    # Job-level path filter, never at trigger level (the CI standard).
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false, fetch-depth: 0}
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then echo code=true >> "$GITHUB_OUTPUT"; exit 0; fi
+          if git diff --name-only "$BASE" "$GITHUB_SHA" | grep -Eiv '\.md$|^docs/|^LICENSE' > /dev/null; then
+            echo code=true >> "$GITHUB_OUTPUT"
+          else
+            echo code=false >> "$GITHUB_OUTPUT"
+          fi
+  lint:
+    needs: changes
+    if: inputs.lint-command != '' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: inputs.node-version != ''
+        with: {node-version: "${{ inputs.node-version }}"}
+      - if: inputs.install-command != ''
+        env: {INSTALL: "${{ inputs.install-command }}"}
+        run: eval "$INSTALL"
+      - env: {CHECK: "${{ inputs.lint-command }}"}
+        run: eval "$CHECK"
+  typecheck:
+    needs: changes
+    if: inputs.typecheck-command != '' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: inputs.node-version != ''
+        with: {node-version: "${{ inputs.node-version }}"}
+      - if: inputs.install-command != ''
+        env: {INSTALL: "${{ inputs.install-command }}"}
+        run: eval "$INSTALL"
+      - env: {CHECK: "${{ inputs.typecheck-command }}"}
+        run: eval "$CHECK"
+  test:
+    needs: changes
+    if: inputs.test-command != '' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: inputs.node-version != ''
+        with: {node-version: "${{ inputs.node-version }}"}
+      - if: inputs.install-command != ''
+        env: {INSTALL: "${{ inputs.install-command }}"}
+        run: eval "$INSTALL"
+      - env: {CHECK: "${{ inputs.test-command }}"}
+        run: eval "$CHECK"
+  build:
+    needs: changes
+    if: inputs.build-command != '' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: inputs.node-version != ''
+        with: {node-version: "${{ inputs.node-version }}"}
+      - if: inputs.install-command != ''
+        env: {INSTALL: "${{ inputs.install-command }}"}
+        run: eval "$INSTALL"
+      - env: {CHECK: "${{ inputs.build-command }}"}
+        run: eval "$CHECK"
