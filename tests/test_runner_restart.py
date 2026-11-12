@@ -54,4 +54,15 @@ def test_no_task_restarts_a_runner_outside_the_handlers():
     for t in _play()["tasks"]:
         svc = t.get("ansible.builtin.systemd_service", {})
         assert not (svc.get("state") == "restarted" and "runner" in str(svc.get("name"))), t["name"]
-        assert "Runner.Worker" not in str(t.get("ansible.builtin.shell", "")), t["name"]
+
+
+def test_no_restart_consults_the_job_process():
+    """The glue that the 2026-11-01 reset deleted read Runner.Worker to decide a restart;
+    a restart belongs in a handler and fires on a file change. The one task that may
+    read the process is the retired-runners check (test_agent_runner_count.py), and it
+    restarts nothing."""
+    readers = [t for t in _play()["tasks"]
+               if "Runner.Worker" in str(t.get("ansible.builtin.shell", ""))]
+    assert [t["name"] for t in readers] == ["Find the retired runners that run no job"]
+    assert not any(t.get("ansible.builtin.systemd_service", {}).get("state") == "restarted"
+                   for t in readers)
