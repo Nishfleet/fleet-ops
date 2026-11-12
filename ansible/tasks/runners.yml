@@ -26,6 +26,20 @@
   loop: "{{ fleet_runner_ids }}"
   when: ('/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-' ~ item ~ '.service') is exists
 
+# Shrinking fleet_runner_ids (ansible/host.yml) only stops the play from managing
+# the cut runners: the units already installed for them stay enabled and keep
+# registering, and a runner that cannot get a `worker-capable` seat dies with code 1
+# (fleet-ops#11942). So the tail above the list is stopped and disabled here. The
+# template fleet-runner@.service is installed by tasks/install-config.yml before this
+# file runs, so the instances resolve whether or not they ever started, and the task
+# is a no-op on a host that never had them.
+- name: Stop and disable the runners cut from the pool
+  ansible.builtin.systemd_service:
+    name: "fleet-runner@{{ item }}.service"
+    enabled: false
+    state: stopped
+  loop: "{{ range(15, 31) | list }}"
+
 - name: Copy each runner registration to fleet-runner once
   ansible.builtin.copy:
     src: "{{ agent_runner_root }}/{{ item }}/"
