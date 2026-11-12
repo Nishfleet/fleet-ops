@@ -183,6 +183,28 @@ jobs:
           echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: repo, path: "${{ runner.temp }}/repo.bundle", retention-days: 1, overwrite: true}
+  # The ticket check, report only (fleet-ops#11949, owner 2026-11-12): before a builder
+  # starts, a fresh ticket is checked against the build rules and its verdict is posted as
+  # one comment on the ticket. The check is a job of review.yml, called here as a reusable
+  # workflow so it runs where the reviewer runners already accept jobs; no runner group
+  # changes. The if sits on this calling job, so a re-run that already has a pull request
+  # is skipped and never queues a reviewer runner. Report only: work keeps needs: [claim]
+  # and park keeps needs: [claim, work, push], so a check that hangs, fails or never gets
+  # a runner cannot stop, park or delay a build.
+  # https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
+  ticket-check:
+    needs: claim
+    # On the issues event the inputs context is empty, so the event names the fresh path;
+    # a call or a dispatch that already carries a pull request skips the whole call, so it
+    # is skipped, not queued, and no reviewer runner is asked for.
+    if: github.event_name == 'issues' || inputs.pr == ''
+    # The cap for the called workflow's token: the check reads the ticket and
+    # docs/review-bar.md and comments the verdict on the ticket, nothing else.
+    # https://docs.github.com/en/actions/reference/security/secure-use#considering-permissions-in-reusable-workflows
+    permissions: {contents: read, issues: write}
+    uses: Nishfleet/fleet-ops/.github/workflows/review.yml@main
+    with:
+      issue: ${{ github.event.issue.number || inputs.issue }}
   work:
     needs: claim
     if: needs.claim.outputs.go == 'true'
