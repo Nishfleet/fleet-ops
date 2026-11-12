@@ -11,7 +11,6 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -121,13 +120,13 @@ def test_a_fail_posts_the_verdict_and_what_to_change(tmp_path):
 
 
 def test_no_verdict_fails_the_step_loudly(tmp_path):
-    proc, out, calls = run_step(tmp_path, steps()["Check the ticket with the reviewer's seat"],
-                                check_data(), "no clear verdict\n")
+    proc, _out, calls = run_step(tmp_path, steps()["Check the ticket with the reviewer's seat"],
+                                 check_data(), "no clear verdict\n")
     assert proc.returncode != 0 and "::error::the reviewer gave no PASS or FAIL verdict" in proc.stdout
     assert comment_calls(calls) == []
 
 
 def test_the_seat_reads_the_ticket_from_the_workflow_level_repo(tmp_path):
-    proc, out, calls = run_step(tmp_path, steps()["Check the ticket with the reviewer's seat"], check_data(), PASS_VERDICT)
+    proc, _out, calls = run_step(tmp_path, steps()["Check the ticket with the reviewer's seat"], check_data(), PASS_VERDICT)
     assert proc.returncode == 0, proc.stderr
     assert "repos/o/r/issues/7" in calls[1] and "repos/Nishfleet/fleet-ops/contents/docs/review-bar.md?ref=main" in calls[0]
