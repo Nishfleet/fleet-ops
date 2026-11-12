@@ -145,6 +145,34 @@
   when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^  chrome-devtools:')
   diff: false
 
+# Webhook runs get Hermes' narrow default toolset, with no terminal, so a Tincan
+# wake had only cua's Space shell, and that cannot reach Docker inside the
+# sandbox.conf lock. Hermes documents a per-route `toolsets` key as a manual edit
+# of webhook_subscriptions.json, and the list replaces the default:
+# https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/messaging/webhooks.md#per-route-toolsets
+# Only the tincan route gets it: its senders are relay-approved fleet agents.
+- name: Read Hermes' webhook subscriptions
+  become: true
+  become_user: nish
+  ansible.builtin.slurp:
+    src: "{{ nish_home }}/.hermes/webhook_subscriptions.json"
+  register: hermes_webhooks
+  failed_when: false
+  no_log: true
+
+- name: Give the tincan webhook route Hermes' terminal
+  become: true
+  become_user: nish
+  ansible.builtin.copy:
+    dest: "{{ nish_home }}/.hermes/webhook_subscriptions.json"
+    content: "{{ subs | combine({'tincan': subs.tincan | combine({'toolsets': wanted})}) | to_nice_json(indent=2) }}\n"
+    mode: "0600"
+  vars:
+    subs: "{{ hermes_webhooks.content | b64decode | from_json }}"
+    wanted: [terminal, web, vision, clarify, x_search]
+  when: hermes_webhooks.content is defined and subs.tincan is defined and subs.tincan.toolsets | default([]) != wanted
+  no_log: true
+
 - name: Read Hermes' scheduled jobs
   become: true
   become_user: nish
