@@ -104,6 +104,10 @@ jobs:
           read -r head author proof < <(gh pr view "$PR" -R "$REPO" --json headRefOid,author,body --jq '"\(.headRefOid) \(.author.login) \(.body // "" | test("(?im)^run-proof:"))"')
           [ "$head" = "$SHA" ] || { echo "head moved past $SHA; its own CI run starts the next review"; exit 0; }
           # Set on every hold for the owner; only those get the label and the review request.
+          # The reviewer says HOLD-OWNER only on the owner's reserved classes (docs/review-bar.md
+          # point 4, fleet-ops#11921, owner 2026-11-12): money and pricing, privacy, security,
+          # legal, brand, product direction, customer-data deletion, destructive or irreversible
+          # steps. The owner's own pull request and test-line edits below hold regardless.
           owner_hold=''
           case "$(grep -oE '^VERDICT: [A-Z-]+' <<<"$REVIEW" | tail -1)" in
             'VERDICT: APPROVE') event=APPROVE ;;
