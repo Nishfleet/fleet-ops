@@ -1,6 +1,6 @@
-# The agent runner pool (fleet-ops#10935): the install, registration and the
-# pre-restart Node check live in tasks/runner-install.yml, imported before any task
-# that can notify a runner restart (fleet-ops#11927). This file gives each
+# The agent runner pool (fleet-ops#10935): the install and the pre-restart Node
+# check live in tasks/runner-install.yml, imported before any task that can notify
+# a runner restart (fleet-ops#11927). This file gives each
 # fleet_runner_id its environment and pi, then starts the units.
 #
 # The runner loads .env and .path over the unit's environment (fleet-ops#10510), and

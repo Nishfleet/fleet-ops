@@ -230,11 +230,6 @@
          | reject('match', '^(#|$)') | unique | list }}
 
   tasks:
-    # gh comes first: a new runner id is registered with the vendor's config.sh in
-    # runner-install.yml, and the play mints its short-lived org registration token
-    # with nish's gh login.
-    - ansible.builtin.import_tasks: tasks/gh-cli.yml
-
     # The runner install and the pre-restart Node check come before install-config.yml:
     # a missing bundled Node must fail the apply before a unit, .env or .path change
     # can notify a restart (fleet-ops#11826, #11927).
@@ -261,6 +256,8 @@
     - ansible.builtin.import_tasks: tasks/services.yml
 
     - ansible.builtin.import_tasks: tasks/syncthing.yml
+
+    - ansible.builtin.import_tasks: tasks/gh-cli.yml
 
     - ansible.builtin.import_tasks: tasks/retired-and-drift.yml
 

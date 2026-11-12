@@ -1,4 +1,4 @@
-# The agent pool's install and registration (fleet-ops#10935, #11927): fleet_runner_ids
+# The agent pool's install (fleet-ops#10935, #11927): fleet_runner_ids
 # run as the unprivileged user fleet-runner through
 # rootfs/etc/systemd/system/fleet-runner@.service, per GitHub's "Security hardening
 # for self-hosted runners". Its home holds only the runner installs, pi, pi's model
@@ -14,9 +14,7 @@
 # while the copy has no runsvc.sh, so a re-run never overwrites a live runner's state.
 # The install itself is the stock actions/runner release tarball below, unpacked for
 # every id, so a runner directory that was copied by hand or has lost a bundled Node is
-# repaired on apply. A new id with no registration is registered with the vendor's
-# `config.sh` and a short-lived org registration token minted with nish's gh login
-# (GitHub docs: "Adding self-hosted runners").
+# repaired on apply.
 - name: Create the runner user
   ansible.builtin.user:
     name: fleet-runner
@@ -117,8 +115,9 @@
 
 # The vendor's unit template runs the root runsvc.sh that its svc.sh install lays down;
 # this unit is our own, so lay down the same vendor file the template copies
-# (bin/systemd.svc.sh.template) for a new id whose config.sh does not create it. An
-# existing runner keeps its script: the runner updates it in place after the first install.
+# (bin/systemd.svc.sh.template): the unpack above brings bin/runsvc.sh, the copy puts it
+# where the unit ExecStarts it. An existing runner keeps its script: the runner updates
+# it in place after the first install.
 - name: Lay down the runner script the agent unit starts
   ansible.builtin.copy:
     src: "/var/lib/fleet-runner/{{ item }}/bin/runsvc.sh"
@@ -129,6 +128,8 @@
     mode: '0755'
     force: false
   loop: "{{ fleet_runner_ids }}"
+  # A --check run skips the unpack, so a new id has no bin/runsvc.sh to copy yet.
+  ignore_errors: "{{ ansible_check_mode }}"
 
 # runsvc.sh starts `externals/<node>/bin/node` before the listener, so a missing
 # one exits 127 and the apply would otherwise restart the whole pool onto a unit
@@ -150,49 +151,3 @@
   loop_control:
     label: "runner {{ item.item.0 }} {{ item.item.1 }}"
   ignore_errors: "{{ ansible_check_mode }}"
-
-# A new id has no registration to copy. config.sh is the vendor's registration
-# command; the token is a one-hour org registration token from GitHub's REST API,
-# read with nish's gh login and passed through the environment so it never reaches
-# argv (GitHub docs: "Adding self-hosted runners", "REST API endpoints for
-# self-hosted runners").
-- name: Read each runner's registration
-  ansible.builtin.stat:
-    path: "/var/lib/fleet-runner/{{ item }}/.runner"
-  loop: "{{ fleet_runner_ids }}"
-  register: fleet_runner_registrations
-
-- name: Mint a registration token for the runner ids with no registration
-  become: true
-  become_user: nish
-  environment: "{{ nish_env }}"
-  ansible.builtin.command:
-    argv: ["{{ tether_gh }}", api, --method, POST, orgs/Nishfleet/actions/runners/registration-token, --jq, .token]
-  register: fleet_runner_registration_token
-  changed_when: false
-  no_log: true
-  check_mode: false
-  when:
-    - not ansible_check_mode
-    - fleet_runner_registrations.results | rejectattr('stat.exists') | list | length > 0
-
-- name: Register each runner id that has no registration
-  become: true
-  become_user: fleet-runner
-  ansible.builtin.command:
-    argv:
-      - /bin/sh
-      - -c
-      - exec ./config.sh --unattended --replace --url https://github.com/Nishfleet --token "$RUNNER_REGISTRATION_TOKEN" --name "netcup-agent-$RUNNER_ID" --runnergroup agent --labels agent --work _work
-    chdir: "/var/lib/fleet-runner/{{ item }}"
-  environment:
-    HOME: /var/lib/fleet-runner
-    PATH: "/usr/local/bin:/usr/bin:/bin"
-    RUNNER_ID: "{{ item }}"
-    RUNNER_REGISTRATION_TOKEN: "{{ fleet_runner_registration_token.stdout }}"
-  loop: "{{ fleet_runner_registrations.results | rejectattr('stat.exists') | map(attribute='item') | list }}"
-  loop_control:
-    label: "runner {{ item }}"
-  changed_when: true
-  no_log: true
-  when: not ansible_check_mode
