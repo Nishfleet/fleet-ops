@@ -180,7 +180,11 @@ jobs:
   # a runner cannot stop, park or delay a build. The review job's if keeps this call off
   # the reviewer's pull-request path.
   ticket-check:
-    if: github.event_name == 'workflow_call' && inputs.issue != ''
+    # In a called workflow the github context is the caller's, so event_name is never
+    # 'workflow_call' (fleet-ops#11955); the input alone gates the job. On every other
+    # event (workflow_run, issues) the inputs context is empty, so the job skips.
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability
+    if: inputs.issue != ''
     # The same seat and runners as the review job; no runner group changes.
     runs-on: {group: reviewer, labels: [self-hosted, reviewer]}
     timeout-minutes: 30
