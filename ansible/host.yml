@@ -29,11 +29,6 @@
     # usable `worker-capable` seats, because the extra runners could not get one and
     # died with code 1), run as fleet-runner by tasks/runners.yml.
     fleet_runner_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
-    # The ids the 2026-11-12 cut retired: the pool was 1 to 30 until then.
-    # tasks/runners.yml stops each unit and deletes its registration only while it
-    # runs no job; GitHub then drops the offline runner from the org itself (GitHub
-    # docs: "Removing self-hosted runners").
-    fleet_runner_ids_retired: "{{ range((fleet_runner_ids | length) + 1, 31) | list }}"
     fleet_runner_pi_version: 1.4.0
     # The review runner (tasks/runners.yml): the stock actions/runner release, pinned by
     # version and the sha256 GitHub publishes with it.

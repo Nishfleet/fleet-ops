@@ -188,49 +188,6 @@
     daemon_reload: true
   loop: "{{ fleet_runner_ids }}"
 
-# The ids above the pool are retired (fleet-ops#11942). Stopping the unit kills the
-# job the runner runs (the service sends the listener SIGINT, then SIGKILL after
-# 30 s, actions/runner src/Misc/layoutbin/RunnerService.js), so a retired runner is
-# stopped only while it runs no job: the Runner.Worker process the listener starts
-# in the unit's cgroup (actions/runner v2.338.2 src/Runner.Listener/JobDispatcher.cs).
-# A busy runner waits for a later run (the next merge or the nightly run) to retire.
-# A retired runner is never restarted here: rc 0 retires, rc 1 leaves it, any other
-# rc fails the task, and an inactive unit prints no cgroup and is already idle.
-# pgrep(1) EXIT STATUS: https://man7.org/linux/man-pages/man1/pgrep.1.html
-- name: Find the retired runners that run no job
-  ansible.builtin.shell:
-    executable: /bin/bash
-    cmd: >-
-      cgroup=$(systemctl show -P ControlGroup fleet-runner@{{ item }}.service) || exit 2;
-      test -n "$cgroup" || exit 0;
-      pgrep --cgroup "$cgroup" -x Runner.Worker;
-      case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac
-  loop: "{{ fleet_runner_ids_retired }}"
-  register: fleet_runner_retired
-  changed_when: false
-  failed_when: (fleet_runner_retired.rc | default(2)) not in [0, 1]
-  check_mode: false
-
-- name: Retire the runners that run no job
-  ansible.builtin.systemd_service:
-    name: "fleet-runner@{{ item }}.service"
-    enabled: false
-    state: stopped
-  loop: "{{ fleet_runner_retired.results | selectattr('rc', 'equalto', 0) | map(attribute='item') | list }}"
-  register: fleet_runner_off
-  failed_when:
-    - fleet_runner_off.failed | default(false)
-    - "'Could not find' not in (fleet_runner_off.msg | default(''))"
-
-# With the `.runner` file gone, GitHub shows the runner Offline and, after 14 days
-# unconnected, drops it from the org itself (GitHub docs: "Removing self-hosted
-# runners"); no API call is needed.
-- name: Delete the retired runners' registrations
-  ansible.builtin.file:
-    path: "/var/lib/fleet-runner/{{ item }}"
-    state: absent
-  loop: "{{ fleet_runner_retired.results | selectattr('rc', 'equalto', 0) | map(attribute='item') | list }}"
-
 # The review runner: one runner, label `reviewer`, in runner group `reviewer` that only
 # fleet-ops review.yml@main may use, as its own user fleet-reviewer. It shares no user or
 # group with fleet-runner or nish, so a worker job cannot read or change the pi that writes
