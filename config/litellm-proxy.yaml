@@ -75,17 +75,13 @@ model_list:
     cache_proof: "Same gateway and model as the removed key-2 rows (88.4% cache-read 7d, #9357 scoreboard); this row is the monthly-quota-walled Go endpoint (#9122) with little traffic of its own."
     id: opencodego-ds41flash-worker-cheap
 - model_name: worker-capable
-  # z.ai Coding Plan slot (fleet-ops#10566, #10608). The one coding-plan key is paced: since
-  # 2026-11-05 its rows made 94% of the router's failed attempts, and the plan's own limit leaves
-  # no throughput in rows beyond 2, so only these two rows are kept on the key (owner decision
-  # 2026-11-10, the audit, decision 14; details off this public repo). Both carry
-  # max_parallel_requests: 1 (LiteLLM docs, Router: max_parallel_requests,
-  # https://docs.litellm.ai/docs/routing), so the failure share follows the plan, not the row count.
+  # z.ai Coding Plan slot (fleet-ops#10566, #10608). Two rows on the one coding-plan key (owner
+  # 2026-11-10, the audit, decision 14). No max_parallel_requests — note 21 in
+  # docs/litellm-router-notes.md; the plan's own 429s and the first-429 park pace the key.
   litellm_params:
     model: openai/glm-5.3-flash
     api_base: https://api.z.ai/api/coding/paas/v4
     api_key: os.environ/ZAI_API_KEY
-    max_parallel_requests: 1
     tags:
     - prepaid
     - zai
@@ -99,7 +95,6 @@ model_list:
     model: openai/glm-5.3-flash
     api_base: https://api.z.ai/api/coding/paas/v4
     api_key: os.environ/ZAI_API_KEY
-    max_parallel_requests: 1
     tags:
     - prepaid
     - zai
