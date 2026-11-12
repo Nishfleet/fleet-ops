@@ -266,20 +266,36 @@
 
     # A runner reads its unit, .env and .path only at start, so a change to one restarts it
     # (fleet-ops#11715 left 15 runners on the old unit). The restart cancels the job the
-    # runner runs: GitHub documents no drain for a self-hosted runner. Handlers run in the
-    # order listed here, so systemd reloads first.
+    # runner runs: GitHub documents no drain for a self-hosted runner. So each handler
+    # restarts only the runners whose own file changed: on 2026-11-12 the pool going
+    # 15 to 30 runners restarted all 15 running runners and cancelled 5 in-flight agent
+    # runs, which is the alert AgentRunFailureShare. A unit change still restarts every
+    # runner: the unit applies to the pool. Handlers run in the order listed here, so
+    # systemd reloads first.
     # https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_handlers.html
     - name: Restart the agent runners
       ansible.builtin.systemd_service:
         name: "fleet-runner@{{ item }}.service"
         state: restarted
       loop: "{{ fleet_runner_ids }}"
+      when: >-
+        fleet_runner_unit.changed | default(false)
+        or (fleet_runner_env.results | default([])
+            | selectattr('item', 'equalto', item) | selectattr('changed') | list | length > 0)
+        or (fleet_runner_path.results | default([])
+            | selectattr('item', 'equalto', item) | selectattr('changed') | list | length > 0)
 
     - name: Restart the review runners
       ansible.builtin.systemd_service:
         name: "fleet-reviewer-runner@{{ item }}.service"
         state: restarted
       loop: "{{ fleet_reviewer_runner_ids }}"
+      when: >-
+        fleet_reviewer_unit.changed | default(false)
+        or (fleet_reviewer_env.results | default([])
+            | selectattr('item', 'equalto', item) | selectattr('changed') | list | length > 0)
+        or (fleet_reviewer_path.results | default([])
+            | selectattr('item', 'equalto', item) | selectattr('changed') | list | length > 0)
 
     # The Hermes units restart from tasks/services.yml, not from a handler: the
     # restart waits there for the deploy to have a minted gh login and a proof

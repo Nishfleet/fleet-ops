@@ -62,6 +62,8 @@
 
 # The runner loads .env and .path over the unit's environment (fleet-ops#10510), and
 # the copies name nish's HOME, runtime dir and tool paths.
+# A change to one runner's .env notifies the restart, which restarts only that
+# runner (handlers: ansible/host.yml), so the other runners' jobs keep running.
 - name: Give each runner fleet-runner's environment
   ansible.builtin.copy:
     content: "HOME=/var/lib/fleet-runner\nLANG=C.UTF-8\n"
@@ -70,6 +72,7 @@
     group: fleet-runner
     mode: '0644'
   loop: "{{ fleet_runner_ids }}"
+  register: fleet_runner_env
   notify: Restart the agent runners
 
 - name: Give each runner fleet-runner's PATH
@@ -80,6 +83,7 @@
     group: fleet-runner
     mode: '0644'
   loop: "{{ fleet_runner_ids }}"
+  register: fleet_runner_path
   notify: Restart the agent runners
 
 # Node for tether and for the runners' pi: the official linux-x64 tarball, pinned by
@@ -259,6 +263,7 @@
     group: fleet-reviewer
     mode: '0644'
   loop: "{{ fleet_reviewer_runner_ids }}"
+  register: fleet_reviewer_env
   notify: Restart the review runners
 
 - name: Give each review runner fleet-reviewer's PATH
@@ -269,6 +274,7 @@
     group: fleet-reviewer
     mode: '0644'
   loop: "{{ fleet_reviewer_runner_ids }}"
+  register: fleet_reviewer_path
   notify: Restart the review runners
 
 - name: Install pi for fleet-reviewer
