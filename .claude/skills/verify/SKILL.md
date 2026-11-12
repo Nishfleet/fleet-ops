@@ -31,7 +31,7 @@ podman exec "$RUN" sh -c 'usermod -l nish -d /home/nish -m ubuntu && groupmod -n
 podman cp . "$RUN":/srv/fleet-ops
 podman exec -i "$RUN" sh -e <<'STANDINS'
 H=$(getent passwd nish | cut -d: -f6)
-for i in $(seq 1 30); do mkdir -p $H/.local/share/agent-runner/$i; printf '#!/bin/sh\nexec sleep infinity\n' > $H/.local/share/agent-runner/$i/runsvc.sh; chmod 755 $H/.local/share/agent-runner/$i/runsvc.sh; printf '{"agentName":"netcup-agent-%s"}\n' "$i" > $H/.local/share/agent-runner/$i/.runner; done
+for i in $(seq 1 15); do mkdir -p $H/.local/share/agent-runner/$i; printf '#!/bin/sh\nexec sleep infinity\n' > $H/.local/share/agent-runner/$i/runsvc.sh; chmod 755 $H/.local/share/agent-runner/$i/runsvc.sh; done
 mkdir -p /etc/fleet-ops && touch /etc/fleet-ops/tether-off
 install -d -o nish -g nish -m 700 $H/.config $H/.config/fleet-ops $H/.config/fleet-ops/seats $H/.config/cloudflare $H/.hermes
 printf 'LITELLM_API_KEY=dummy\n' > $H/.config/fleet-ops/seats/litellm-agent.env
@@ -50,8 +50,8 @@ Ready means `converge.log` holds a `PLAY RECAP` line. `features/host-play-conver
 names the two failures that are expected in a container (the tmpfiles task and the oomd restart handler).
 
 The `STANDINS` block places what a human or a secret places on the real box: runner
-registrations (a stub `runsvc.sh` and `.runner` in nish's runner folder, which the play
-copies to fleet-runner), dummy secret files, and the tether off marker (tether's
+registrations (a stub `runsvc.sh` in nish's runner folder, which the play copies to
+fleet-runner), dummy secret files, and the tether off marker (tether's
 release needs a GitHub login). A run proves nothing about those steps. List them in
 the PR body.
 

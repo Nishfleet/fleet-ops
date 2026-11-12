@@ -145,7 +145,9 @@
 - name: Fail before any restart when a runner install has no bundled Node
   ansible.builtin.assert:
     that: item.stat.exists
-    fail_msg: "{{ item.stat.path }} is missing after the install, so runsvc.sh would exit 127. The runner install was not laid down; refusing to start the pool."
+    # A stat of a missing file has no `path` key, so the message names the
+    # runner and the Node from the loop, not from the result.
+    fail_msg: "/var/lib/fleet-runner/{{ item.item.0 }}/externals/{{ item.item.1 }}/bin/node is missing after the install, so runsvc.sh would exit 127. The runner install was not laid down; refusing to start the pool."
     quiet: true
   loop: "{{ fleet_runner_nodes_after.results }}"
   loop_control:
