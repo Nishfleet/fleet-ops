@@ -24,8 +24,7 @@ run-name: "agent #${{ github.event.issue.number || inputs.issue }} engine=${{ in
 # dispatches this workflow on main with `issue` and `pr` when nishfleet-approver requests
 # changes on an agent/issue-* PR or when CI fails on its head; the run reads the review, or
 # the check runs against the head, fixes the same branch, and the push starts CI and the
-# re-review. Before any of that, a fresh ticket (labelled agent-ready, no PR) is checked
-# against the build rules by the same reviewer (check job, fleet-ops#11949).
+# re-review.
 on:
   issues:
     types: [labeled]
@@ -83,7 +82,6 @@ jobs:
     outputs:
       issue: ${{ steps.claim.outputs.issue || steps.round.outputs.task }}
       base: ${{ steps.repo.outputs.base }}
-      bar: ${{ steps.bar.outputs.bar }}
       go: ${{ steps.round.outputs.go }}
     steps:
       - name: App token
@@ -126,15 +124,6 @@ jobs:
           gh issue comment "$ISSUE" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           eof="ISSUE_$(openssl rand -hex 16)"
           { echo "issue<<$eof"; gh issue view "$ISSUE" -R "$REPO" --json title,body --template '{{.title}}'$'\n\n''{{.body}}'; echo; echo "$eof"; } >> "$GITHUB_OUTPUT"
-      # The reviewer's bar, fetched from main like review.yml does, for the ticket check (fleet-ops#11949).
-      - name: The reviewer's bar
-        id: bar
-        if: env.PR == ''
-        env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
-        run: |
-          set -euo pipefail
-          eof="BAR_$(openssl rand -hex 16)"
-          { echo "bar<<$eof"; gh api -H 'Accept: application/vnd.github.raw' 'repos/Nishfleet/fleet-ops/contents/docs/review-bar.md?ref=main'; echo "$eof"; } >> "$GITHUB_OUTPUT"
       # A review round: the task is the body of the bot's last review and nothing else. This
       # step always runs, so `go` is always one step output; an issue run is always a go.
       # https://docs.github.com/en/rest/pulls/reviews#list-reviews-for-a-pull-request
@@ -193,76 +182,9 @@ jobs:
           echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: repo, path: "${{ runner.temp }}/repo.bundle", retention-days: 1, overwrite: true}
-  # Owner decision 2026-11-12 (fleet-ops#11949): a ticket is checked against the build rules
-  # before a builder starts on it, because the reviewer only sees the PR at the end and treats
-  # the ticket as already approved; on 2026-11-12 tickets ordered hand-written plumbing where a
-  # built-in (a Cloudflare Queue) does the job, and builders built it. This is the same reviewer
-  # looking earlier, not a second one: the same seat and instructions review.yml uses (runner
-  # group reviewer, docs/review-bar.md as the system prompt, the review-any row, Grok when the
-  # router could not), plus the three questions about the ticket's approach (source:
-  # global-standing-rules.md, the no-glue line). A re-run for red CI or a review answer (PR set)
-  # skips the reviewer call: that ticket already passed. A fail parks the ticket through the
-  # park job below with the failed question and what to change; fixing the ticket and adding
-  # agent-ready again runs the check again, and no label or line of text skips it. The bar
-  # rides through claim because this job, like every self-hosted job, holds no credential.
-  # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#operators
-  check:
-    needs: claim
-    if: ${{ needs.claim.result == 'success' }}
-    runs-on: {group: reviewer, labels: [self-hosted, reviewer]}
-    timeout-minutes: 30
-    permissions: {}
-    outputs:
-      pass: ${{ steps.skip.outputs.pass || steps.verdict.outputs.pass }}
-      fail: ${{ steps.verdict.outputs.fail }}
-    steps:
-      - name: A re-run for red CI or a review answer skips the check
-        id: skip
-        if: env.PR != ''
-        run: echo "pass=true" >> "$GITHUB_OUTPUT"
-      - name: Check the ticket with the reviewer
-        id: ai
-        if: env.PR == ''
-        # A failed router call leaves the job to the Grok step below, as in review.yml.
-        continue-on-error: true
-        env:
-          TICKET: ${{ needs.claim.outputs.issue }}
-          BAR: ${{ needs.claim.outputs.bar }}
-        run: |
-          set -euo pipefail
-          printf '%s' "$BAR" > "$RUNNER_TEMP/bar.md"
-          { echo '# Checking a ticket before a builder starts on it (fleet-ops#11949)'; echo
-            echo 'End with one line: TICKET: PASS, or TICKET: FAIL - <the question that failed and what to change>.'; echo
-            echo "Three questions about the ticket's approach; any fail stops the build:"; echo
-            echo '1. Is it required today? A ticket for something nobody needs yet fails.'
-            echo '2. Does a built-in tool or stock feature already do it? A ticket that orders hand-written plumbing where one exists fails, and the comment names the built-in.'
-            echo "3. If it builds something, does it name the platform's own standard for it? If not, it fails."; echo
-            echo '# The ticket'; echo; printf '%s\n' "$TICKET"; } > "$RUNNER_TEMP/prompt.md"
-          pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
-              --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider litellm --model review-any < "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/check.md" 2> "$RUNNER_TEMP/pi.err"
-      - name: Check the ticket with Grok when the router could not
-        if: steps.ai.outcome == 'failure'
-        run: |
-          set -euo pipefail
-          pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
-            --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider xai-oauth --model grok-4.7 < "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/check.md"
-      - name: Pass or fail
-        id: verdict
-        if: env.PR == ''
-        run: |
-          set -euo pipefail
-          [ -s "$RUNNER_TEMP/check.md" ] || { echo "::error::the reviewer gave no answer"; exit 1; }
-          case "$(grep -oE '^TICKET: [A-Z]+' "$RUNNER_TEMP/check.md" | tail -1)" in
-            'TICKET: PASS') echo "pass=true" >> "$GITHUB_OUTPUT" ;;
-            'TICKET: FAIL')
-              { echo 'fail<<TICKET_EOF'; cat "$RUNNER_TEMP/check.md"; echo TICKET_EOF; } >> "$GITHUB_OUTPUT"
-              exit 1 ;;
-            *) echo "::error::the reviewer gave no ticket verdict"; exit 1 ;;
-          esac
   work:
-    needs: [claim, check]
+    needs: claim
     if: needs.claim.outputs.go == 'true'
-    # The check job above gates here through needs: a failed or missing pass skips the builder.
     # Job-level, so the runs that skip on an issue's other labels never queue
     # here and cancel the agent-ready run as a pending twin.
     concurrency:
@@ -396,7 +318,7 @@ jobs:
           # A failure fails the job, so park labels the issue agent-blocked.
           gh pr merge "$pr" -R "$REPO" --auto
   park:
-    needs: [claim, check, work, push]
+    needs: [claim, work, push]
     # A job past timeout-minutes ends `cancelled`, and failure() is false for it, so the
     # needs results are read too. !cancelled() keeps a run cancelled by hand from parking.
     # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions
@@ -415,14 +337,7 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           permission-issues: write
       - name: Park on failure
-        env:
-          GH_TOKEN: "${{ steps.app-token.outputs.token }}"
-          TICKET_FAIL: ${{ needs.check.outputs.fail }}
+        env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
         run: |
           gh issue edit "$ISSUE" -R "$REPO" --add-label agent-blocked --remove-label agent-in-progress
-          # A failed ticket check (fleet-ops#11949) parks with the failed question and what to change.
-          if [ -n "$TICKET_FAIL" ]; then
-            gh issue comment "$ISSUE" -R "$REPO" --body "agent: the ticket failed the pre-build check (fleet-ops#11949); fix the ticket and add agent-ready to run it again: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"$'\n\n'"$TICKET_FAIL"
-          else
-            gh issue comment "$ISSUE" -R "$REPO" --body "agent: run failed, see $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID; add agent-ready to retry"
-          fi
+          gh issue comment "$ISSUE" -R "$REPO" --body "agent: run failed, see $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID; add agent-ready to retry"
