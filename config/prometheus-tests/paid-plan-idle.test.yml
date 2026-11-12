@@ -89,3 +89,21 @@ tests:
       - eval_time: 26h
         alertname: PaidPlanIdle
         exp_alerts: []
+
+  # fleet-ops#11943 (seen live 2026-11-12): the OpenAI provider serves some of
+  # CommandCode's calls through the Responses API, so litellm_deployment_state
+  # carries a runtime api_base (plan api_base + "/v1/responses") while the
+  # success counter stays under the configured one. A busy CommandCode plan
+  # whose state sits under both label sets must stay quiet.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.commandcode.ai/provider/v1",model_id="commandcode-glm53flash-worker-capable"}'
+        values: '0+100x30'
+      - series: 'litellm_deployment_state{job="litellm",instance="127.0.0.1:4001",api_base="https://api.commandcode.ai/provider/v1",api_provider="openai",model_id="commandcode-glm53flash-worker-capable",litellm_model_name="z-ai/glm-5.3-flash"}'
+        values: '0x30'
+      - series: 'litellm_deployment_state{job="litellm",instance="127.0.0.1:4001",api_base="https://api.commandcode.ai/provider/v1/responses",model_id="commandcode-glm53flash-worker-capable",litellm_model_name="z-ai/glm-5.3-flash"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: PaidPlanIdle
+        exp_alerts: []
