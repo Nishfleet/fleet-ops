@@ -148,6 +148,27 @@
     - Reload systemd
     - Restart ssh.socket
 
+# Unattended-upgrades' timer moves to the Sunday reboot window. Its own copy runs
+# before the tree copy below, so only a change to this drop-in restarts the timer.
+- name: Create the apt-daily-upgrade timer drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/apt-daily-upgrade.timer.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the weekly unattended-upgrades window
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/system/apt-daily-upgrade.timer.d/50-fleet-weekly.conf"
+    dest: /etc/systemd/system/apt-daily-upgrade.timer.d/50-fleet-weekly.conf
+    owner: root
+    group: root
+    mode: preserve
+  notify:
+    - Reload systemd
+    - Restart apt-daily-upgrade.timer
+
 # The runner units get their own copy, before the tree copy, so only a change to them
 # notifies the runner restart below (handlers: ansible/host.yml).
 - name: Install the agent runner unit

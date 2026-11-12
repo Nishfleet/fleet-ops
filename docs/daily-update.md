@@ -4,15 +4,25 @@
 It runs `ansible/update.yml` as root through `ansible-pull`:
 
 1. `npm update --global`, then `uv tool upgrade --all`, each capped at 900 s.
-2. Ubuntu packages update through `unattended-upgrades`, and Claude Code
-   through its own auto-updater, so this run does not touch them.
+2. Ubuntu packages update through `unattended-upgrades` (Sunday 03:00, see
+   below), and Claude Code through its own auto-updater, so this run does not
+   touch them.
 
 A failed run retries after 30 min, at most 3 starts in 4 h, and then stays
 `failed`, which `SystemUnitFailed` reads. A run that hangs fails at 45 min
 (`TimeoutStartSec=`).
 
-It never reboots. When a package needs a reboot, it opens one
-`needs-nish-decision` issue. The daily security updates (`unattended-upgrades`)
+`fleet-update.service` never reboots. A pending reboot is taken by the
+vendor's `unattended-upgrades` in the Sunday 03:30 IST quiet window:
+`Unattended-Upgrade::Automatic-Reboot "true"` and
+`Automatic-Reboot-Time "03:30"` in
+`rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades`. Its own
+`apt-daily-upgrade.timer` runs the upgrade at 03:00 that day
+(`rootfs/etc/systemd/system/apt-daily-upgrade.timer.d/50-fleet-weekly.conf`),
+because `Automatic-Reboot-Time` is a time of day, not a weekday. The box comes
+back in about a minute; `fleet-host-config-boot.timer` reapplies the host play
+three minutes after boot, which starts the runners, and GitHub's queue sends
+the pending jobs to them. The weekly security updates (`unattended-upgrades`)
 stay on; `rootfs/etc/needrestart/conf.d/50-fleet.conf` makes them only list
 services on old libraries, so they never restart a service mid-job.
 `hermes-gateway.service` and `hermes-serve.service` are not restarted by it
