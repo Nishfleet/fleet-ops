@@ -1,0 +1,198 @@
+# The agent pool's install and registration (fleet-ops#10935, #11927): fleet_runner_ids
+# run as the unprivileged user fleet-runner through
+# rootfs/etc/systemd/system/fleet-runner@.service, per GitHub's "Security hardening
+# for self-hosted runners". Its home holds only the runner installs, pi, pi's model
+# file and the scoped router key: no Claude, gh or Cloudflare login, no git credential
+# and no App key. agent.yml mints the App token only on GitHub-hosted runners, which
+# the worker cannot reach (fleet-ops#11715).
+#
+# This file is imported before install-config.yml, so a missing bundled Node is caught
+# before the play changes a unit, .env or .path; force_handlers would otherwise restart
+# the whole pool onto a runner that cannot start (fleet-ops#11826).
+#
+# Runners 1 and 15 reuse registrations copied once from nish's runner directory: only
+# while the copy has no runsvc.sh, so a re-run never overwrites a live runner's state.
+# The install itself is the stock actions/runner release tarball below, unpacked for
+# every id, so a runner directory that was copied by hand or has lost a bundled Node is
+# repaired on apply. A new id with no registration is registered with the vendor's
+# `config.sh` and a short-lived org registration token minted with nish's gh login
+# (GitHub docs: "Adding self-hosted runners").
+- name: Create the runner user
+  ansible.builtin.user:
+    name: fleet-runner
+    system: true
+    shell: /usr/sbin/nologin
+    home: /var/lib/fleet-runner
+    create_home: true
+
+- name: Stop nish's units for the runners that move to fleet-runner
+  ansible.builtin.systemd_service:
+    name: "actions.runner.Nishfleet.netcup-agent-{{ item }}.service"
+    enabled: false
+    state: stopped
+  loop: "{{ fleet_runner_ids }}"
+  when: ('/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-' ~ item ~ '.service') is exists
+
+- name: Make each agent runner's directory
+  ansible.builtin.file:
+    path: "/var/lib/fleet-runner/{{ item }}"
+    state: directory
+    owner: fleet-runner
+    group: fleet-runner
+    mode: '0750'
+  loop: "{{ fleet_runner_ids }}"
+
+- name: Copy each runner registration to fleet-runner once
+  ansible.builtin.copy:
+    src: "{{ agent_runner_root }}/{{ item }}/"
+    dest: "/var/lib/fleet-runner/{{ item }}/"
+    remote_src: true
+    local_follow: false
+    owner: fleet-runner
+    group: fleet-runner
+    mode: preserve
+    directory_mode: '0750'
+  loop: "{{ fleet_runner_ids }}"
+  when:
+    - (agent_runner_root ~ '/' ~ item ~ '/runsvc.sh') is exists
+    - ('/var/lib/fleet-runner/' ~ item ~ '/runsvc.sh') is not exists
+
+# The copy keeps `bin` and `externals` as absolute links into nish's home, which
+# fleet-runner cannot enter (fleet-ops#10491), so they point at their siblings.
+- name: Read the runner links
+  ansible.builtin.stat:
+    path: "/var/lib/fleet-runner/{{ item.0 }}/{{ item.1 }}"
+  loop: "{{ fleet_runner_ids | product(['bin', 'externals']) | list }}"
+  register: fleet_runner_links
+
+- name: Point the runner links at the copy
+  ansible.builtin.file:
+    src: "{{ item.stat.lnk_target | basename }}"
+    dest: "{{ item.stat.path }}"
+    state: link
+    owner: fleet-runner
+    group: fleet-runner
+  loop: "{{ fleet_runner_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^/home/') | list }}"
+  loop_control:
+    label: "{{ item.stat.path }}"
+
+# The stock actions/runner release owns the install. Unpacking it over a runner
+# directory leaves .runner, .credentials and _work alone, so the registration and
+# its jobs survive a repair. A complete install is not unpacked again: the
+# runner updates itself in place after the first install (GitHub docs: "Adding
+# self-hosted runners", https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners).
+- name: Download the pinned actions runner for the agent pool
+  ansible.builtin.get_url:
+    url: "https://github.com/actions/runner/releases/download/v{{ fleet_runner_version }}/actions-runner-linux-x64-{{ fleet_runner_version }}.tar.gz"
+    dest: "{{ fleet_runner_tarball }}"
+    checksum: "sha256:{{ fleet_runner_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Read each runner's bundled Node before the install
+  ansible.builtin.stat:
+    path: "/var/lib/fleet-runner/{{ item.0 }}/externals/{{ item.1 }}/bin/node"
+  loop: "{{ fleet_runner_ids | product(['node20', 'node24']) | list }}"
+  loop_control:
+    label: "runner {{ item.0 }} {{ item.1 }}"
+  register: fleet_runner_nodes_before
+
+- name: List the runner installs that need the release unpacked
+  ansible.builtin.set_fact:
+    fleet_runner_install_repairs: "{{ fleet_runner_nodes_before.results | rejectattr('stat.exists') | map(attribute='item') | map('first') | unique | list }}"
+
+- name: Unpack the pinned actions runner where an install is incomplete
+  ansible.builtin.unarchive:
+    src: "{{ fleet_runner_tarball }}"
+    dest: "/var/lib/fleet-runner/{{ item }}/"
+    remote_src: true
+    owner: fleet-runner
+    group: fleet-runner
+  loop: "{{ fleet_runner_install_repairs }}"
+  loop_control:
+    label: "runner {{ item }}"
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# The vendor's unit template runs the root runsvc.sh that its svc.sh install lays down;
+# this unit is our own, so lay down the same vendor file the template copies
+# (bin/systemd.svc.sh.template) for a new id whose config.sh does not create it. An
+# existing runner keeps its script: the runner updates it in place after the first install.
+- name: Lay down the runner script the agent unit starts
+  ansible.builtin.copy:
+    src: "/var/lib/fleet-runner/{{ item }}/bin/runsvc.sh"
+    dest: "/var/lib/fleet-runner/{{ item }}/runsvc.sh"
+    remote_src: true
+    owner: fleet-runner
+    group: fleet-runner
+    mode: '0755'
+    force: false
+  loop: "{{ fleet_runner_ids }}"
+
+# runsvc.sh starts `externals/<node>/bin/node` before the listener, so a missing
+# one exits 127 and the apply would otherwise restart the whole pool onto a unit
+# that cannot start. This runs after the repair and before any restart.
+- name: Read each runner's bundled Node after the install
+  ansible.builtin.stat:
+    path: "/var/lib/fleet-runner/{{ item.0 }}/externals/{{ item.1 }}/bin/node"
+  loop: "{{ fleet_runner_ids | product(['node20', 'node24']) | list }}"
+  loop_control:
+    label: "runner {{ item.0 }} {{ item.1 }}"
+  register: fleet_runner_nodes_after
+
+- name: Fail before any restart when a runner install has no bundled Node
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: "{{ item.stat.path }} is missing after the install, so runsvc.sh would exit 127. The runner install was not laid down; refusing to start the pool."
+    quiet: true
+  loop: "{{ fleet_runner_nodes_after.results }}"
+  loop_control:
+    label: "runner {{ item.item.0 }} {{ item.item.1 }}"
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# A new id has no registration to copy. config.sh is the vendor's registration
+# command; the token is a one-hour org registration token from GitHub's REST API,
+# read with nish's gh login and passed through the environment so it never reaches
+# argv (GitHub docs: "Adding self-hosted runners", "REST API endpoints for
+# self-hosted runners").
+- name: Read each runner's registration
+  ansible.builtin.stat:
+    path: "/var/lib/fleet-runner/{{ item }}/.runner"
+  loop: "{{ fleet_runner_ids }}"
+  register: fleet_runner_registrations
+
+- name: Mint a registration token for the runner ids with no registration
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: ["{{ tether_gh }}", api, --method, POST, orgs/Nishfleet/actions/runners/registration-token, --jq, .token]
+  register: fleet_runner_registration_token
+  changed_when: false
+  no_log: true
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - fleet_runner_registrations.results | rejectattr('stat.exists') | list | length > 0
+
+- name: Register each runner id that has no registration
+  become: true
+  become_user: fleet-runner
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -c
+      - exec ./config.sh --unattended --replace --url https://github.com/Nishfleet --token "$RUNNER_REGISTRATION_TOKEN" --name "netcup-agent-$RUNNER_ID" --runnergroup agent --labels agent --work _work
+    chdir: "/var/lib/fleet-runner/{{ item }}"
+  environment:
+    HOME: /var/lib/fleet-runner
+    PATH: "/usr/local/bin:/usr/bin:/bin"
+    RUNNER_ID: "{{ item }}"
+    RUNNER_REGISTRATION_TOKEN: "{{ fleet_runner_registration_token.stdout }}"
+  loop: "{{ fleet_runner_registrations.results | rejectattr('stat.exists') | map(attribute='item') | list }}"
+  loop_control:
+    label: "runner {{ item }}"
+  changed_when: true
+  no_log: true
+  when: not ansible_check_mode
