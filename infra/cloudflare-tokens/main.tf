@@ -24,6 +24,11 @@ locals {
   #                 9109), so a repo token is false: its consumer job runs on
   #                 ubuntu-latest. vps_only = true needs vps_cidrs, and the
   #                 precondition below fails closed without it.
+  # r2_buckets    = list of bucket names (not ids) whose objects the token may
+  #                 write, read and list, under the bucket-scoped group
+  #                 "Workers R2 Storage Bucket Item Write" (see the r2 policy
+  #                 on the token resource). Set only on the weekly database
+  #                 export tokens; absent (lookup below) means none.
   tokens = {
     drive = {
       repo        = "drive"
@@ -33,6 +38,7 @@ locals {
       account     = ["Workers Scripts Write", "D1 Write", "Queues Write", "Account Settings Read"]
       zone        = []
       vps_only    = false
+      r2_buckets  = [local.db_backup_bucket]
     }
     "0509-deploy" = {
       repo        = "0509"
@@ -94,6 +100,7 @@ locals {
       account     = ["Workers Scripts Write", "D1 Write", "Account Settings Read"]
       zone        = ["Zone Read", "Workers Routes Write"]
       vps_only    = false
+      r2_buckets  = [local.db_backup_bucket]
     }
     "TinyStudio.io-public" = {
       repo        = "TinyStudio.io-public"
@@ -121,6 +128,7 @@ locals {
       account     = ["Pages Write", "D1 Write", "Account Settings Read"]
       zone        = []
       vps_only    = false
+      r2_buckets  = [local.db_backup_bucket]
     }
     "seo-fix-kit" = {
       repo        = "seo-fix-kit"
@@ -130,6 +138,7 @@ locals {
       account     = ["Workers Scripts Write", "D1 Write", "Queues Write", "Account Settings Read"]
       zone        = ["Zone Read", "Workers Routes Write"]
       vps_only    = false
+      r2_buckets  = [local.db_backup_bucket]
     }
     # Already applied by hand on 2026-10-20 under this key, so the key stays: a
     # new key would destroy the live repo secret when the old state entry goes.
@@ -167,11 +176,22 @@ locals {
   file_secrets = { for k, v in local.tokens : k => v if v.file != null }
   env_secrets  = { for k, v in local.tokens : k => v if v.environment != null }
 
+  # The one private object store for the weekly database exports
+  # (fleet-ops#11895), named here once and referenced by the bucket resource and
+  # by the r2_buckets entries above.
+  db_backup_bucket = "fleet-db-backups"
+
   # Name -> id, one map per scope. A name Cloudflare does not know is an
   # "Invalid index" error at plan time, so a typo or a renamed group fails
   # closed instead of minting a token with fewer permissions.
   account_group_ids = { for g in data.cloudflare_api_token_permission_groups_list.account.result : g.name => g.id if g.is_selectable }
   zone_group_ids    = { for g in data.cloudflare_api_token_permission_groups_list.zone.result : g.name => g.id if g.is_selectable }
+  r2_bucket_group_ids = {
+    for g in data.cloudflare_api_token_permission_groups_list.r2_bucket.result :
+    g.name => g.id if g.is_selectable
+  }
+  # Fixed: the one bucket-scoped group this config grants, per token row.
+  r2_bucket_write_group = "Workers R2 Storage Bucket Item Write"
 }
 
 data "cloudflare_api_token_permission_groups_list" "account" {
@@ -180,6 +200,12 @@ data "cloudflare_api_token_permission_groups_list" "account" {
 
 data "cloudflare_api_token_permission_groups_list" "zone" {
   scope = "com.cloudflare.api.account.zone"
+}
+
+# The bucket-scoped groups (Cloudflare scopes them to com.cloudflare.edge.r2
+# .bucket, not to the account), so the account list above does not carry them.
+data "cloudflare_api_token_permission_groups_list" "r2_bucket" {
+  scope = "com.cloudflare.edge.r2.bucket"
 }
 
 # Starts the rotation clock. After rotation_days the next apply replaces this
@@ -212,6 +238,20 @@ resource "cloudflare_api_token" "token" {
       permission_groups = [for n in each.value.zone : { id = local.zone_group_ids[n] }]
       resources = jsonencode({
         "com.cloudflare.api.account.${var.account_id}" = { "com.cloudflare.api.account.zone.*" = "*" }
+      })
+    }],
+    # Object write on the named buckets only (bucket scope, the resource form
+    # Cloudflare documents for R2 tokens). A token that does not set r2_buckets
+    # never reaches this policy. This is the narrow form: the account-wide
+    # "Workers R2 Storage Write" group, which can also create and delete
+    # buckets, is what the minter needs for the resources below, not what an
+    # export job gets.
+    length(lookup(each.value, "r2_buckets", [])) == 0 ? [] : [{
+      effect            = "allow"
+      permission_groups = [{ id = local.r2_bucket_group_ids[local.r2_bucket_write_group] }]
+      resources = jsonencode({
+        for b in lookup(each.value, "r2_buckets", []) :
+        "com.cloudflare.edge.r2.bucket.${var.account_id}_default_${b}" => "*"
       })
     }],
   )
@@ -264,4 +304,38 @@ resource "github_actions_secret" "account_id_fleet_console" {
   repository      = "fleet-console-worker"
   secret_name     = "CLOUDFLARE_ACCOUNT_ID"
   plaintext_value = var.account_id
+}
+
+# The weekly database exports write their dumps here, not to GitHub workflow
+# artifacts (fleet-ops#11895, 2026-11-10). R2 buckets are private unless a
+# public-development domain or CORS-allow-all is added, and none is. Standard
+# storage class, explicitly (the only other class, Infrequent Access, is for
+# cold data; a backup that gets restored on demand must not slow down or pay the
+# Class A transition fee for).
+resource "cloudflare_r2_bucket" "db_backups" {
+  account_id    = var.account_id
+  name          = local.db_backup_bucket
+  storage_class = "Standard"
+}
+
+# Retention the owner set on 2026-11-10: a dump lives 90 days, then R2 deletes
+# it. Cloudflare's own object lifecycle (max_age is seconds), not a timer. The
+# prefix is the empty string, so the rule covers every object in the bucket.
+resource "cloudflare_r2_bucket_lifecycle" "db_backups" {
+  account_id  = var.account_id
+  bucket_name = cloudflare_r2_bucket.db_backups.name
+
+  rules = [{
+    id      = "delete-db-backups-after-90-days"
+    enabled = true
+    conditions = {
+      prefix = ""
+    }
+    delete_objects_transition = {
+      condition = {
+        type    = "Age"
+        max_age = 90 * 24 * 60 * 60
+      }
+    }
+  }]
 }

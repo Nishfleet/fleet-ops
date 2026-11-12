@@ -23,28 +23,56 @@ now in `main.tf`, so the weekly apply no longer destroys it; `seo-fix-kit` is ne
 preview job still reads the read-only repo token and the upload still fails.
 `vps-grafana` is new and is created by the next apply, together with the
 `~/.config/cloudflare/deploy-ci.env` file it writes (fleet-ops#10169).
+`fleet-db-backups` (the R2 bucket and its 90-day lifecycle rule) is new and is
+created by the next apply, and the four weekly database export tokens gain
+object write on that bucket only (fleet-ops#11895).
 
 ## What it creates
 
-| Token key | Repo | Secret written | Account permissions | Zone permissions (all zones in the account) | Runs on | IP lock |
+| Token key | Repo | Secret written | Permissions | Zone permissions (all zones in the account) | Runs on | IP lock |
 |---|---|---|---|---|---|---|
-| `drive` | drive | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
+| `drive` | drive | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read, Workers R2 Storage Bucket Item Write (`fleet-db-backups` only) | none | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
 | `0509-deploy` | 0509 | `CLOUDFLARE_API_TOKEN` (environment `production`) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
 | `0509-preview` | 0509 | `CLOUDFLARE_API_TOKEN` (environment `preview`) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (the pull request preview job, which names the `preview` environment) | none |
 | `0509-reports` | 0509 | `CLOUDFLARE_API_TOKEN` (repo) | D1 Read, Workers Scripts Read, Account Analytics Read | none | GitHub-hosted (`e2e-scheduled.yml` backup-proof, jev-failures, soak-report; `evals.yml`) | none |
 | `0509-settings` | 0509 | `CLOUDFLARE_SETTINGS_TOKEN` (repo) | Workers R2 Storage Write | Zone Read, Email Routing Rules Write | GitHub-hosted (`cloudflare-settings.yml`) | none |
 | `0509-support-inbox` | mailbox | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
-| `siterep-public` | siterep-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
+| `siterep-public` | siterep-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Account Settings Read, Workers R2 Storage Bucket Item Write (`fleet-db-backups` only) | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
 | `TinyStudio.io-public` | TinyStudio.io-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Workers R2 Storage Write, D1 Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`, `d1-export.yml`) | none |
 | `inish-site` | inish-site | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`ci.yml` deploy job) | none |
-| `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, D1 Write, Account Settings Read | none | GitHub-hosted (`deploy.yml`, `d1-export.yml`) | none |
-| `seo-fix-kit` | seo-fix-kit | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`: D1 migrations apply, `wrangler deploy` with custom domains and a queue consumer) | none |
+| `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, D1 Write, Account Settings Read, Workers R2 Storage Bucket Item Write (`fleet-db-backups` only) | none | GitHub-hosted (`deploy.yml`, `d1-export.yml`) | none |
+| `seo-fix-kit` | seo-fix-kit | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read, Workers R2 Storage Bucket Item Write (`fleet-db-backups` only) | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`: D1 migrations apply, `wrangler deploy` with custom domains and a queue consumer) | none |
 | `fleet_console` | fleet-console-worker | `CLOUDFLARE_API_TOKEN` (repo), plus a repo `CLOUDFLARE_ACCOUNT_ID` | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
 | `vps-grafana` | the VPS (no repo) | `CLOUDFLARE_API_TOKEN` in `~/.config/cloudflare/deploy-ci.env`, a 0600 file (no GitHub secret) | Account Analytics Read, Billing Read | none | the VPS host: Grafana's `fleet-cloudflare` data source, the Cloudflare cost alarm (fleet-ops#9355) | VPS addresses (`vps_only`) |
 
 The `0509-support-inbox` entry writes to `mailbox`, the same repo under its new
 name. The key keeps its old name so the Cloudflare token is not replaced; the
 repo secret is deleted and written again once, because the repo name changed.
+
+## The database backup bucket
+
+`cloudflare_r2_bucket.db_backups` creates one private R2 bucket,
+`fleet-db-backups`, and `cloudflare_r2_bucket_lifecycle.db_backups` puts
+Cloudflare's own object lifecycle on it: one enabled rule with an empty prefix
+that deletes objects at `max_age = 7776000` seconds (90 days). No object is
+public: no public-development domain and no CORS rule is added, and buckets are
+private unless one is. The bucket is Standard storage class, set explicitly, so
+no object is ever moved to Infrequent Access.
+
+The four weekly database export tokens (`drive`, `aiconverter-app`,
+`siterep-public`, `seo-fix-kit`) carry `Workers R2 Storage Bucket Item Write`,
+the bucket-scoped group, with exactly one resource:
+`com.cloudflare.edge.r2.bucket.<account_id>_default_fleet-db-backups`. They do
+**not** get the account-wide `Workers R2 Storage Write`, which can also create
+and delete buckets. The bucket-scoped group is not in the account-scope
+permission list (Cloudflare scopes it to `com.cloudflare.edge.r2.bucket`), so
+`data.cloudflare_api_token_permission_groups_list.r2_bucket` resolves it, and a
+name the API does not return still fails plan closed with "Invalid index".
+
+Because Cloudflare only lets a token mint a token whose permissions are a
+subset of its own, the minter token needs `Workers R2 Storage Write` too: that
+is the group that creates the bucket and writes its lifecycle rule. The export
+jobs themselves write objects with the bucket-scoped group only.
 
 `tinystudio-in` is archived, so no workflow runs there and nothing reads its
 secret. Its entry is gone: the next apply revokes its Cloudflare token. Its repo
@@ -73,11 +101,11 @@ under that address, so the next plan shows no destroy for it, and `tofu destroy`
 would delete it.
 
 Permission groups are looked up by name from the
-`cloudflare_api_token_permission_groups_list` data source (one lookup for the
-account scope, one for the zone scope), never by hard-coded id. A name Cloudflare
+`cloudflare_api_token_permission_groups_list` data source (one lookup each for
+the account, zone and R2 bucket scopes), never by hard-coded id. A name Cloudflare
 does not know fails `tofu plan` with an "Invalid index" error instead of minting
-a weaker token. To change what a repo may do, edit its `account` and `zone` lists
-in `main.tf`.
+a weaker token. To change what a repo may do, edit its `account`, `zone` and
+`r2_buckets` entries in `main.tf`.
 
 Existing org secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are
 visible to all Nishfleet repos. A repo or environment secret of the same name wins
@@ -213,8 +241,9 @@ GitHub secrets are written by the App, not by the `gh` login.
 `~/.config/cloudflare/token-minter.env` holds `CLOUDFLARE_API_TOKEN=<minter>`: a
 user token with `API Tokens Write` plus every permission group listed above
 (Cloudflare only lets a token create tokens whose permissions are a subset of its
-own). Lock it to the VPS addresses. It is `0600`, it is read by this directory
-only, and it is not a GitHub secret.
+own), and, for the backup bucket, `Workers R2 Storage Write` (it creates the
+bucket and its lifecycle rule). Lock it to the VPS addresses. It is `0600`, it
+is read by this directory only, and it is not a GitHub secret.
 
 ### First apply
 
