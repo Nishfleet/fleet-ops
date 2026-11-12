@@ -15,13 +15,6 @@
   ],
   "packageRules": [
     {
-      "description": "Patch, minor and digest bumps merge themselves on green CI; majors keep the owner hold (fleet-ops#11920). Renovate Docs, \"Automerge\": automerge plus platformAutomerge uses GitHub's own merge queue. The only bump here is the cua-spaces release line in ansible/host.yml, so a bump never edits auth, billing or migration code.",
-      "matchUpdateTypes": ["minor", "patch", "digest"],
-      "automerge": true,
-      "automergeType": "pr",
-      "platformAutomerge": true
-    },
-    {
       "description": "A Postgres major needs a dump and restore, not an Image= bump.",
       "matchPackageNames": ["/(^|/)postgres$/"],
       "matchUpdateTypes": ["major"],
