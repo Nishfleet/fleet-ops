@@ -1,11 +1,13 @@
 name: answer
-# Two dead ends dispatch agent.yml on main: nishfleet-approver requesting changes on an
-# agent/issue-* PR, and CI completing with a failure on the head of one (the reviewer reads
-# green CI only, review.yml, so a red PR drew no review and no answer round). The hop cannot
-# run on the events themselves: a pull_request_review run is on the PR's merge ref and a
+# Two dead ends dispatch agent.yml on main: a change request on an agent/issue-* PR from
+# the reviewer bot or the repository owner (the owner's hold is a decision the lane must
+# answer), and CI completing with a failure on the head of one (the reviewer reads green CI
+# only, review.yml, so a red PR drew no review and no answer round). The hop cannot run on
+# the events themselves: a pull_request_review run is on the PR's merge ref and a
 # workflow_run run is on the default branch, both of which environment `agent` (main only)
 # refuses; a dispatch by GITHUB_TOKEN starts a run instead.
 # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_review
+# https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request_review
 # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run
 # https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs
 on:
@@ -21,7 +23,8 @@ jobs:
     if: >-
       (github.event_name == 'pull_request_review' &&
         github.event.review.state == 'changes_requested' &&
-        github.event.review.user.login == 'nishfleet-approver' &&
+        (github.event.review.user.login == 'nishfleet-approver' ||
+          github.event.review.author_association == 'OWNER') &&
         github.event.pull_request.head.repo.full_name == github.repository &&
         startsWith(github.event.pull_request.head.ref, 'agent/issue-')) ||
       (github.event_name == 'workflow_run' &&

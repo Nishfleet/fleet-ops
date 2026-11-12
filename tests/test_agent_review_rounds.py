@@ -1,4 +1,5 @@
-"""The lane answers the reviewer bot on its own PRs, at most 3 rounds, and obeys the pause.
+"""The lane answers the reviewer bot or the repository owner on its own PRs, at most 3 rounds,
+and obeys the pause.
 
 global-standing-rules.md: the builder answers each finding, the same reviewer signs off, a
 finding it keeps open goes to the owner, hard cap 3 review rounds per PR. While
@@ -79,8 +80,15 @@ def test_a_review_round_passes_the_same_gate():
 SHA, OLD = "a" * 40, "b" * 40
 
 
-def review(state, sha=SHA, body="finding", user="nishfleet-approver"):
-    return {"user": {"login": user}, "state": state, "commit_id": sha, "body": body}
+def review(state, sha=SHA, body="finding", user="nishfleet-approver", association=None):
+    r = {"user": {"login": user}, "state": state, "commit_id": sha, "body": body}
+    if association:
+        r["author_association"] = association
+    return r
+
+
+def owner_review(state, sha=SHA, body="finding"):
+    return review(state, sha, body, user="repo-owner", association="OWNER")
 
 
 def round_data(reviews, ref="agent/issue-7", failing=(), red_answers=0):
@@ -111,8 +119,22 @@ def test_round_one_and_two_run_the_worker_on_that_review_only(tmp_path):
     assert labelled(calls) == []
 
 
-def test_round_three_goes_to_the_owner_instead_of_running(tmp_path):
-    reviews = [review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED")]
+def test_an_owners_change_request_runs_the_worker_on_the_owners_text(tmp_path):
+    reviews = [review("APPROVED", OLD), owner_review("CHANGES_REQUESTED", body="set the limit to 30 per 5 minutes")]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert "go=true" in out and "ref=agent/issue-7" in out
+    task = out.split("\n", 1)[1]
+    assert task.startswith("Answer review round 1 on #12\n\nset the limit to 30 per 5 minutes\n")
+    assert labelled(calls) == []
+
+
+@pytest.mark.parametrize("last", [
+    review("CHANGES_REQUESTED"),
+    owner_review("CHANGES_REQUESTED"),
+], ids=("bot", "owner"))
+def test_round_three_goes_to_the_owner_instead_of_running(tmp_path, last):
+    reviews = [review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD), last]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert out == "go=false\n"
@@ -213,7 +235,7 @@ def test_a_review_answer_appends_its_proof_to_the_body_before_the_push(tmp_path,
     assert not any(c[:2] == ["pr", "create"] for c in calls)
 
 
-def test_the_hop_fires_only_on_the_bots_change_request_and_holds_no_secret():
+def test_the_hop_fires_only_on_a_change_request_from_the_bot_or_the_owner_and_holds_no_secret():
     hop = HOP["jobs"]["dispatch"]
     on = HOP.get("on", HOP.get(True))
     assert on["pull_request_review"] == {"types": ["submitted"]}
@@ -221,6 +243,7 @@ def test_the_hop_fires_only_on_the_bots_change_request_and_holds_no_secret():
     # lane too, because the reviewer reads green CI only, so a red PR drew no review.
     assert on["workflow_run"] == {"workflows": ["CI"], "types": ["completed"]}
     for cond in ("github.event.review.state == 'changes_requested'", "github.event.review.user.login == 'nishfleet-approver'",
+                 "github.event.review.author_association == 'OWNER'",
                  "startsWith(github.event.pull_request.head.ref, 'agent/issue-')",
                  "github.event.pull_request.head.repo.full_name == github.repository"):
         assert cond in hop["if"]
