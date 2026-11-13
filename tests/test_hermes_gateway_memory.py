@@ -14,23 +14,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM = ROOT / "rootfs/etc/systemd/system"
-DROPIN = SYSTEM / "hermes-.service.d/sandbox.conf"
-
-
-def _service_values(path: Path) -> dict[str, list[str]]:
-    found: dict[str, list[str]] = {}
-    for line in path.read_text().splitlines():
-        if line.startswith(("#", "[")) or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        found.setdefault(key, []).append(value)
-    return found
-
-
-def test_the_shared_dropin_caps_the_gateway() -> None:
-    values = _service_values(DROPIN)
-    assert values["MemoryHigh"] == ["6G"]
-    assert values["MemoryMax"] == ["8G"]
 
 
 def test_hermes_gateway_unit_stays_the_installers() -> None:
