@@ -121,6 +121,7 @@ jobs:
         run: |
           set -euo pipefail
           gh issue edit "$ISSUE" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
+          [ "$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:agent/issue-$ISSUE&state=open" --jq length)" = 0 ] || { echo "::error::#$ISSUE already has an open pull request on agent/issue-$ISSUE; review and red CI are answered on that pull request"; exit 1; }
           gh issue comment "$ISSUE" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           eof="ISSUE_$(openssl rand -hex 16)"
           { echo "issue<<$eof"; gh issue view "$ISSUE" -R "$REPO" --json title,body --template '{{.title}}'$'\n\n''{{.body}}'; echo; echo "$eof"; } >> "$GITHUB_OUTPUT"
@@ -282,11 +283,11 @@ jobs:
       # review.yml reads the body live.
       # https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request
       # An issue run builds on main, so it replaces a branch an old run left behind (run
-      # 41846745347 failed "fetch first" on closed PR #11730's head), but only when no open PR
-      # uses it, and only if the branch still holds the commit read here. A review round and
-      # a branch with an open PR push fast-forward only.
+      # 41846745347 failed "fetch first" on closed PR #11730's head), but only if the branch
+      # still holds the commit read here. The claim job already stopped the run when an open
+      # pull request used the branch, so an issue run never reaches this push with one; a
+      # review round pushes fast-forward only.
       # https://git-scm.com/docs/git-push#Documentation/git-push.txt---force-with-leaseltrefnamegt
-      # https://docs.github.com/en/rest/pulls/pulls#list-pull-requests
       - name: Push the branch, open the PR and arm auto-merge
         if: needs.work.outputs.nochange != 'true'
         env:
@@ -306,7 +307,7 @@ jobs:
           git fetch -q --depth=1 "https://github.com/$REPO.git" "$BASE:refs/heads/base"
           git fetch -q "$RUNNER_TEMP/work.bundle" 'refs/heads/*:refs/work/*'
           lease=()
-          if [ -z "$PR" ] && [ "$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:agent/issue-$ISSUE&state=open" --jq length)" = 0 ]; then
+          if [ -z "$PR" ]; then
             old=$(git ls-remote "https://github.com/$REPO.git" "refs/heads/agent/issue-$ISSUE" | cut -f1)
             lease=("--force-with-lease=refs/heads/agent/issue-$ISSUE:$old")
           fi

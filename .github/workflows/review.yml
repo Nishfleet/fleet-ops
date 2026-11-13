@@ -147,19 +147,20 @@ jobs:
           # week (2026-11-10). The label and the review request are stock gh; the request
           # itself raises the owner's GitHub notification. Approved pulls are not touched.
           # https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/requesting-a-pull-request-review
-          # https://cli.github.com/manual/gh_pr_edit
+          # https://docs.github.com/en/rest/issues/labels#add-labels-to-an-issue
+          # https://docs.github.com/en/rest/pulls/review-requests#request-reviewers-for-a-pull-request
           # The review is already posted: from here a failed call warns and the job goes on.
           # https://cli.github.com/manual/gh_label_create (--force updates an existing label)
           if [ "$owner_hold" ]; then
             gh label create needs-owner --force -R "$REPO" --color B60205 --description "Waiting for the owner's review" \
               || echo "::warning::could not create or update the needs-owner label"
-            gh pr edit "$PR" -R "$REPO" --add-label needs-owner \
+            gh api "repos/$REPO/issues/$PR/labels" -f 'labels[]=needs-owner' > /dev/null \
               || echo "::warning::could not add the needs-owner label to #$PR"
             # GitHub rejects a review request to the pull request's own author; the label marks it.
             if [ "$author" = nish3451 ]; then
               echo "the owner opened this pull request; the label marks the hold, no review request"
             else
-              gh pr edit "$PR" -R "$REPO" --add-reviewer nish3451 \
+              gh api "repos/$REPO/pulls/$PR/requested_reviewers" -f 'reviewers[]=nish3451' > /dev/null \
                 || echo "::warning::could not request the owner's review on #$PR"
             fi
           fi
