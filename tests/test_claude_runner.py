@@ -1,12 +1,9 @@
 """The Claude engine's runners run as their own user, and its seat tokens stay in that home (fleet-ops#11958).
 
-The lane's two one-year Team seat tokens are the Claude engine's login, so the pool that
-runs it is built the way the review runner pool is built: its own user fleet-claude with
-its own home, two runners, and the two seat files copied into that home — never into the
-shared agent runners' home, which every cheap-engine job can read and whose run logs are
-public. fleet-claude gets the packaged claude and its seats and nothing else: no router
-key, no git credential, no App key. The unit's PATH names no job-writable folder, so
-nothing a job writes is ever searched before the system directories.
+The pool is built like the review pool: its own user fleet-claude, its own home, two runners,
+and the two seat files copied there and nowhere a shared-pool job can read. `claude` comes from
+the system package; no task installs anything into fleet-claude's home, and no PATH entry names
+a folder under it.
 https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
 https://code.claude.com/docs/en/authentication#generate-a-long-lived-token
 """
@@ -91,8 +88,12 @@ def test_two_claude_runners_start_from_the_pinned_install():
     assert unpack["loop"] == "{{ fleet_claude_runner_ids }}"
     # The review pool's pinned download above is reused, not a second pin:
     assert "fleet_reviewer_runner_version" in json.dumps(unpack)
-    install = next(t for t in play["tasks"] if t.get("name") == "Install the packaged claude for fleet-claude")
-    assert "fleet_claude_code_version" in json.dumps(install)
+
+
+def test_no_task_installs_claude_into_fleet_claudes_home():
+    # A home install would be job-writable: a job could replace `claude` for every later job.
+    for task in fleet_claude_tasks():
+        assert "claude-code" not in json.dumps(task)
 
 
 def test_the_claude_runners_run_as_fleet_claude_away_from_the_worker_home():
@@ -110,6 +111,17 @@ def test_the_claude_runners_run_as_fleet_claude_away_from_the_worker_home():
 
 def test_the_unit_path_names_no_job_writable_folder():
     for entry in unit_path().split(":"):
+        assert entry.startswith("/")  # absolute, never relative, never empty
+        assert not entry.startswith(("/var/lib/fleet-claude", "/home", "/tmp"))
+        assert "_work" not in entry
+
+
+def test_the_job_path_names_no_folder_under_the_pool_home():
+    # The runner prepends the .path file's entries to every job's PATH, so none may name a
+    # folder under fleet-claude's home: a job could replace what is found there.
+    task = next(t for t in ansible_host.play()["tasks"]
+                if t.get("ansible.builtin.copy", {}).get("dest") == "/var/lib/fleet-claude/{{ item }}/.path")
+    for entry in task["ansible.builtin.copy"]["content"].strip().split(":"):
         assert entry.startswith("/")  # absolute, never relative, never empty
         assert not entry.startswith(("/var/lib/fleet-claude", "/home", "/tmp"))
         assert "_work" not in entry

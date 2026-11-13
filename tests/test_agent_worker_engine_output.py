@@ -12,15 +12,10 @@ written in agent.yml, under `bash -e`, the default shell Actions uses for a `run
 that sets no `shell:` key, with real git against a repo bundle and stub engines on PATH;
 the silent stub is /bin/true, the same no-op the box had.
 
-The Claude engine's login is a Team seat token (fleet-ops#11958): the step reads the
-run's seat file out of fleet-claude's own home (the only place the two seat files live,
-ansible/tasks/runners.yml), masks its value before anything can print it, and hands it to
-`claude -p` alone as CLAUDE_CODE_OAUTH_TOKEN — so the pi stub must never see it, and the
-raw step output must hold the value only inside its `::add-mask::` line. The seat is
-picked by run id parity (even A, odd B), and an engine that exits non-zero with no commit
-hands the run to the other seat once. HOME points at a fake fleet-claude home holding
-both seat files, one name per file, each its own CLAUDE_CODE_OAUTH_TOKEN line
-(docs/RUNBOOK.md, "a seat file holds its token for just one model name").
+The Claude engine's login is a Team seat token (fleet-ops#11958): the step masks it before
+use, hands it to `claude -p` alone, and a dead seat hands the run to the other seat once.
+HOME points at a fake fleet-claude home holding both seat files, one name per file, each
+its own CLAUDE_CODE_OAUTH_TOKEN line.
 https://code.claude.com/docs/en/cli-reference
 https://code.claude.com/docs/en/authentication#generate-a-long-lived-token
 https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#masking-a-value-in-a-log

@@ -1,17 +1,6 @@
-# One Claude engine runner (instance = runner number; label `senior`) as the unprivileged
-# user fleet-claude, per GitHub's "Hardening for self-hosted runners" and the runner's own
-# service template (actions/runner src/Misc/layoutbin/actions.runner.service.template).
-# It runs only fleet-ops agent.yml `engine=claude` runs: the work job's runs-on picks the
-# senior label from the engine. fleet-claude shares no user or group with fleet-runner or
-# nish, so the two Team seat tokens in its home are readable by no job on another pool:
-# ProtectHome= hides /home (nish, the App key) and InaccessiblePaths= hides the worker
-# lane's shared home from this pool's jobs, as the review pool's unit does in reverse
-# (systemd.exec(5)). The unit's PATH names no job-writable folder: every entry is a
-# root-owned system directory, so nothing a job writes is ever searched by the runner
-# itself; the job's own PATH comes from the runner's .path file (ansible/tasks/runners.yml).
-# Installed by ansible/tasks/runners.yml. Registration is one `config.sh` as fleet-claude
-# with an org registration token, and the unit waits for its .runner file, as the review
-# runner's unit does.
+# One Claude engine runner (label `senior`) as its own user fleet-claude, so the two Team
+# seat tokens in its home are readable by no job on another pool; built like the review
+# pool's unit, in reverse (tasks/runners.yml, systemd.exec(5)).
 [Unit]
 Description=GitHub Actions runner netcup-claude-%i (fleet-claude)
 After=network-online.target
@@ -39,7 +28,12 @@ ProtectHome=yes
 InaccessiblePaths=-/var/lib/fleet-runner
 UMask=0077
 Slice=agent.slice
-MemoryMax=2G
+# The same memory lines as fleet-runner@.service: MemoryHigh throttles, oomd kills held
+# pressure (systemd.resource-control(5)); the review runner's 2G cap is not enough for builds.
+MemoryHigh=6G
+MemoryMax=8G
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=40%
 
 [Install]
 WantedBy=multi-user.target

@@ -191,10 +191,7 @@ jobs:
     concurrency:
       group: agent-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
-    # The engine picks the pool (fleet-ops#11958): `senior` for claude — the Claude engine's
-    # own runners, ansible/tasks/runners.yml — and the shared `agent` pool for everything
-    # else. The two runners register with the `senior` label, as the agent pool's runners
-    # register with `agent`; until they exist, engine=claude runs queue.
+    # engine=claude goes to the Claude pool's `senior` label (tasks/runners.yml), everything else to `agent`.
     # https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/using-labels-with-self-hosted-runners
     runs-on: [self-hosted, "${{ inputs.engine == 'claude' && 'senior' || 'agent' }}"]
     timeout-minutes: 90
@@ -221,18 +218,13 @@ jobs:
           printf '%s\n' "$ISSUE_TEXT" > "$RUNNER_TEMP/issue.md"
           { echo "Fleet issue worker for $REPO#$ISSUE. Read AGENTS.md first. Make the change the task below asks for on this branch, keep it small, run the repo's own checks, and commit with a plain message. You have no GitHub access: do not push or open the PR; the workflow does. Last, write one line to $RUNNER_TEMP/run-proof.md, outside the repo: 'run-proof: <the exact check command you ran> -> <its real result, e.g. 42 passed>', or 'run-proof: not-needed - <reason>' when no check applies; the workflow ends the PR body with it, and without it the reviewer bot will not approve. The text below (an issue, or the reviewer bot's findings on this branch's PR) is the whole task: do not read issue or PR comments, because anyone can write them."; echo; cat "$RUNNER_TEMP/issue.md"; } > "$RUNNER_TEMP/packet.md"
           out="$RUNNER_TEMP/engine.out"
-          # The two seat files live only in fleet-claude's home (tasks/runners.yml), and
-          # engine=claude runs as fleet-claude on the senior runners, so no job on the shared
-          # agent pool can read them. A seat file holds one name, its own one-year token
-          # (docs/RUNBOOK.md, "a seat file holds its token for just one model name").
+          # The seat files live only in fleet-claude's home (tasks/runners.yml); a job on the
+          # shared agent pool, with another home, cannot read them.
           seats="$HOME/.config/fleet-ops/seats"
           # Reads the seat's token without printing it; an empty read is a dead seat, and the
           # run moves to the other one.
           seat_token() { sed -n "s/^CLAUDE_CODE_OAUTH_TOKEN=//p" "$seats/claude-seat-$1.env"; }
-          # One long-lived token per prepaid Team seat, minted once with `claude setup-token`,
-          # is the vendor's documented login for CI: read, masked before anything can print
-          # it, and handed to `claude` as CLAUDE_CODE_OAUTH_TOKEN for that one command only.
-          # The mask keeps the token out of the public run log.
+          # The seat token is masked before use so the public run log never holds it.
           # https://code.claude.com/docs/en/authentication#generate-a-long-lived-token
           # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#masking-a-value-in-a-log
           drive() {
@@ -252,13 +244,8 @@ jobs:
             # https://code.claude.com/docs/en/sandboxing
             # https://code.claude.com/docs/en/settings#setting-sources
             claude)
-              # The prepaid seats alternate by run id parity (fleet-ops#11958): even starts
-              # on seat A, odd on seat B — no counter file, no randomness. If the engine
-              # exits non-zero and the worker has made no commit, this run moves to the
-              # other seat once (its token masked too); a seat is skipped for the run,
-              # never switched off, and a worker that already committed keeps its work while
-              # the step still fails loudly. Empty engine output still fails below, for
-              # both engines.
+              # Seats alternate by run id parity; an engine failure with no commit hands the
+              # run to the other seat once, while a worker that already committed keeps its work.
               seat=$([ $((GITHUB_RUN_ID % 2)) -eq 0 ] && echo a || echo b)
               if ! drive "$seat"; then
                 if [ "$(git -C "$dir" rev-list --count "$BASE"..HEAD 2>/dev/null || echo 0)" -gt 0 ]; then

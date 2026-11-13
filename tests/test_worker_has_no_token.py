@@ -24,9 +24,8 @@ def jobs():
 def on_agent_runners(job) -> bool:
     labels = job.get("runs-on")
     labels = labels.get("labels", []) if isinstance(labels, dict) else labels
-    # agent.yml's work job picks its label from the engine input (fleet-ops#11958): the
-    # expression string is not equal to `agent`, so match inside the label instead of on
-    # whole-element equality; the fallback pool it names (`agent`) keeps the job covered.
+    # agent.yml's work job picks its label from the engine input (fleet-ops#11958), so match
+    # inside the label instead of on whole-element equality.
     return any("agent" in str(l) for l in ([labels] if isinstance(labels, str) else labels or []))
 
 
