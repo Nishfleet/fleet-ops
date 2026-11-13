@@ -44,6 +44,20 @@ on:
       pr: {description: the agent PR whose review to answer, type: string, default: ''}
       engine: {description: pi or claude, type: choice, options: [pi, claude], default: pi}
 permissions: {}
+# One run per issue, with a real queue behind it (fleet-ops#11987): the reviewer bot and the
+# owner can ask for changes minutes apart, and answer.yml then starts two runs on the same
+# PR. At the top of the run, the second run's `claim` waits until the first has pushed, so it
+# reads the new head and its push is not refused; the old job-level group on `work` let the
+# second run bundle a head the first was about to replace.
+# https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
+# `queue: max` is what lets more than one run wait in the group, cancelling nothing pending:
+# a run that skips in `gate` on the issue's other labels (gardener, alert) is then just a
+# skipped run, never a pending twin that cancels the waiting agent-ready run.
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
+concurrency:
+  group: agent-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
+  cancel-in-progress: false
+  queue: max
 env:
   REPO: ${{ github.repository }}
   ISSUE: ${{ github.event.issue.number || inputs.issue }}
@@ -127,8 +141,9 @@ jobs:
           gh issue comment "$ISSUE" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           eof="ISSUE_$(openssl rand -hex 16)"
           { echo "issue<<$eof"; gh issue view "$ISSUE" -R "$REPO" --json title,body --template '{{.title}}'$'\n\n''{{.body}}'; echo; echo "$eof"; } >> "$GITHUB_OUTPUT"
-      # A review round: the task is the body of the last change request on the head, from
-      # the reviewer bot or the repository owner, and nothing else. This step always runs,
+      # A review round: the task carries every open change request — each reviewer's latest
+      # review, if it still asks for changes, each under a "From <login>:" line — and the go
+      # check is any open change request, or red checks on this head. This step always runs,
       # so `go` is always one step output; an issue run is always a go.
       # https://docs.github.com/en/rest/pulls/reviews#list-reviews-for-a-pull-request
       # https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
@@ -140,23 +155,26 @@ jobs:
           if [ -z "$PR" ]; then echo go=true >> "$GITHUB_OUTPUT"; exit 0; fi
           read -r ref sha < <(gh api "repos/$REPO/pulls/$PR" --jq '[.head.ref, .head.sha] | @tsv')
           [ "$ref" = "agent/issue-$ISSUE" ] || { echo "::error::PR #$PR is on $ref, not agent/issue-$ISSUE"; exit 1; }
-          gh api "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq '[.[] | select(.user.login == "nishfleet-approver" or .user.login == "nish3451")]' > "$RUNNER_TEMP/reviews.json"
-          rounds=$(jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' "$RUNNER_TEMP/reviews.json")
-          # A review round is the bot's or the owner's last look asking for changes on this
-          # head. A red head cannot get the bot's, the reviewer reads green CI only
+          gh api "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq '[.[] | select(.user.login == "nishfleet-approver" or .user.login == "nish3451")] | group_by(.user.login) | map(.[-1])' > "$RUNNER_TEMP/reviews.json"
+          # What is open on the PR is each reviewer's latest review, if it still asks for
+          # changes (the rule branch protection uses), so the owner's change request on the
+          # older head stays open next to the bot's on the new one, and both reach the builder.
+          # https://docs.github.com/en/rest/pulls/reviews#list-reviews-for-a-pull-request
+          open=$(jq 'map(select(.state == "CHANGES_REQUESTED"))' "$RUNNER_TEMP/reviews.json")
+          # A red head cannot get the bot's change request, the reviewer reads green CI only
           # (review.yml), so the lane answers a failure the checks report on this sha
-          # instead: a check run with conclusion "failure" names the dead job. Both rounds
-          # ride the same cap of 3: each change request from the bot or the owner, each
-          # "answering red CI" comment this step left on the PR, and this red head itself
-          # count one round, so the third (say a red head after two change requests, or a
-          # third red head in a row) labels the PR needs-owner and runs nothing.
+          # instead: a check run with conclusion "failure" names the dead job. All rounds
+          # ride the same cap of 3: a round is a distinct head (commit_id) among the open
+          # change requests, so the bot and the owner asking on one head count once; each
+          # "answering red CI" comment this step left on the PR and this red head itself
+          # count one round too, so the third labels the PR needs-owner and runs nothing.
           # https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
           # https://docs.github.com/en/rest/issues/comments#list-issue-comments
           failing=$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" --jq '[.check_runs[] | select(.conclusion == "failure") | .name] | join(" ")')
           red=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --jq '[.[] | select(.body | startswith("agent: answering red CI on "))] | length')
-          rounds=$((rounds + red + (${#failing} > 0 ? 1 : 0)))
-          if [ -z "$failing" ] && [ "$(jq -r 'last | "\(.state) \(.commit_id)"' "$RUNNER_TEMP/reviews.json")" != "CHANGES_REQUESTED $sha" ]; then
-            echo "no change request from the bot or the owner on $sha and its checks are green; nothing to answer"; echo go=false >> "$GITHUB_OUTPUT"; exit 0
+          rounds=$(( $(echo "$open" | jq '[.[].commit_id] | unique | length') + red + (${#failing} > 0 ? 1 : 0) ))
+          if [ -z "$failing" ] && [ "$(echo "$open" | jq length)" = 0 ]; then
+            echo "no open change request from the bot or the owner and the checks on $sha are green; nothing to answer"; echo go=false >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ "$rounds" -ge 3 ]; then
             gh api "repos/$REPO/issues/$PR/labels" -f 'labels[]=needs-owner' > /dev/null
@@ -170,7 +188,9 @@ jobs:
           fi
           gh api "repos/$REPO/issues/$PR/comments" -f body="agent: answering review round $rounds: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
           eof="REVIEW_$(openssl rand -hex 16)"
-          { echo "task<<$eof"; echo "Answer review round $rounds on #$PR"; echo; jq -r 'last | .body' "$RUNNER_TEMP/reviews.json"; echo "$eof"; echo "ref=$ref"; echo go=true; } >> "$GITHUB_OUTPUT"
+          { echo "task<<$eof"; echo "Answer review round $rounds on #$PR"; echo
+            echo "$open" | jq -r '.[] | "From \(.user.login):", .body, ""'
+            echo "$eof"; echo "ref=$ref"; echo go=true; } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
@@ -189,11 +209,6 @@ jobs:
   work:
     needs: claim
     if: needs.claim.outputs.go == 'true'
-    # Job-level, so the runs that skip on an issue's other labels never queue
-    # here and cancel the agent-ready run as a pending twin.
-    concurrency:
-      group: agent-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
-      cancel-in-progress: false
     # engine=claude goes to the Claude pool's `senior` label (tasks/runners.yml), everything else to `agent`.
     # https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/using-labels-with-self-hosted-runners
     runs-on: [self-hosted, "${{ inputs.engine == 'claude' && 'senior' || 'agent' }}"]

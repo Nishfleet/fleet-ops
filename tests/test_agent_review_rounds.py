@@ -72,12 +72,12 @@ def test_the_pause_lets_only_gardener_and_alert_through(tmp_path, paused, labels
     assert out == f"run={run}\n"
 
 
-def test_a_review_round_passes_the_same_gate():
+def test_the_round_step_passes_the_same_gate():
     assert WF["env"]["ISSUE"] == "${{ github.event.issue.number || inputs.issue }}"
     assert WF["jobs"]["claim"]["needs"] == "gate"
 
 
-SHA, OLD = "a" * 40, "b" * 40
+SHA, OLD, OLDER = "a" * 40, "b" * 40, "c" * 40
 
 
 def review(state, sha=SHA, body="finding", user="nishfleet-approver", association=None):
@@ -94,10 +94,10 @@ def owner_review(state, sha=SHA, body="finding"):
     return review(state, sha, body, user="nish3451", association="MEMBER")
 
 
-def round_data(reviews, ref="agent/issue-7", failing=(), red_answers=0):
+def round_data(reviews, ref="agent/issue-7", failing=(), red_answers=0, head=SHA):
     # The round step reads the check runs of the head sha too, so a red CI head can be
     # answered (failing = names of failed check runs). A green head by default.
-    return {"repos/o/r/pulls/12": {"head": {"ref": ref, "sha": SHA}},
+    return {"repos/o/r/pulls/12": {"head": {"ref": ref, "sha": head}},
             "repos/o/r/pulls/12/reviews?per_page=100": reviews,
             f"repos/o/r/commits/{SHA}/check-runs?per_page=100":
                 {"check_runs": [{"name": n, "status": "completed", "conclusion": "failure"}
@@ -110,14 +110,14 @@ def labelled(calls):
     return [c for c in calls if c[:2] == ["api", "repos/o/r/issues/12/labels"]]
 
 
-def test_round_one_and_two_run_the_worker_on_that_review_only(tmp_path):
+def test_the_task_carries_the_latest_open_change_request_per_reviewer(tmp_path):
     reviews = [review("CHANGES_REQUESTED", OLD, "old finding"), review("COMMENTED", OLD, "stranger", user="someone"),
                review("CHANGES_REQUESTED", body="fix the gate")]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert "go=true" in out and "ref=agent/issue-7" in out
     task = out.split("\n", 1)[1]
-    assert task.startswith("Answer review round 2 on #12\n\nfix the gate\n")
+    assert task.startswith("Answer review round 1 on #12\n\nFrom nishfleet-approver:\nfix the gate\n")
     assert "old finding" not in out and "stranger" not in out
     assert labelled(calls) == []
 
@@ -128,27 +128,75 @@ def test_an_owners_change_request_runs_the_worker_on_the_owners_text(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert "go=true" in out and "ref=agent/issue-7" in out
     task = out.split("\n", 1)[1]
-    assert task.startswith("Answer review round 1 on #12\n\nset the limit to 30 per 5 minutes\n")
+    assert task.startswith("Answer review round 1 on #12\n\nFrom nish3451:\nset the limit to 30 per 5 minutes\n")
+    assert labelled(calls) == []
+
+
+# The task carries each open change request under its own "From <login>:" line: the bot's
+# findings next to the owner's, even when the two reviews sit on different heads, because
+# what is open is each reviewer's latest review that still asks for changes.
+# https://docs.github.com/en/rest/pulls/reviews#list-reviews-for-a-pull-request
+@pytest.mark.parametrize("head", [SHA, OLD], ids=("one-head", "owner-on-the-older-head"))
+def test_bot_and_owner_findings_both_reach_the_builder(tmp_path, head):
+    reviews = ([review("CHANGES_REQUESTED", SHA), owner_review("CHANGES_REQUESTED", SHA, "owner finding")]
+               if head == SHA else
+               [owner_review("CHANGES_REQUESTED", OLD, "owner finding"), review("CHANGES_REQUESTED")])
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert "go=true" in out and "ref=agent/issue-7" in out
+    task = out.split("\n", 1)[1]
+    assert "From nishfleet-approver:\nfinding" in task
+    assert "From nish3451:\nowner finding" in task
+    # A round is a distinct head among the open change requests: the bot and the owner
+    # asking on one head count once; the owner's on the older head counts a second one.
+    assert task.startswith(f"Answer review round {1 if head == SHA else 2} on #12")
     assert labelled(calls) == []
 
 
 @pytest.mark.parametrize("last", [
-    review("CHANGES_REQUESTED"),
-    owner_review("CHANGES_REQUESTED"),
+    review("CHANGES_REQUESTED", SHA, "third"),
+    owner_review("CHANGES_REQUESTED", SHA, "third"),
 ], ids=("bot", "owner"))
 def test_round_three_goes_to_the_owner_instead_of_running(tmp_path, last):
-    reviews = [review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD), last]
-    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
+    # Three rounds to the cap: the bot's and the owner's change requests on two heads, and
+    # one "answering red CI" comment the lane left. A round is a distinct head among the
+    # open change requests, not a review, so same-head requests do not stack the count.
+    reviews = [review("CHANGES_REQUESTED", OLD), owner_review("CHANGES_REQUESTED", OLD), last]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews, red_answers=1), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert out == "go=false\n"
     assert labelled(calls) == [["api", "repos/o/r/issues/12/labels", "-f", "labels[]=needs-owner"]]
 
 
-@pytest.mark.parametrize("last", [review("APPROVED"), review("CHANGES_REQUESTED", OLD), review("COMMENTED")])
-def test_no_run_unless_the_bots_last_review_requests_changes_on_the_head(tmp_path, last):
+def test_two_bot_requests_and_the_owners_on_one_head_count_two_rounds_not_three(tmp_path):
+    # PR 11979 lost its push after one real fix because every change-request review counted
+    # a round; now the bot's and the owner's asks on one head count once, and a reviewer's
+    # latest review supersedes its own older ones, so three bot reviews are one open round.
+    reviews = [review("CHANGES_REQUESTED", OLD), owner_review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED"), review("CHANGES_REQUESTED", OLDER)]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    task = out.split("\n", 1)[1]
+    assert task.startswith("Answer review round 2 on #12")
+    assert "go=true" in out and labelled(calls) == []
+
+
+@pytest.mark.parametrize("last", [review("APPROVED"), review("COMMENTED")], ids=("approved", "commented"))
+def test_no_run_unless_some_latest_review_still_requests_changes_or_the_head_is_red(tmp_path, last):
+    # The go check is any open change request, or red checks on this head; the bot's latest
+    # review that no longer asks for changes closes its earlier request.
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data([review("CHANGES_REQUESTED", OLD), last]), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert out == "go=false\n" and labelled(calls) == []
+
+
+def test_a_change_request_open_on_an_older_head_still_runs(tmp_path):
+    # The go check is any open change request, not only one on this head: the owner's or the
+    # bot's latest review asking for changes on an earlier commit still waits for an answer.
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data([review("CHANGES_REQUESTED", OLD)]), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    task = out.split("\n", 1)[1]
+    assert task.startswith("Answer review round 1 on #12\n\nFrom nishfleet-approver:\nfinding\n")
+    assert "go=true" in out and labelled(calls) == []
 
 
 def test_a_pr_off_the_issues_branch_is_refused(tmp_path):
@@ -181,9 +229,10 @@ def test_a_red_head_on_a_fresh_pr_runs_too(tmp_path):
     assert out.endswith("go=true\n") and RED_COMMENT in calls and labelled(calls) == []
 
 
-def test_a_third_red_answer_after_the_change_requests_goes_to_the_owner(tmp_path):
-    reviews = [review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD)]
-    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews, failing=("ci",)), ISSUE="7", PR="12")
+def test_a_third_red_answer_after_two_open_heads_goes_to_the_owner(tmp_path):
+    # Two distinct heads among the open change requests and one red answer reach the cap of 3.
+    reviews = [review("CHANGES_REQUESTED", OLD), owner_review("CHANGES_REQUESTED", SHA)]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews, failing=("ci",), red_answers=1), ISSUE="7", PR="12")
     assert proc.returncode == 0 and out == "go=false\n"
     assert labelled(calls) == [["api", "repos/o/r/issues/12/labels", "-f", "labels[]=needs-owner"]]
     assert RED_COMMENT not in calls
@@ -201,6 +250,23 @@ def test_a_green_head_without_a_change_request_still_runs_nothing(tmp_path):
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0 and out == "go=false\n"
     assert labelled(calls) == [] and RED_COMMENT not in calls
+
+
+# One group holds the whole run, with a real queue: a second change request minutes after
+# the first starts a second run, which then waits for the first to push before its claim
+# bundles the head, so its push is not refused and the issue is not parked agent-blocked.
+# `queue: max` lets more than one run wait in the group, cancelling nothing pending, so a
+# run that skips in gate on the issue's other labels cannot cancel the waiting agent-ready
+# run as a pending twin.
+# https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
+def test_one_group_holds_the_whole_run_with_a_queue_and_nothing_pending_is_cancelled():
+    assert WF["concurrency"] == {
+        "group": "agent-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}",
+        "cancel-in-progress": False,
+        "queue": "max",
+    }
+    assert "concurrency" not in WF["jobs"]["work"]
 
 
 def test_only_a_go_starts_the_worker():
