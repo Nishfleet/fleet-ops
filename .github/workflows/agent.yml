@@ -50,14 +50,13 @@ permissions: {}
 # reads the new head and its push is not refused; the old job-level group on `work` let the
 # second run bundle a head the first was about to replace.
 # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
-# `queue: max` is what lets more than one run wait in the group, cancelling nothing pending:
-# a run that skips in `gate` on the issue's other labels (gardener, alert) is then just a
-# skipped run, never a pending twin that cancels the waiting agent-ready run.
+# `cancel-in-progress: false` runs the group's pending runs one at a time, so a run that
+# skips in `gate` on the issue's other labels (gardener, alert) is just a skipped run,
+# never a pending twin that cancels the waiting agent-ready run.
 # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
 concurrency:
   group: agent-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
   cancel-in-progress: false
-  queue: max
 env:
   REPO: ${{ github.repository }}
   ISSUE: ${{ github.event.issue.number || inputs.issue }}
