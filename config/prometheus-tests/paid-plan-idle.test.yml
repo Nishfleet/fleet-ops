@@ -3,7 +3,11 @@
 # alerts, one idle for 24 hours does, and a row the success counter has never
 # seen (no successful call since the last router restart) fires off
 # litellm_deployment_state, while an endpoint outside config/paid-plans.json
-# stays quiet. https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
+# stays quiet. A plan the provider itself is refusing for quota (a 429 usage
+# wall) is used, not idle: while the router holds a live 429 refusal series for
+# the plan it stays quiet, and the silence after a restart with neither
+# successes nor refusals recorded still fires (fleet-ops#11985).
+# https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
 rule_files:
   - ../../rootfs/etc/prometheus/fleet_rules.yml
 
@@ -70,6 +74,49 @@ tests:
             exp_annotations:
               summary: "paid plan https://api.minimax.io/anthropic has had no successful router response for 24 hours"
               description: "The router answered no successful response for paid-plan endpoint https://api.minimax.io/anthropic in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+
+  # fleet-ops#11985 (seen live 2026-11-13): OpenCode Go tripped its monthly usage
+  # wall, the endpoint answered 429 to every call and callers fell back, so the
+  # success counter stood still for the whole window. The provider refusing the
+  # calls is the opposite of idle, and the vendor resets the plan itself. The
+  # router's refusal counter is born at the plan's first 429 (a fresh counter
+  # series is created at 1, which is exactly how the live one was seen), so the
+  # presence of the series — not a rise in it — is the wall's signature, and it
+  # holds across the parked-row quiet spells the window would miss.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://opencode.ai/zen/go/v1"}'
+        values: '30x41'
+      - series: 'litellm_deployment_failure_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://opencode.ai/zen/go/v1",exception_status="429",exception_class="Openai.RateLimitError"}'
+        values: '1+0x41'
+    alert_rule_test:
+      # A live 429 refusal for the plan: walled, not idle — stays quiet.
+      - eval_time: 26h
+        alertname: PaidPlanIdle
+        exp_alerts: []
+      # The refusal series lives until a restart wipes it; the wall stays quiet.
+      - eval_time: 32h
+        alertname: PaidPlanIdle
+        exp_alerts: []
+
+  # Same plan seen live 2026-11-13 at 10:59 UTC: the router restarted mid-wall,
+  # parked rows drew no probes for hours, so no refusal was recorded and the
+  # success counter stood still since the restart. This blind gap is what the
+  # alert exists for — it fires until a probe records the wall.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://opencode.ai/zen/go/v1"}'
+        values: '30x41'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://opencode.ai/zen/go/v1
+            exp_annotations:
+              summary: "paid plan https://opencode.ai/zen/go/v1 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://opencode.ai/zen/go/v1 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
 
   # fleet-ops#11884 (seen live 2026-11-10): the router exports a deployment's
   # state under its configured api_base, while the counter only carries the
