@@ -118,8 +118,8 @@
     retired:
       # The runner-22 pilot is rolled back (fleet-ops#11991): runner 22 gets the same
       # .path as every runner, and its private-home drop-in and root-owned tools folder
-      # go. The hole #11959 found stays open until #11960 rebuilds the pilot with proof.
-      - /etc/systemd/system/fleet-runner@22.service.d
+      # go. The folder itself stays: #11960's just-in-time drop-in lives in it.
+      - /etc/systemd/system/fleet-runner@22.service.d/10-private-home.conf
       # The rolled-back pilot's root-owned tools folder, with its venv, actionlint, yq
       # and pi; nothing else reads it (tasks/runners.yml no longer references it).
       - /opt/fleet-pilot-tools
@@ -290,6 +290,7 @@
       loop: "{{ fleet_runner_ids }}"
       when: >-
         fleet_runner_unit.changed | default(false)
+        or (item == 22 and fleet_runner_jit.changed | default(false))
         or (fleet_runner_env.results | default([])
             | selectattr('item', 'equalto', item) | selectattr('changed') | list | length > 0)
         or (fleet_runner_path.results | default([])

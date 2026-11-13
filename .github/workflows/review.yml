@@ -69,7 +69,15 @@ jobs:
             fi ;;
           esac
           gh api -H 'Accept: application/vnd.github.raw' 'repos/Nishfleet/fleet-ops/contents/docs/review-bar.md?ref=main' > "$RUNNER_TEMP/bar.md"
+          # The reviewer never sees the ticket (agent.yml: only writers start a run on one), so
+          # the prompt carries it as data like the diff; a failed read leaves a marker line and
+          # the review goes on. https://google.github.io/eng-practices/review/reviewer/looking-for.html
+          ticket=''
+          case "$BRANCH" in agent/issue-*)
+            ticket=$(gh api "repos/$REPO/issues/${BRANCH#agent/issue-}" --jq '.title + "\n\n" + (.body // "")') || ticket='(the ticket could not be read)'
+          ;; esac
           { gh pr view "$PR" -R "$REPO" --json title,body,author,reviews,comments --jq "$PR_TEXT"
+            if [ -n "$ticket" ]; then echo; echo '# The ticket this pull request closes'; echo "$ticket"; fi
             echo '# Diff'; echo '```diff'; gh api "repos/$REPO/pulls/$PR" -H 'Accept: application/vnd.github.diff'; echo '```'; } > "$RUNNER_TEMP/prompt.part"
           # Renamed only when complete, so Grok never reviews half a diff.
           mv "$RUNNER_TEMP/prompt.part" "$RUNNER_TEMP/prompt.md"
