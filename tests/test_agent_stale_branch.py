@@ -67,7 +67,8 @@ def push(lane, open_prs, pr="", move_to=""):
            "GIT_CONFIG_VALUE_0": "https://github.com/o/r.git", "GH_DATA": str(tmp / "data.json"),
            "GH_LOG": str(tmp / "gh.log"), "RUNNER_TEMP": str(tmp), "REPO": "o/r", "GITHUB_REPOSITORY": "o/r",
            "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "1", "ISSUE": "7", "PR": pr,
-           "BASE": lane["base"], "PROOF": "run-proof: x -> 1 passed", "REMOTE": str(lane["remote"]), "MOVE_TO": move_to}
+           "BASE": lane["base"], "DEFAULT_BRANCH": "main", "PROOF": "run-proof: x -> 1 passed",
+           "REMOTE": str(lane["remote"]), "MOVE_TO": move_to}
     proc = subprocess.run(["bash", "-e", "-c", push_step()], env=env, capture_output=True, text=True, check=False)
     return proc, git("--git-dir", str(lane["remote"]), "rev-parse", BRANCH)
 
@@ -106,6 +107,88 @@ def test_a_first_run_creates_the_branch(lane):
 
 def claim_step():
     return next(s for s in WF["jobs"]["claim"]["steps"] if s.get("id") == "claim")["run"]
+
+
+def repo_step():
+    return next(s for s in WF["jobs"]["claim"]["steps"] if s.get("id") == "repo")["run"]
+
+
+# A fix round on a pull request whose branch predates a newer default-branch commit: main
+# moved on after the branch's old round (W1) forked, so a merge of the default branch puts
+# commits in the work bundle whose prerequisites reach below BASE (fleet-ops#11973,
+# run 43378639058: "Repository lacks these prerequisite commits").
+@pytest.fixture
+def conflict(tmp_path):
+    remote, src, c = tmp_path / "remote.git", tmp_path / "src", tmp_path / "checkout"
+    git("init", "-q", "--bare", "-b", "main", str(remote))
+    git("init", "-q", "-b", "main", str(src))
+    commit(src, "base")
+    git("push", "-q", str(remote), "main", cwd=src)
+    git("clone", "-q", str(remote), str(c))
+    git("switch", "-qC", "agent/issue-7", cwd=c)
+    base = commit(c, "old-round")
+    git("push", "-q", str(remote), "agent/issue-7", cwd=c)
+    commit(src, "new-main-1")
+    main_tip = commit(src, "new-main-2")
+    git("push", "-q", str(remote), "main", cwd=src)
+    # The fix round checks out the PR head with the full history (fetch-depth: 0), so
+    # origin/main is at the moved-on tip while HEAD stays on the branch.
+    git("fetch", "-q", "origin", cwd=c)
+    return {"tmp": tmp_path, "remote": remote, "checkout": c, "base": base, "main": main_tip}
+
+
+def bundle_step(lane):
+    """Run the claim job's bundle step as written, in the checkout, against a fake gh."""
+    bin_dir, out = lane["tmp"] / "claim-bin", lane["tmp"] / "claim-out"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(FAKE_GH)
+    (bin_dir / "gh").chmod(0o755)
+    (lane["tmp"] / "data.json").write_text(json.dumps({"repos/o/r": {"default_branch": "main"}}))
+    out.touch()
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "GH_DATA": str(lane["tmp"] / "data.json"),
+           "GH_LOG": str(lane["tmp"] / "gh.log"), "GITHUB_OUTPUT": str(out), "RUNNER_TEMP": str(lane["tmp"]),
+           "REPO": "o/r", "GITHUB_REPOSITORY": "o/r", "GITHUB_SERVER_URL": "https://github.com",
+           "GITHUB_RUN_ID": "1", "ISSUE": "7"}
+    proc = subprocess.run(["bash", "-e", "-c", repo_step()], env=env, cwd=lane["checkout"],
+                          capture_output=True, text=True, check=False)
+    return proc, out.read_text()
+
+
+def worker(lane, merge):
+    """The worker's clone from the bundle, then its work bundle, as the work job bundles it."""
+    work = lane["tmp"] / "work"
+    git("clone", "-q", "--branch", "agent/issue-7", str(lane["tmp"] / "repo.bundle"), str(work))
+    if merge:
+        # What the packet asks for: merge origin/<default branch>, no rebase. The clone maps
+        # only the bundle's refs/heads/*, so the default branch arrives by the extra fetch.
+        git("fetch", "-q", str(lane["tmp"] / "repo.bundle"),
+            "refs/remotes/origin/main:refs/remotes/origin/main", cwd=work)
+        git("merge", "-q", "--no-edit", "origin/main", cwd=work)
+    head = commit(work, "the-fix")
+    git("bundle", "create", str(lane["tmp"] / "work.bundle"), f"^{lane['base']}", "agent/issue-7", cwd=work)
+    return head
+
+
+def test_a_conflict_fix_that_merges_the_default_branch_pushes_fast_forward(conflict):
+    proc, out = bundle_step(conflict)
+    assert proc.returncode == 0, proc.stderr
+    assert out == f"base={conflict['base']}\ndefault_branch=main\n"
+    heads = git("bundle", "list-heads", str(conflict["tmp"] / "repo.bundle"))
+    assert "refs/remotes/origin/main" in heads
+    assert conflict["main"] in heads
+    head = worker(conflict, merge=True)
+    # PR=12 pushes without force, so a success is a fast-forward by construction.
+    proc, pushed = push(conflict, [], pr="12")
+    assert proc.returncode == 0, proc.stderr
+    assert pushed == head
+
+
+def test_the_plain_case_without_a_merge_still_pushes(conflict):
+    bundle_step(conflict)
+    head = worker(conflict, merge=False)
+    proc, pushed = push(conflict, [], pr="12")
+    assert proc.returncode == 0, proc.stderr
+    assert pushed == head
 
 
 PULLS = "repos/o/r/pulls?head=o:agent/issue-7&state=open"

@@ -43,7 +43,9 @@ def work(tmp_path):
     (src / "file").write_text("base\n")
     git("add", "file", cwd=src)
     git("commit", "-qm", "base", cwd=src)
-    git("bundle", "create", str(tmp_path / "repo.bundle"), "agent/issue-7", cwd=src)
+    # the bundle as the claim job now builds it: the default branch rides along
+    git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=src)
+    git("bundle", "create", str(tmp_path / "repo.bundle"), "agent/issue-7", "refs/remotes/origin/main", cwd=src)
     (tmp_path / "bin").mkdir()
     (tmp_path / "github_env").touch()
     return tmp_path
@@ -59,7 +61,8 @@ def run_worker(work, engine, verdict=None):
         stub.chmod(0o755)
     env = {**os.environ, "PATH": f"{work / 'bin'}:{os.environ['PATH']}",
            "RUNNER_TEMP": str(work), "GITHUB_ENV": str(work / "github_env"),
-           "REPO": "o/r", "ISSUE": "7", "ISSUE_TEXT": "the task", "ENGINE": engine}
+           "REPO": "o/r", "ISSUE": "7", "ISSUE_TEXT": "the task", "ENGINE": engine,
+           "DEFAULT_BRANCH": "main"}
     # Actions runs a `run:` step that sets no `shell:` key as `bash -e {0}`; match it:
     # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepsshell
     return subprocess.run(["bash", "-e", "-c", worker_step()], env=env, capture_output=True, text=True, check=False)
