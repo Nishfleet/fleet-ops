@@ -356,6 +356,93 @@
     daemon_reload: true
   loop: "{{ fleet_reviewer_runner_ids }}"
 
+# The Claude engine's pool (fleet-ops#11958): its own user fleet-claude, because the two
+# Team seat tokens are its login and all agent runners share one user and one home.
+- name: Create the Claude runner user
+  ansible.builtin.user:
+    name: fleet-claude
+    system: true
+    shell: /usr/sbin/nologin
+    home: /var/lib/fleet-claude
+    create_home: true
+
+- name: Make the Claude runner directories
+  ansible.builtin.file:
+    path: "/var/lib/fleet-claude/{{ item }}"
+    state: directory
+    owner: fleet-claude
+    group: fleet-claude
+    mode: '0750'
+  loop: "{{ fleet_claude_runner_ids }}"
+
+# The review pool's pinned download above is reused: one version, one checksum, one cache
+# file. Once only: the runner updates itself in place after that (GitHub docs: "About
+# self-hosted runners").
+- name: Unpack the actions runner for fleet-claude
+  ansible.builtin.unarchive:
+    src: "/var/cache/actions-runner-linux-x64-{{ fleet_reviewer_runner_version }}.tar.gz"
+    dest: "/var/lib/fleet-claude/{{ item }}"
+    remote_src: true
+    owner: fleet-claude
+    group: fleet-claude
+    creates: "/var/lib/fleet-claude/{{ item }}/config.sh"
+  loop: "{{ fleet_claude_runner_ids }}"
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Give each Claude runner fleet-claude's environment
+  ansible.builtin.copy:
+    content: "HOME=/var/lib/fleet-claude\nLANG=C.UTF-8\n"
+    dest: "/var/lib/fleet-claude/{{ item }}/.env"
+    owner: fleet-claude
+    group: fleet-claude
+    mode: '0644'
+  loop: "{{ fleet_claude_runner_ids }}"
+  register: fleet_claude_env
+  notify: Restart the Claude runners
+
+# Job PATH: system directories only. The runner prepends this file's entries to the job's
+# PATH, as it does for the review pool; no entry may sit in a job-writable home.
+- name: Give each Claude runner fleet-claude's PATH
+  ansible.builtin.copy:
+    content: "/usr/local/bin:/usr/bin:/bin\n"
+    dest: "/var/lib/fleet-claude/{{ item }}/.path"
+    owner: fleet-claude
+    group: fleet-claude
+    mode: '0644'
+  loop: "{{ fleet_claude_runner_ids }}"
+  register: fleet_claude_path
+  notify: Restart the Claude runners
+
+- name: Make fleet-claude's seats directory
+  ansible.builtin.file:
+    path: /var/lib/fleet-claude/.config/fleet-ops/seats
+    state: directory
+    owner: fleet-claude
+    group: fleet-claude
+    mode: '0700'
+
+# Nish-held credential files; no_log keeps their values out of the ansible-pull log,
+# as with the router keys above.
+- name: Give fleet-claude the Team seat tokens
+  ansible.builtin.copy:
+    src: "{{ nish_home }}/.config/fleet-ops/seats/{{ item }}.env"
+    dest: "/var/lib/fleet-claude/.config/fleet-ops/seats/{{ item }}.env"
+    remote_src: true
+    owner: fleet-claude
+    group: fleet-claude
+    mode: '0600'
+  loop: [claude-seat-a, claude-seat-b]
+  no_log: true
+  diff: false
+
+- name: Start the Claude runners
+  ansible.builtin.systemd_service:
+    name: "fleet-claude-runner@{{ item }}.service"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: "{{ fleet_claude_runner_ids }}"
+
 # The deploy runner netcup-fleet-ci-1: deploy-box's only runner, as its own user fleet-ci
 # (rootfs/etc/systemd/system/fleet-ci-runner.service), the same move the agent pool made
 # above. Its registration is copied once from nish's runner directory, while the copy has no

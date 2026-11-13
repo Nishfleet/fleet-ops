@@ -91,7 +91,9 @@
 # engine on the agent runners: agent.yml passes it with --permission-mode dontAsk and
 # --setting-sources project,local, so this copy must exist before a Claude engine run
 # starts. The work folder rule is the runners' _work tree, not /tmp: the work job runs
-# in $RUNNER_TEMP/work under /var/lib/fleet-runner/<runner>/_work.
+# in $RUNNER_TEMP/work under /var/lib/fleet-runner/<runner>/_work. The Claude pool (fleet-ops
+# #11958) is covered too; its seat denies and sandbox denyRead hide the seat-token directories
+# (https://code.claude.com/docs/en/env-vars, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1).
 - name: Install the per-role Claude permission allow lists
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/claude-code/roles/"
@@ -194,6 +196,18 @@
   notify:
     - Reload systemd
     - Restart the review runners
+
+- name: Install the Claude runner unit
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/system/fleet-claude-runner@.service"
+    dest: /etc/systemd/system/fleet-claude-runner@.service
+    owner: root
+    group: root
+    mode: preserve
+  register: fleet_claude_unit
+  notify:
+    - Reload systemd
+    - Restart the Claude runners
 
 - name: Install systemd units, slices and drop-ins
   ansible.builtin.copy:

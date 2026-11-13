@@ -3,12 +3,20 @@
     "allow": [
       "Bash",
       "Edit(//var/lib/fleet-runner/*/_work/**)",
+      "Edit(//var/lib/fleet-claude/*/_work/**)",
       "Glob",
       "Grep",
       "Read",
       "Skill",
       "TodoWrite"
+    ],
+    "deny": [
+      "Read(//var/lib/fleet-claude/.config/fleet-ops/seats/**)",
+      "Read(//var/lib/fleet-runner/.config/fleet-ops/seats/**)"
     ]
+  },
+  "env": {
+    "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"
   },
   "sandbox": {
     "enabled": true,
@@ -25,6 +33,10 @@
     "filesystem": {
       "allowWrite": [
         "~/.npm"
+      ],
+      "denyRead": [
+        "/var/lib/fleet-claude/.config/fleet-ops/seats/**",
+        "/var/lib/fleet-runner/.config/fleet-ops/seats/**"
       ]
     },
     "network": {

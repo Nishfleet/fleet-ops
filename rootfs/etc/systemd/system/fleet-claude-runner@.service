@@ -1,0 +1,39 @@
+# One Claude engine runner (label `senior`) as its own user fleet-claude, so the two Team
+# seat tokens in its home are readable by no job on another pool; built like the review
+# pool's unit, in reverse (tasks/runners.yml, systemd.exec(5)).
+[Unit]
+Description=GitHub Actions runner netcup-claude-%i (fleet-claude)
+After=network-online.target
+Wants=network-online.target
+# Starts once `config.sh` has registered it; until then the start is skipped, not failed.
+ConditionPathExists=/var/lib/fleet-claude/%i/.runner
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+User=fleet-claude
+Group=fleet-claude
+WorkingDirectory=/var/lib/fleet-claude/%i
+Environment=HOME=/var/lib/fleet-claude
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/var/lib/fleet-claude/%i/bin/runsvc.sh
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=5min
+Restart=on-failure
+RestartSec=30s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+InaccessiblePaths=-/var/lib/fleet-runner
+UMask=0077
+Slice=agent.slice
+# The same memory lines as fleet-runner@.service: MemoryHigh throttles, oomd kills held
+# pressure (systemd.resource-control(5)); the review runner's 2G cap is not enough for builds.
+MemoryHigh=6G
+MemoryMax=8G
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=40%
+
+[Install]
+WantedBy=multi-user.target

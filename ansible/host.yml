@@ -35,6 +35,9 @@
     fleet_reviewer_runner_sha256: baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
     # netcup-reviewer-1 to 3, so reviews of different pull requests run side by side.
     fleet_reviewer_runner_ids: [1, 2, 3]
+    # The Claude engine pool (tasks/runners.yml): netcup-claude-1 to 2, label senior, one
+    # user fleet-claude, registered by the lead after the merge like the review pool's.
+    fleet_claude_runner_ids: [1, 2]
     # The two router instances' loopback ports, behind HAProxy on 127.0.0.1:4000
     # (containers/quadlet/fleet-litellm-proxy@.container, rootfs/etc/haproxy/haproxy.cfg).
     litellm_proxy_ports: [4001, 4002]
@@ -295,6 +298,18 @@
         or (fleet_reviewer_env.results | default([])
             | selectattr('item', 'equalto', item) | selectattr('changed') | list | length > 0)
         or (fleet_reviewer_path.results | default([])
+            | selectattr('item', 'equalto', item) | selectattr('changed') | list | length > 0)
+
+    - name: Restart the Claude runners
+      ansible.builtin.systemd_service:
+        name: "fleet-claude-runner@{{ item }}.service"
+        state: restarted
+      loop: "{{ fleet_claude_runner_ids }}"
+      when: >-
+        fleet_claude_unit.changed | default(false)
+        or (fleet_claude_env.results | default([])
+            | selectattr('item', 'equalto', item) | selectattr('changed') | list | length > 0)
+        or (fleet_claude_path.results | default([])
             | selectattr('item', 'equalto', item) | selectattr('changed') | list | length > 0)
 
     # The Hermes units restart from tasks/services.yml, not from a handler: the
