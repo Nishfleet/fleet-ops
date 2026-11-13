@@ -1,5 +1,9 @@
-"""The lane answers the reviewer bot or the repository owner on its own PRs, at most 3 rounds,
-and obeys the pause.
+"""The lane answers the reviewer bot or the repository owner on its own PRs, at most 3 rounds
+answered (rounds 1 and 2 by the regular builder, round 3 by the senior builder, engine=claude,
+fleet-ops#11964; a fourth labels the PR needs-owner), and obeys the pause.
+
+fleet-ops#11964: the senior round's work job reads engine=claude and lands on the Claude pool's
+`senior` runner, and review.yml reads the PR's "agent: senior builder" comment to pick review-fable.
 
 global-standing-rules.md: the builder answers each finding, the same reviewer signs off, a
 finding it keeps open goes to the owner, hard cap 3 review rounds per PR. While
@@ -102,7 +106,7 @@ def test_actionlint_ignores_only_the_real_queue_key():
         ['unexpected key "queue" for "concurrency" section']
 
 
-SHA, OLD, OLDER = "a" * 40, "b" * 40, "c" * 40
+SHA, OLD, OLDER, ELDEST = "a" * 40, "b" * 40, "c" * 40, "d" * 40
 
 
 def review(state, sha=SHA, body="finding", user="nishfleet-approver", association=None):
@@ -133,6 +137,14 @@ def round_data(reviews, ref="agent/issue-7", failing=(), red_answers=0):
 
 def labelled(calls):
     return [c for c in calls if c[:2] == ["api", "repos/o/r/issues/12/labels"]]
+
+
+SENIOR_TASK = "Two earlier answers did not close this. Fix every open finding below, or say in the commit message why a finding is wrong."
+
+
+def senior_comment(calls):
+    return any(c[:2] == ["api", "repos/o/r/issues/12/comments"]
+               and c[-1].startswith("body=agent: senior builder takes round 3") for c in calls)
 
 
 def test_the_bots_latest_verdict_runs_on_that_verdict_only(tmp_path):
@@ -186,16 +198,35 @@ def test_the_owners_request_on_an_older_head_runs_next_to_the_bots_on_this_head(
     assert labelled(calls) == []
 
 
-@pytest.mark.parametrize("last", [
-    review("CHANGES_REQUESTED"),
-    owner_review("CHANGES_REQUESTED"),
+@pytest.mark.parametrize(("last", "login"), [
+    (review("CHANGES_REQUESTED"), "nishfleet-approver"),
+    (owner_review("CHANGES_REQUESTED"), "nish3451"),
 ], ids=("bot", "owner"))
-def test_three_change_request_heads_go_to_the_owner_instead_of_running(tmp_path, last):
+def test_three_change_request_heads_go_to_the_senior_builder(tmp_path, last, login):
+    # fleet-ops#11964: three change-request heads are three answered rounds, and round 3
+    # runs the senior builder (engine=claude); only a fourth labels the PR needs-owner.
     reviews = [review("CHANGES_REQUESTED", OLDER, "first"), review("CHANGES_REQUESTED", OLD, "second"), last]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    # engine=claude rides GITHUB_OUTPUT ahead of the task block.
+    lines = out.split("\n")
+    assert lines[0] == "engine=claude" and "go=true" in out and "ref=agent/issue-7" in out
+    task = "\n".join(lines[1:]).split("\n", 1)[1]
+    assert task.startswith(f"{SENIOR_TASK}\n\nAnswer review round 3 on #12\n\nFrom {login}:\n")
+    assert senior_comment(calls)
+    assert labelled(calls) == []
+
+
+def test_four_change_request_heads_go_to_the_owner_instead_of_running(tmp_path):
+    # fleet-ops#11964: only a fourth round goes to the owner, and it runs nothing.
+    reviews = [review("CHANGES_REQUESTED", ELDEST, "first"), review("CHANGES_REQUESTED", OLDER, "second"),
+               review("CHANGES_REQUESTED", OLD, "third"), review("CHANGES_REQUESTED")]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert out == "go=false\n"
     assert labelled(calls) == [["api", "repos/o/r/issues/12/labels", "-f", "labels[]=needs-owner"]]
+    assert any(c[:2] == ["api", "repos/o/r/issues/12/comments"] and "owner decides" in c[-1] for c in calls)
+    assert not senior_comment(calls)
 
 
 def test_change_requests_from_both_on_two_heads_leave_a_third_round_of_room(tmp_path):
@@ -257,19 +288,36 @@ def test_a_red_head_on_a_fresh_pr_runs_too(tmp_path):
     assert out.endswith("go=true\n") and RED_COMMENT in calls and labelled(calls) == []
 
 
-def test_a_red_head_after_two_change_request_heads_goes_to_the_owner(tmp_path):
+def test_a_red_head_after_two_change_request_heads_runs_the_senior_builder(tmp_path):
+    # Two change-request heads plus this red head are three answered rounds: the senior
+    # builder answers them (engine=claude, fleet-ops#11964).
     reviews = [review("CHANGES_REQUESTED", OLDER, "first"), review("CHANGES_REQUESTED", OLD, "second")]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews, failing=("ci",)), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    lines = out.split("\n")
+    assert lines[0] == "engine=claude" and "go=true" in out and "ref=agent/issue-7" in out
+    task = "\n".join(lines[1:]).split("\n", 1)[1]
+    assert task.startswith(f"{SENIOR_TASK}\n\nThe CI on #12 is red on {SHA}; the failed jobs are: ci")
+    assert RED_COMMENT in calls
+    assert senior_comment(calls)
+    assert labelled(calls) == []
+
+
+def test_a_fourth_red_head_in_a_row_goes_to_the_owner(tmp_path):
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data([], failing=("ci",), red_answers=3), ISSUE="7", PR="12")
     assert proc.returncode == 0 and out == "go=false\n"
     assert labelled(calls) == [["api", "repos/o/r/issues/12/labels", "-f", "labels[]=needs-owner"]]
     assert RED_COMMENT not in calls
 
 
-def test_a_third_red_head_in_a_row_goes_to_the_owner(tmp_path):
+def test_a_third_red_head_in_a_row_runs_the_senior_builder(tmp_path):
+    # Two earlier "answering red CI" rounds plus this red head are three answered rounds:
+    # the senior builder answers them (engine=claude, fleet-ops#11964).
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data([], failing=("ci",), red_answers=2), ISSUE="7", PR="12")
-    assert proc.returncode == 0 and out == "go=false\n"
-    assert labelled(calls) == [["api", "repos/o/r/issues/12/labels", "-f", "labels[]=needs-owner"]]
-    assert RED_COMMENT not in calls
+    assert proc.returncode == 0, proc.stderr
+    assert "go=true" in out and "engine=claude" in out
+    assert RED_COMMENT in calls and senior_comment(calls)
+    assert labelled(calls) == []
 
 
 def test_a_green_head_without_a_change_request_still_runs_nothing(tmp_path):
@@ -281,6 +329,15 @@ def test_a_green_head_without_a_change_request_still_runs_nothing(tmp_path):
 
 def test_only_a_go_starts_the_worker():
     assert WF["jobs"]["work"]["if"] == "needs.claim.outputs.go == 'true'"
+
+
+# fleet-ops#11964: a senior round is engine=claude on the Claude pool's `senior` runner;
+# the claim job carries the engine the round step chose, ahead of a dispatched input.
+def test_a_senior_round_runs_the_claude_engine_on_the_senior_runner():
+    work = WF["jobs"]["work"]
+    assert WF["jobs"]["claim"]["outputs"]["engine"] == "${{ steps.round.outputs.engine }}"
+    assert work["env"]["ENGINE"] == "${{ needs.claim.outputs.engine || inputs.engine || 'pi' }}"
+    assert work["runs-on"] == ["self-hosted", "${{ (needs.claim.outputs.engine || inputs.engine) == 'claude' && 'senior' || 'agent' }}"]
 
 
 # upstream: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability

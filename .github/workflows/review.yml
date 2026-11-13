@@ -36,6 +36,7 @@ jobs:
     outputs:
       review: ${{ steps.ai.outputs.review || steps.grok.outputs.review }}
     steps:
+      # A senior round is reviewed by Fable 5.2 on the owner's decision (fleet-ops#11964, 2026-11-13); the run name still says engine=pi there, so the step looks for the senior comment instead.
       - name: Review with an AI from another family than the builder's
         id: ai
         # A failed router call leaves the job to the Grok step below.
@@ -56,10 +57,16 @@ jobs:
           set -euo pipefail
           model=review-any
           case "$BRANCH" in agent/issue-*)
+            # The lane's senior comment marks round 3 (agent.yml): the owner sends it to
+            # review-fable, regardless of which engine pushed the head.
+            senior=$(gh pr view "$PR" -R "$REPO" --json comments --jq '[.comments[] | select(.body | startswith("agent: senior builder"))] | length')
             last=$(gh api "repos/$REPO/activity?ref=refs/heads/$BRANCH&per_page=1" --jq '.[0] | "\(.actor.login) \(.after)"')
             engines=$(gh run list -R "$REPO" -w agent.yml -b main -L 1000 --json displayTitle \
               --jq "[.[].displayTitle | select(startswith(\"agent #${BRANCH#agent/issue-} engine=\"))] | unique | join(\" \")")
-            [ "$last" != "nishfleet-worker[bot] $SHA" ] || [ "$engines" != "agent #${BRANCH#agent/issue-} engine=pi" ] || model=review-claude ;;
+            if [ "$senior" -gt 0 ]; then model=review-fable
+            else
+              [ "$last" != "nishfleet-worker[bot] $SHA" ] || [ "$engines" != "agent #${BRANCH#agent/issue-} engine=pi" ] || model=review-claude
+            fi ;;
           esac
           gh api -H 'Accept: application/vnd.github.raw' 'repos/Nishfleet/fleet-ops/contents/docs/review-bar.md?ref=main' > "$RUNNER_TEMP/bar.md"
           { gh pr view "$PR" -R "$REPO" --json title,body,author,reviews,comments --jq "$PR_TEXT"
