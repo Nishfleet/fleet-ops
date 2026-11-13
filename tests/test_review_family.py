@@ -134,9 +134,9 @@ def test_the_lane_builders_are_neither_claude_nor_qwen():
 
 def test_the_review_groups_hold_their_families():
     groups = {g: [r["litellm_params"]["model"] for r in ROUTER["model_list"] if r["model_name"] == g]
-              for g in ("review-claude", "review-qwen", "review-any")}
-    assert groups == {"review-claude": ["anthropic/claude-sonnet-5-5"], "review-qwen": ["openai/qwen3.8-max"],
-                      "review-any": ["openai/deepseek-v4.1-flash"]}
+              for g in ("review-claude", "review-fable", "review-qwen", "review-any")}
+    assert groups == {"review-claude": ["anthropic/claude-sonnet-5-5"], "review-fable": ["anthropic/claude-fable-5-2"],
+                      "review-qwen": ["openai/qwen3.8-max"], "review-any": ["openai/deepseek-v4.1-flash"]}
 
 
 def reachable(group):
@@ -175,9 +175,9 @@ def test_the_review_any_row_answers_a_review_call():
     assert answer.choices[0].message.content == "deepseek answered"
 
 
-def test_claude_falls_back_to_qwen_and_nothing_else_touches_a_review_group():
+def test_claude_and_fable_fall_to_qwen_and_nothing_else_touches_a_review_group():
     edges = [(k, v) for entry in ROUTER["router_settings"]["fallbacks"] for k, vs in entry.items() for v in vs]
-    assert [e for e in edges if any(n.startswith("review-") for n in e)] == [("review-claude", "review-qwen")]
+    assert [e for e in edges if any(n.startswith("review-") for n in e)] == [("review-claude", "review-qwen"), ("review-fable", "review-qwen")]
     assert not any(k.startswith("review-") or v.startswith("review-") for k, v in ROUTER["router_settings"]["model_group_alias"].items())
 
 

@@ -261,6 +261,26 @@ model_list:
     supports_prompt_caching: false
     cache_proof: "Nothing repeats: each call is a new diff, and the shared system prompt (docs/review-bar.md) is under the 1024-token minimum cacheable prompt (docs.claude.com/en/docs/build-with-claude/prompt-caching)."
     id: anthropic-sonnet55-review
+# The senior round's reviewer (owner 2026-11-13: "fable 5.2 will review it"). Round 3 of a lane PR
+# is built by the senior builder, and this group reviews it. On a failure or the 5 USD/day wall it
+# falls back to review-qwen. Only the review runner's virtual key lists this group.
+- model_name: review-fable
+  litellm_params:
+    model: anthropic/claude-fable-5-2
+    api_key: os.environ/ANTHROPIC_API_KEY
+    api_base: https://api.anthropic.com
+    tags:
+    - prepaid
+    - anthropic
+    input_cost_per_token: 8e-06
+    output_cost_per_token: 4e-05
+    max_budget: 5.0
+    budget_duration: 1d
+  model_info:
+    mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Nothing repeats: each call is a new diff, as on the review-claude row."
+    id: anthropic-fable52-review
 # The review job's last reviewer (owner 2026-11-04: any family but the builder's, never MiniMax).
 # Qwen builds nothing, so it may review every PR. It falls back to nothing, so a review never
 # reaches a builder's row. Alibaba Token Plan is prepaid, so no max_budget.
@@ -328,6 +348,7 @@ router_settings:
     - assistant: [worker-capable]
     - tether: [assistant]
     - review-claude: [review-qwen]
+    - review-fable: [review-qwen]
   cooldown_time: 60
   allowed_fails: 1
   # A 401 or 429 parks its row at once; with allowed_fails set, it would only count (fleet-ops#10756, #11723, docs.litellm.ai/docs/routing#cooldowns).

@@ -11,7 +11,7 @@
   "$defs": {
     "rowCooldown": { "type": "integer", "minimum": 1, "maximum": 86400 },
     "tetherRow": {
-      "$comment": "Tether's Claude Sonnet 5.5 row (Nish 2026-10-22, fleet-ops#9980; 2026-10-23, Nishfleet/tether#7). The group, the model and the key are pinned together: the tether group answers only from claude-sonnet-5-5 on the Anthropic key, and that key serves no other group but review-claude (reviewClaudeRow), so no routing group or fallback other than those two reaches the prepaid credit. The row carries a 50 USD/day wall (Nish 2026-10-23), and raising it is a deliberate change with its own issue. A caller holding the proxy master key can still name the group, so Tether's own virtual key is the only key that should list it.",
+      "$comment": "Tether's Claude Sonnet 5.5 row (Nish 2026-10-22, fleet-ops#9980; 2026-10-23, Nishfleet/tether#7). The group, the model and the key are pinned together: the tether group answers only from claude-sonnet-5-5 on the Anthropic key, and that key serves no other group but review-claude (reviewClaudeRow) and review-fable (reviewFableRow), so no routing group or fallback other than those three reaches the prepaid credit. The row carries a 50 USD/day wall (Nish 2026-10-23), and raising it is a deliberate change with its own issue. A caller holding the proxy master key can still name the group, so Tether's own virtual key is the only key that should list it.",
       "type": "object",
       "required": ["model_name", "litellm_params"],
       "properties": {
@@ -56,6 +56,29 @@
       "required": ["model_name"],
       "properties": { "model_name": { "const": "review-claude" } }
     },
+    "reviewFableRow": {
+      "$comment": "The senior round's reviewer row (owner 2026-11-13: 'fable 5.2 will review it'; fleet-ops#11966). Round 3 of a lane PR is built by the senior builder, and this group reviews it, falling back to review-qwen (review-fable: [review-qwen]). Its group, model and key are pinned together, and its 5 USD/day wall (owner 2026-11-13) sits apart from Tether's 50 and review-claude's 20. Only the review runner's virtual key lists it.",
+      "type": "object",
+      "required": ["model_name", "litellm_params"],
+      "properties": {
+        "model_name": { "const": "review-fable" },
+        "litellm_params": {
+          "type": "object",
+          "required": ["model", "api_key", "max_budget", "budget_duration"],
+          "properties": {
+            "model": { "const": "anthropic/claude-fable-5-2" },
+            "api_key": { "const": "os.environ/ANTHROPIC_API_KEY" },
+            "max_budget": { "const": 5 },
+            "budget_duration": { "const": "1d" }
+          }
+        }
+      }
+    },
+    "reviewFableGroupRow": {
+      "type": "object",
+      "required": ["model_name"],
+      "properties": { "model_name": { "const": "review-fable" } }
+    },
     "tetherGroupRow": {
       "type": "object",
       "required": ["model_name"],
@@ -65,6 +88,13 @@
       "type": "object",
       "required": ["tether"],
       "properties": { "tether": { "const": ["assistant"] } }
+    },
+    "reviewFallsToQwen": {
+      "$comment": "The only review-* fallbacks: review-claude or review-fable (the senior round's reviewer, fleet-ops#11966) falls to review-qwen and to nothing else, so a review never reaches a builder's row.",
+      "anyOf": [
+        { "const": { "review-claude": ["review-qwen"] } },
+        { "const": { "review-fable": ["review-qwen"] } }
+      ]
     },
     "workerCapableWalk": {
       "$comment": "fleet-ops#11723: one 429 retry per other worker-capable row (7 rows, so 6, after the 2026-11-10 row cut). The cap keeps a larger value, and the long sleep it buys, out of the config.",
@@ -114,17 +144,19 @@
           }
         },
         {
-          "$comment": "Tether's Claude row: every row named tether is the pinned row, every row on the Anthropic key is the tether row or the review-claude row, and there is at most one of each, so a second tether row, a tether row on another model or provider, or the Anthropic key on another group all fail here. Absence is allowed (the schema's own reject cases are built without it); router_settings.fallbacks requires tether -> assistant whenever the row exists.",
+          "$comment": "Tether's Claude row: every row named tether is the pinned row, every row on the Anthropic key is the tether row, the review-claude row or the review-fable row, and there is at most one of each, so a second tether row, a tether row on another model or provider, or the Anthropic key on another group all fail here. Absence is allowed (the schema's own reject cases are built without it); router_settings.fallbacks requires tether -> assistant whenever the row exists.",
           "allOf": [
             { "contains": { "$ref": "#/$defs/tetherGroupRow" }, "minContains": 0, "maxContains": 1 },
             { "contains": { "$ref": "#/$defs/reviewClaudeGroupRow" }, "minContains": 0, "maxContains": 1 },
-            { "contains": { "$ref": "#/$defs/anthropicKeyRow" }, "minContains": 0, "maxContains": 2 },
+            { "contains": { "$ref": "#/$defs/reviewFableGroupRow" }, "minContains": 0, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/anthropicKeyRow" }, "minContains": 0, "maxContains": 3 },
             {
               "items": {
                 "allOf": [
                   { "if": { "$ref": "#/$defs/tetherGroupRow" }, "then": { "$ref": "#/$defs/tetherRow" } },
                   { "if": { "$ref": "#/$defs/reviewClaudeGroupRow" }, "then": { "$ref": "#/$defs/reviewClaudeRow" } },
-                  { "if": { "$ref": "#/$defs/anthropicKeyRow" }, "then": { "anyOf": [ { "$ref": "#/$defs/tetherRow" }, { "$ref": "#/$defs/reviewClaudeRow" } ] } }
+                  { "if": { "$ref": "#/$defs/reviewFableGroupRow" }, "then": { "$ref": "#/$defs/reviewFableRow" } },
+                  { "if": { "$ref": "#/$defs/anthropicKeyRow" }, "then": { "anyOf": [ { "$ref": "#/$defs/tetherRow" }, { "$ref": "#/$defs/reviewClaudeRow" }, { "$ref": "#/$defs/reviewFableRow" } ] } }
                 ]
               }
             }
@@ -172,14 +204,14 @@
           }
         },
         "fallbacks": {
-          "$comment": "Tether: the tether entry is exactly [assistant] (a Claude failure falls to the group Hermes already uses, never to a worker group or back), and no other group may fall into tether. The one review-* fallback is review-claude -> review-qwen (Qwen builds nothing), and no other group falls into a review group, so a review never lands in a worker group, in tether, or on a builder's row, never reaches Claude from the Qwen review a Claude build gets, and the Claude credit is spent only by Tether and the review job. W10c: worker-capable is the strong group and never falls down, so no worker-capable entry may name worker-cheap, worker-public or assistant; a strong call with no healthy row fails at the caller.",
+          "$comment": "Tether: the tether entry is exactly [assistant] (a Claude failure falls to the group Hermes already uses, never to a worker group or back), and no other group may fall into tether. The review-* fallbacks are review-claude -> review-qwen and review-fable -> review-qwen (the senior round's reviewer, fleet-ops#11966; Qwen builds nothing), and no other group falls into a review group, so a review never lands in a worker group, in tether, or on a builder's row, never reaches Claude or Fable from the Qwen review a Claude build gets, and the Anthropic credit is spent only by Tether and the review job. W10c: worker-capable is the strong group and never falls down, so no worker-capable entry may name worker-cheap, worker-public or assistant; a strong call with no healthy row fails at the caller.",
           "type": "array",
           "not": { "anyOf": [
             { "contains": { "type": "object", "required": ["worker-capable"], "properties": { "worker-capable": { "contains": { "enum": ["worker-cheap", "worker-public", "assistant"] } } } } },
             { "contains": { "type": "object", "required": ["tether"], "not": { "$ref": "#/$defs/tetherFallsToAssistant" } } },
             { "contains": { "type": "object", "minProperties": 1, "patternProperties": { ".*": { "contains": { "const": "tether" } } } } },
-            { "contains": { "allOf": [ { "type": "object", "not": { "propertyNames": { "not": { "pattern": "^review-" } } } }, { "not": { "const": { "review-claude": ["review-qwen"] } } } ] } },
-            { "contains": { "type": "object", "minProperties": 1, "not": { "const": { "review-claude": ["review-qwen"] } }, "patternProperties": { ".*": { "contains": { "pattern": "^review-" } } } } }
+            { "contains": { "allOf": [ { "type": "object", "not": { "propertyNames": { "not": { "pattern": "^review-" } } } }, { "not": { "$ref": "#/$defs/reviewFallsToQwen" } } ] } },
+            { "contains": { "type": "object", "minProperties": 1, "not": { "$ref": "#/$defs/reviewFallsToQwen" }, "patternProperties": { ".*": { "contains": { "pattern": "^review-" } } } } }
           ] }
         },
         "redis_host": { "const": "127.0.0.1" },

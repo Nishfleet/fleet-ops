@@ -1,0 +1,73 @@
+# The senior round's reviewer row (fleet-ops#11966): the review-fable group answers only
+# from anthropic/claude-fable-5-2 on the Anthropic key (owner 2026-11-13, "fable 5.2 will
+# review it"); another model in it is refused.
+# The rows and router_settings are the live config's review-claude and review-fable rows
+# plus its own router_settings, which pass the schema alone, so the change above is the
+# only one in this file.
+# undo: model_list.1.litellm_params.model = "anthropic/claude-fable-5-2"
+model_list:
+- model_name: review-claude
+  litellm_params:
+    model: anthropic/claude-sonnet-5-5
+    api_key: os.environ/ANTHROPIC_API_KEY
+    api_base: https://api.anthropic.com
+    tags:
+    - prepaid
+    - anthropic
+    input_cost_per_token: 2e-06
+    output_cost_per_token: 1e-05
+    max_budget: 20.0
+    budget_duration: 1d
+  model_info:
+    mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Nothing repeats: each call is a new diff, and the shared system prompt (docs/review-bar.md) is under the 1024-token minimum cacheable prompt (docs.claude.com/en/docs/build-with-claude/prompt-caching)."
+    id: anthropic-sonnet55-review
+- model_name: review-fable
+  litellm_params:
+    model: anthropic/claude-sonnet-5-5
+    api_key: os.environ/ANTHROPIC_API_KEY
+    api_base: https://api.anthropic.com
+    tags:
+    - prepaid
+    - anthropic
+    input_cost_per_token: 8e-06
+    output_cost_per_token: 4e-05
+    max_budget: 5.0
+    budget_duration: 1d
+  model_info:
+    mode: chat
+    supports_prompt_caching: false
+    cache_proof: "Nothing repeats: each call is a new diff, as on the review-claude row."
+    id: anthropic-fable52-review
+router_settings:
+  routing_strategy: simple-shuffle
+  optional_pre_call_checks:
+  - prompt_caching
+  - session_affinity
+  redis_host: 127.0.0.1
+  redis_port: 6379
+  redis_password: os.environ/REDIS_PASSWORD
+  deployment_affinity_ttl_seconds: 600
+  fallbacks:
+  - review-claude:
+    - review-qwen
+  - review-fable:
+    - review-qwen
+  cooldown_time: 60
+  allowed_fails: 1
+  num_retries: 0
+  timeout: 1800
+  enable_tag_filtering: false
+  retry_policy:
+    AuthenticationErrorRetries: 1
+    RateLimitErrorRetries: 2
+    TimeoutErrorRetries: 1
+    InternalServerErrorRetries: 1
+    BadRequestErrorRetries: 1
+    ContentPolicyViolationErrorRetries: 0
+    NotFoundErrorRetries: 1
+    DefaultRetries: 1
+  allowed_fails_policy:
+    AuthenticationErrorAllowedFails: 0
+    RateLimitErrorAllowedFails: 0
