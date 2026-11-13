@@ -193,8 +193,9 @@ it.
     pre-start step fails, `Restart=always` retries after the unit's
     `RestartSec=30s`, and the runner is absent until it succeeds. A clean exit after
     each job is a start too, so the pilot drop-in sets `StartLimitIntervalSec=45min` and
-    `StartLimitBurst=20`: real jobs cannot reach 20 starts (a cycle is at least the 30s
-    restart wait), and a dead start does, so it leaves the unit `failed`, which `systemctl --failed` and the
+    `StartLimitBurst=20`: a dead start loop reaches 20 starts and leaves the unit `failed`, and so can
+    20 back-to-back jobs each under about 105s, which would bench runner 22 (the drop-in comment has the
+    arithmetic). `failed` is what `systemctl --failed` and the
     `node_systemd_unit_state` gauge report. `StartLimitIntervalSec=0` was the
     earlier choice and it hid the failure (fleet-ops#10253): with no start
     limit a restart loop never reaches `failed`, so nothing alerted while the
