@@ -84,10 +84,16 @@ def test_an_issue_run_keeps_a_branch_an_open_pr_uses(lane):
     assert head == lane["old"]
 
 
-def test_a_review_round_pushes_fast_forward_only(lane):
+def test_a_review_round_replays_on_a_moved_branch(lane):
+    # c94e3e77 made a review round push fast-forward only, so a branch that moved since
+    # the claim read it parked the answer: runs 43398695693 and 43400589073 both worked
+    # agent/issue-11959, the second read "fetch first", and the alert
+    # AgentRunFailureShare counted the run. The answer still forces nothing: it replays
+    # on the moved branch, whose commits stay first.
     proc, head = push(lane, [], pr="12")
-    assert proc.returncode != 0
-    assert head == lane["old"]
+    assert proc.returncode == 0, proc.stderr
+    assert head != lane["old"]
+    assert git("--git-dir", str(lane["remote"]), "rev-parse", f"{BRANCH}^") == lane["old"]
 
 
 def test_a_branch_moved_after_the_read_fails_the_lease(lane):

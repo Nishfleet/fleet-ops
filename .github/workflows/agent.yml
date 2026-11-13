@@ -333,8 +333,9 @@ jobs:
       # https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request
       # An issue run builds on main, so it replaces a branch an old run left behind (run
       # 41846745347 failed "fetch first" on closed PR #11730's head), but only when no open PR
-      # uses it, and only if the branch still holds the commit read here. A review round and
-      # a branch with an open PR push fast-forward only.
+      # uses it, and only if the branch still holds the commit read here. A branch with an
+      # open PR pushes fast-forward only. A review round replays its commits on a branch that
+      # moved since the claim read it (fleet-ops#11983), so nothing is ever forced.
       # https://git-scm.com/docs/git-push#Documentation/git-push.txt---force-with-leaseltrefnamegt
       # https://docs.github.com/en/rest/pulls/pulls#list-pull-requests
       - name: Push the branch, open the PR and arm auto-merge
@@ -354,7 +355,31 @@ jobs:
           gh auth setup-git
           git init -q "$RUNNER_TEMP/push" && cd "$RUNNER_TEMP/push"
           git fetch -q --depth=1 "https://github.com/$REPO.git" "$BASE:refs/heads/base"
+          # The repo is born empty, so HEAD points at an unborn branch until it is
+          # switched; the rebase below detaches HEAD and needs a commit behind it.
+          git switch -q base
           git fetch -q "$RUNNER_TEMP/work.bundle" 'refs/heads/*:refs/work/*'
+          # A run dispatched while another engine run works the same issue claims a
+          # head the other run then moves (runs 43398695693 and 43400589073 on
+          # agent/issue-11959, 2026-11-13): its push is then not a fast-forward, reads
+          # "fetch first", and the answer parks instead of landing on the pull
+          # request, which the alert AgentRunFailureShare counts. On a review answer
+          # the branch's newer commits come first, so replay this run's commits on
+          # them and push the result; a conflict still fails the step, readable in
+          # the log. An issue run is skipped: its lease replaces a stale branch.
+          # https://git-scm.com/docs/git-rebase
+          move=$(git ls-remote "https://github.com/$REPO.git" "refs/heads/agent/issue-$ISSUE" | cut -f1)
+          # The head from ls-remote is not a local object yet (only BASE was
+          # fetched, one commit deep), so an unknown SHA reads as not an ancestor:
+          # the rebase below is then a no-op when the branch did not move past it.
+          if [ -n "$PR" ] && [ -n "$move" ] && ! git merge-base --is-ancestor "$move" "refs/work/agent/issue-$ISSUE" 2>/dev/null; then
+            git fetch -q "https://github.com/$REPO.git" "refs/heads/agent/issue-$ISSUE:refs/heads/move"
+            GIT_COMMITTER_NAME=nishfleet-worker GIT_COMMITTER_EMAIL=nishfleet-worker@users.noreply.github.com \
+              git rebase -q refs/heads/move "refs/work/agent/issue-$ISSUE"
+            # The rebase detaches HEAD (refs/work/... is not a branch), so the
+            # rebased head is copied back onto the ref the push below reads.
+            git update-ref "refs/work/agent/issue-$ISSUE" HEAD
+          fi
           lease=()
           if [ -z "$PR" ] && [ "$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:agent/issue-$ISSUE&state=open" --jq length)" = 0 ]; then
             old=$(git ls-remote "https://github.com/$REPO.git" "refs/heads/agent/issue-$ISSUE" | cut -f1)
