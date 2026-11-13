@@ -269,10 +269,15 @@ def anthropic_row(group):
     lambda c: c["router_settings"]["fallbacks"].append({"review-qwen": ["tether"]}),
     lambda c: c["router_settings"]["fallbacks"].append({"review-qwen": ["assistant"]}),
     lambda c: c["router_settings"]["fallbacks"].append({"worker-cheap": ["worker-capable", "review-qwen"]}),
+    lambda c: c["router_settings"]["fallbacks"].append({"worker-cheap": ["worker-capable"], "review-claude": ["review-qwen"]}),
 ], ids=["minimax-in-review-qwen", "minimax-in-review-claude", "anthropic-key-on-review-qwen", "minimax-in-review-any",
         "glm-in-review-qwen", "deepseek-in-review-claude", "claude-in-review-any", "review-any-falls-to-claude", "review-falls-to-worker",
-        "qwen-falls-to-claude", "review-falls-to-tether", "review-falls-to-assistant", "worker-falls-to-review"])
+        "qwen-falls-to-claude", "review-falls-to-tether", "review-falls-to-assistant", "worker-falls-to-review",
+        "mixed-entry-hides-a-review-fallback"])
 def test_the_schema_rejects_a_review_that_could_reach_a_builder_or_the_claude_credit(change):
+    """The mixed-entry case (fleet-ops#11975 review round 1) pins the shape of reviewFallsBack:
+    an entry with any review-* key matches the guard, so a plain key cannot hide a lead's
+    fallback next to it."""
     jsonschema = pytest.importorskip("jsonschema")
     validator = jsonschema.Draft202012Validator(json.loads(SCHEMA.read_text(encoding="utf-8")))
     config = json.loads(json.dumps(ROUTER))

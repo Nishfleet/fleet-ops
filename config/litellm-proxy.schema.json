@@ -90,10 +90,10 @@
       "properties": { "tether": { "const": ["assistant"] } }
     },
     "reviewFallsBack": {
-      "$comment": "fleet-ops#11975: no review-* group falls back to another model, so no other model ever answers under a lead reviewer's name (owner 2026-11-13: \"AI decides but only opus 5.5\"). A failed lead call ends the review, and the Grok step answers it.",
+      "$comment": "fleet-ops#11975: no review-* group falls back to another model, so no other model ever answers under a lead reviewer's name (owner 2026-11-13: \"AI decides but only opus 5.5\"). A failed lead call ends the review, and the Grok step answers it. At least one review-* key, not only review-* keys: a mixed entry such as {worker-cheap: [...], review-claude: [...]} must match too, or its review-claude fallback escapes this guard.",
       "type": "object",
       "minProperties": 1,
-      "propertyNames": { "pattern": "^review-" }
+      "not": { "propertyNames": { "not": { "pattern": "^review-" } } }
     },
     "fallsIntoReview": {
       "$comment": "fleet-ops#11975: no group falls into a review group either, so a review never reaches a builder's row and a builder's group never borrows a reviewer's.",
