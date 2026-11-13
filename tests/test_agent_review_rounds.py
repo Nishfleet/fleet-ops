@@ -4,6 +4,9 @@ and obeys the pause.
 global-standing-rules.md: the builder answers each finding, the same reviewer signs off, a
 finding it keeps open goes to the owner, hard cap 3 review rounds per PR. While
 FLEET_DISPATCH_PAUSED is true only gardener and alert issues run (owner, 2026-11-04).
+The owner, 2026-11-13: "move to stronger builder on third round itself, if it can't get right
+two times, we're wasting valuable time". Round 3 is answered by the senior builder
+(engine=claude) in the same run; a fourth round labels the PR needs-owner and runs nothing.
 The steps run here as written in agent.yml, under bash, with a fake `gh` that answers from
 canned REST data and logs every call.
 https://docs.github.com/en/rest/pulls/reviews#list-reviews-for-a-pull-request
@@ -107,16 +110,34 @@ def labelled(calls):
     return [c for c in calls if c[:2] == ["api", "repos/o/r/issues/12/labels"]]
 
 
+def comments(calls):
+    return [c[-1][len("body="):] for c in calls
+            if c[:2] == ["api", "repos/o/r/issues/12/comments"] and c[-1].startswith("body=")]
+
+
+def task_of(out):
+    """The task text the worker gets: between the random delimiter and its end."""
+    lines = out.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("task<<"))
+    end = next(i for i in range(start + 1, len(lines)) if lines[i] == lines[start][len("task<<"):])
+    return "\n".join(lines[start + 1:end]) + "\n"
+
+
+SENIOR_LINE = ("Two earlier answers did not close this. Fix every open finding below, "
+               "or say in the commit message why a finding is wrong.")
+
+
 def test_round_one_and_two_run_the_worker_on_that_review_only(tmp_path):
     reviews = [review("CHANGES_REQUESTED", OLD, "old finding"), review("COMMENTED", OLD, "stranger", user="someone"),
                review("CHANGES_REQUESTED", body="fix the gate")]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert "go=true" in out and "ref=agent/issue-7" in out
-    task = out.split("\n", 1)[1]
+    task = task_of(out)
     assert task.startswith("Answer review round 2 on #12\n\nfix the gate\n")
     assert "old finding" not in out and "stranger" not in out
     assert labelled(calls) == []
+    assert "engine=" not in out
 
 
 def test_an_owners_change_request_runs_the_worker_on_the_owners_text(tmp_path):
@@ -124,7 +145,7 @@ def test_an_owners_change_request_runs_the_worker_on_the_owners_text(tmp_path):
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert "go=true" in out and "ref=agent/issue-7" in out
-    task = out.split("\n", 1)[1]
+    task = task_of(out)
     assert task.startswith("Answer review round 1 on #12\n\nset the limit to 30 per 5 minutes\n")
     assert labelled(calls) == []
 
@@ -133,12 +154,50 @@ def test_an_owners_change_request_runs_the_worker_on_the_owners_text(tmp_path):
     review("CHANGES_REQUESTED"),
     owner_review("CHANGES_REQUESTED"),
 ], ids=("bot", "owner"))
-def test_round_three_goes_to_the_owner_instead_of_running(tmp_path, last):
+def test_round_three_runs_the_senior_builder_in_the_same_run(tmp_path, last):
     reviews = [review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD), last]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert "go=true" in out and "ref=agent/issue-7" in out
+    assert "engine=claude" in out
+    assert labelled(calls) == []
+    assert [c for c in comments(calls) if c.startswith("agent: senior builder")]
+    assert task_of(out).startswith(SENIOR_LINE + "\n")
+
+
+@pytest.mark.parametrize("last", [
+    review("CHANGES_REQUESTED"),
+    owner_review("CHANGES_REQUESTED"),
+], ids=("bot", "owner"))
+def test_round_four_goes_to_the_owner_instead_of_running(tmp_path, last):
+    reviews = [review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD),
+               review("CHANGES_REQUESTED", OLD), last]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert out == "go=false\n"
     assert labelled(calls) == [["api", "repos/o/r/issues/12/labels", "-f", "labels[]=needs-owner"]]
+    assert not [c for c in comments(calls) if c.startswith("agent: senior builder")]
+
+
+def test_a_red_third_round_takes_the_senior_builder_too(tmp_path):
+    reviews = [review("CHANGES_REQUESTED", OLD)]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"),
+                                round_data(reviews, failing=("ci",), red_answers=1), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert "go=true" in out and "engine=claude" in out
+    assert task_of(out).startswith(SENIOR_LINE + "\n")
+    assert labelled(calls) == []
+    assert [c for c in comments(calls) if c.startswith("agent: senior builder")]
+
+
+def test_a_red_head_after_one_change_request_is_the_second_round(tmp_path):
+    reviews = [review("CHANGES_REQUESTED", OLD)]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"),
+                                round_data(reviews, failing=("ci",)), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert "go=true" in out and "engine=" not in out
+    assert labelled(calls) == []
+    assert not [c for c in comments(calls) if c.startswith("agent: senior builder")]
 
 
 @pytest.mark.parametrize("last", [review("APPROVED"), review("CHANGES_REQUESTED", OLD), review("COMMENTED")])
@@ -165,7 +224,7 @@ def test_a_red_head_with_a_stale_change_request_still_runs_the_worker(tmp_path):
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews, failing=("ci",)), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert "go=true" in out and "ref=agent/issue-7" in out
-    task = out.split("\n", 1)[1]
+    task = task_of(out)
     assert task.startswith(f"The CI on #12 is red on {SHA}; the failed jobs are: ci")
     assert "run-proof" in task
     assert RED_COMMENT in calls
@@ -186,8 +245,15 @@ def test_a_third_red_answer_after_the_change_requests_goes_to_the_owner(tmp_path
     assert RED_COMMENT not in calls
 
 
-def test_a_third_red_head_in_a_row_goes_to_the_owner(tmp_path):
+def test_a_third_red_head_in_a_row_takes_the_senior_builder(tmp_path):
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data([], failing=("ci",), red_answers=2), ISSUE="7", PR="12")
+    assert proc.returncode == 0 and "go=true" in out and "engine=claude" in out
+    assert labelled(calls) == []
+    assert [c for c in comments(calls) if c.startswith("agent: senior builder")]
+
+
+def test_a_fourth_red_head_in_a_row_goes_to_the_owner(tmp_path):
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data([], failing=("ci",), red_answers=3), ISSUE="7", PR="12")
     assert proc.returncode == 0 and out == "go=false\n"
     assert labelled(calls) == [["api", "repos/o/r/issues/12/labels", "-f", "labels[]=needs-owner"]]
     assert RED_COMMENT not in calls

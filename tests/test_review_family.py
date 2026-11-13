@@ -38,7 +38,8 @@ elif any("/activity" in a for a in args):
 elif os.environ.get("GH_FAIL") and any("github.diff" in a for a in args):
     sys.exit(1)
 elif args[:2] == ["pr", "view"]:
-    data = {"title": "t", "body": "b", "author": {"login": "a"}, "reviews": [], "comments": []}
+    data = {"title": "t", "body": "b", "author": {"login": "a"}, "reviews": [],
+            "comments": [{"body": b} for b in json.loads(os.environ.get("COMMENTS", "[]"))]}
 else:
     print("diff or bar"); sys.exit(0)
 out = json.dumps(data)
@@ -76,14 +77,31 @@ def run_job(tmp_path, branch, pushes=(), runs=(), **fail):
     return outcome, called, (tmp_path / "out").read_text()
 
 
-def reviewer(tmp_path, branch, pushes=(), runs=()):
-    outcome, called, out = run_job(tmp_path, branch, pushes, runs)
+def reviewer(tmp_path, branch, pushes=(), runs=(), comments=()):
+    outcome, called, out = run_job(tmp_path, branch, pushes, runs, COMMENTS=json.dumps(list(comments)))
     assert outcome == "success" and "VERDICT: APPROVE" in out
     return called[0].removeprefix("litellm/")
 
 
 def test_a_lane_head_from_a_pi_run_goes_to_claude(tmp_path):
     assert reviewer(tmp_path, "agent/issue-7", [push()], [(7, "pi"), (77, "claude")]) == "review-claude"
+
+
+def test_a_senior_round_goes_to_fable(tmp_path):
+    """The owner, 2026-11-13: "fable 5.2 will review it". A senior round (agent.yml's third
+    round, the senior builder) carries a comment the reviewer reads, because the run name still
+    says engine=pi on it."""
+    comments = ["agent: senior builder takes round 3: this answer comes from the senior builder, not the regular one."]
+    assert reviewer(tmp_path, "agent/issue-7", [push()], [(7, "pi")], comments=comments) == "review-fable"
+
+
+def test_a_round_without_the_senior_comment_keeps_the_choice_it_has_today(tmp_path):
+    assert reviewer(tmp_path, "agent/issue-7", [push()], [(7, "pi")], comments=["agent: answering review round 2: x"]) \
+        == "review-claude"
+
+
+def test_the_senior_comment_never_moves_a_branch_outside_the_lane(tmp_path):
+    assert reviewer(tmp_path, "lead/x", [], [], comments=["agent: senior builder takes round 3"]) == "review-any"
 
 
 @pytest.mark.parametrize("branch, pushes, runs", [

@@ -49,7 +49,9 @@ jobs:
         # Claude reviews only a head the lane App pushed from a pi run (GLM, DeepSeek or MiniMax),
         # and review-claude falls back to review-qwen in the router. Anything else goes to
         # review-any (Qwen, GLM, DeepSeek; never Claude or MiniMax), whose failed row cools while
-        # another row answers. https://docs.litellm.ai/docs/proxy/reliability#fallbacks
+        # another row answers.
+        # A senior round is reviewed by Fable 5.2 on the owner's decision (2026-11-13).
+        # https://docs.litellm.ai/docs/proxy/reliability#fallbacks
         # https://docs.litellm.ai/docs/routing
         # https://docs.github.com/en/rest/repos/repos#list-repository-activities
         run: |
@@ -59,7 +61,10 @@ jobs:
             last=$(gh api "repos/$REPO/activity?ref=refs/heads/$BRANCH&per_page=1" --jq '.[0] | "\(.actor.login) \(.after)"')
             engines=$(gh run list -R "$REPO" -w agent.yml -b main -L 1000 --json displayTitle \
               --jq "[.[].displayTitle | select(startswith(\"agent #${BRANCH#agent/issue-} engine=\"))] | unique | join(\" \")")
-            [ "$last" != "nishfleet-worker[bot] $SHA" ] || [ "$engines" != "agent #${BRANCH#agent/issue-} engine=pi" ] || model=review-claude ;;
+            [ "$last" != "nishfleet-worker[bot] $SHA" ] || [ "$engines" != "agent #${BRANCH#agent/issue-} engine=pi" ] || model=review-claude
+            # The run name still says engine=pi on a senior round, so its comment names it.
+            senior=$(gh pr view "$PR" -R "$REPO" --json comments --jq '[.comments[]?.body // "" | select(startswith("agent: senior builder"))] | length > 0')
+            [ "$senior" != true ] || model=review-fable ;;
           esac
           gh api -H 'Accept: application/vnd.github.raw' 'repos/Nishfleet/fleet-ops/contents/docs/review-bar.md?ref=main' > "$RUNNER_TEMP/bar.md"
           { gh pr view "$PR" -R "$REPO" --json title,body,author,reviews,comments --jq "$PR_TEXT"

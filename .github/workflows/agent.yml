@@ -83,6 +83,7 @@ jobs:
       issue: ${{ steps.claim.outputs.issue || steps.round.outputs.task }}
       base: ${{ steps.repo.outputs.base }}
       go: ${{ steps.round.outputs.go }}
+      engine: ${{ steps.round.outputs.engine }}
     steps:
       - name: App token
         id: app-token
@@ -145,8 +146,8 @@ jobs:
           # instead: a check run with conclusion "failure" names the dead job. Both rounds
           # ride the same cap of 3: each change request from the bot or the owner, each
           # "answering red CI" comment this step left on the PR, and this red head itself
-          # count one round, so the third (say a red head after two change requests, or a
-          # third red head in a row) labels the PR needs-owner and runs nothing.
+          # count one round. Rounds 1 and 2 go to the regular builder, round 3 to the
+          # senior builder, a fourth labels the PR needs-owner and runs nothing.
           # https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
           # https://docs.github.com/en/rest/issues/comments#list-issue-comments
           failing=$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" --jq '[.check_runs[] | select(.conclusion == "failure") | .name] | join(" ")')
@@ -155,19 +156,29 @@ jobs:
           if [ -z "$failing" ] && [ "$(jq -r 'last | "\(.state) \(.commit_id)"' "$RUNNER_TEMP/reviews.json")" != "CHANGES_REQUESTED $sha" ]; then
             echo "no change request from the bot or the owner on $sha and its checks are green; nothing to answer"; echo go=false >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if [ "$rounds" -ge 3 ]; then
+          if [ "$rounds" -ge 4 ]; then
             gh api "repos/$REPO/issues/$PR/labels" -f 'labels[]=needs-owner' > /dev/null
-            gh api "repos/$REPO/issues/$PR/comments" -f body="agent: review round $rounds still asks for changes; the cap is 3 rounds, so the owner decides." > /dev/null
+            gh api "repos/$REPO/issues/$PR/comments" -f body="agent: review round $rounds still asks for changes; three rounds were answered, the third by the senior builder, so the owner decides." > /dev/null
             echo go=false >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # The owner, 2026-11-13: "move to stronger builder on third round itself, if it can't
+          # get right two times, we're wasting valuable time". The third round is answered by the
+          # senior builder (engine=claude) in this same run, and the pull request carries a
+          # comment naming it; review.yml reads that comment and sends the round to Fable 5.2.
+          senior=''
+          if [ "$rounds" -eq 3 ]; then
+            senior='Two earlier answers did not close this. Fix every open finding below, or say in the commit message why a finding is wrong.'
+            echo engine=claude >> "$GITHUB_OUTPUT"
+            gh api "repos/$REPO/issues/$PR/comments" -f body="agent: senior builder takes round 3: this answer comes from the senior builder, not the regular one." > /dev/null
           fi
           if [ -n "$failing" ]; then
             gh api "repos/$REPO/issues/$PR/comments" -f body="agent: answering red CI on $sha ($failing): $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
             eof="RED_$(openssl rand -hex 16)"
-            { echo "task<<$eof"; echo "The CI on #$PR is red on $sha; the failed jobs are: $failing. Fix the failures with the smallest change on this same branch and leave the run-proof line the prompt asks for."; echo "$eof"; echo "ref=$ref"; echo go=true; } >> "$GITHUB_OUTPUT"; exit 0
+            { echo "task<<$eof"; if [ -n "$senior" ]; then echo "$senior"; fi; echo "The CI on #$PR is red on $sha; the failed jobs are: $failing. Fix the failures with the smallest change on this same branch and leave the run-proof line the prompt asks for."; echo "$eof"; echo "ref=$ref"; echo go=true; } >> "$GITHUB_OUTPUT"; exit 0
           fi
           gh api "repos/$REPO/issues/$PR/comments" -f body="agent: answering review round $rounds: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
           eof="REVIEW_$(openssl rand -hex 16)"
-          { echo "task<<$eof"; echo "Answer review round $rounds on #$PR"; echo; jq -r 'last | .body' "$RUNNER_TEMP/reviews.json"; echo "$eof"; echo "ref=$ref"; echo go=true; } >> "$GITHUB_OUTPUT"
+          { echo "task<<$eof"; if [ -n "$senior" ]; then echo "$senior"; fi; echo "Answer review round $rounds on #$PR"; echo; jq -r 'last | .body' "$RUNNER_TEMP/reviews.json"; echo "$eof"; echo "ref=$ref"; echo go=true; } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
@@ -198,7 +209,7 @@ jobs:
       nochange: ${{ steps.bundle.outputs.nochange }}
       proof: ${{ steps.bundle.outputs.proof }}
     env:
-      ENGINE: ${{ inputs.engine || 'pi' }}
+      ENGINE: ${{ needs.claim.outputs.engine || inputs.engine || 'pi' }}
       BASE: ${{ needs.claim.outputs.base }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
