@@ -197,6 +197,21 @@ its own `bin/runsvc.sh`. A runner's self-update and restarts are unaffected:
 The 2026-11-01 reset deleted the test that pinned the line; this paragraph
 is the record of the gate as it stood.
 
+## Register a Claude pool runner (fleet-ops#11958)
+
+The Claude engine's pool runs as its own user and holds the two Team seat
+tokens, which no other pool can read. Its runners carry the labels
+`self-hosted` and `senior` and no default labels, and sit in the runner group
+`senior`, which only this repo's `agent.yml` on `main` may use.
+
+1. The org owner mints a registration token.
+2. As the pool's user, run `config.sh` once per runner: the `senior` group,
+   labels `self-hosted,senior`, default labels off, that token.
+3. The unit starts once the runner's registration file exists.
+
+To check: the runner shows online with exactly those two labels, and a run
+started with `engine=claude` lands on it.
+
 ## Dashboards
 
 `systemctl --user is-active fleet-grafana.service` prints `active`. The service is
