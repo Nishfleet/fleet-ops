@@ -133,6 +133,13 @@ def test_a_hold_without_any_change_request_dismisses_nothing(tmp_path):
     assert dismissals(calls) == []
 
 
+def test_a_hold_labels_and_requests_the_owner_review_through_the_rest_endpoints(tmp_path):
+    calls = run_verdict(tmp_path, "nishfleet-worker[bot]", "money\nVERDICT: HOLD-OWNER")
+    assert ["api", "repos/o/r/issues/7/labels", "-f", "labels[]=needs-owner"] in calls
+    assert ["api", "repos/o/r/pulls/7/requested_reviewers", "-f", "reviewers[]=nish3451"] in calls
+    assert not any(c[:2] == ["pr", "edit"] for c in calls)
+
+
 def test_a_new_changes_verdict_keeps_the_change_request(tmp_path):
     calls = run_verdict(tmp_path, "nishfleet-worker[bot]", "a.py:3 wrong\nVERDICT: CHANGES", reviews=[CR])
     assert dismissals(calls) == []

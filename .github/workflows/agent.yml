@@ -120,6 +120,9 @@ jobs:
         env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
         run: |
           set -euo pipefail
+          # Before the label swap, so a trip leaves the ticket agent-ready instead of parked
+          # on agent-in-progress with no run behind it (round-2 review on #11957).
+          [ "$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:agent/issue-$ISSUE&state=open" --jq length)" = 0 ] || { echo "::error::#$ISSUE already has an open pull request on agent/issue-$ISSUE; review and red CI are answered on that pull request"; exit 1; }
           gh issue edit "$ISSUE" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
           gh issue comment "$ISSUE" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           eof="ISSUE_$(openssl rand -hex 16)"
