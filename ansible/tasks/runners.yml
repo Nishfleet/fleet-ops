@@ -320,7 +320,7 @@
 # cannot shadow pi-grok's models (pi docs/models.md: a models entry replaces the same ID).
 - name: Install pi's router model for fleet-reviewer
   ansible.builtin.copy:
-    content: "{{ {'providers': {'litellm': {'baseUrl': 'http://127.0.0.1:4000', 'api': 'openai-completions', 'apiKey': '!cut -d= -f2- $HOME/.config/fleet-ops/seats/litellm-reviewer.env', 'models': [{'id': 'review-claude', 'name': 'Claude Sonnet 5.5 (router review-claude)'}, {'id': 'review-qwen', 'name': 'Qwen 3.8 Max (router review-qwen)'}, {'id': 'review-any', 'name': 'Qwen, GLM or DeepSeek (router review-any)'}]}}} | to_nice_json }}"
+    content: "{{ {'providers': {'litellm': {'baseUrl': 'http://127.0.0.1:4000', 'api': 'openai-completions', 'apiKey': '!cut -d= -f2- $HOME/.config/fleet-ops/seats/litellm-reviewer.env', 'models': [{'id': 'review-claude', 'name': 'Claude Sonnet 5.5 (router review-claude)'}, {'id': 'review-fable', 'name': 'Claude Fable 5.2 (router review-fable)'}, {'id': 'review-qwen', 'name': 'Qwen 3.8 Max (router review-qwen)'}, {'id': 'review-any', 'name': 'Qwen, GLM or DeepSeek (router review-any)'}]}}} | to_nice_json }}"
     dest: /var/lib/fleet-reviewer/.pi/agent/models.json
     owner: fleet-reviewer
     group: fleet-reviewer
