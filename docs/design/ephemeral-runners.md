@@ -1,9 +1,10 @@
 # Design: reset-per-job (ephemeral) self-hosted runners
 
-Status: proposal. This document is the only change in its PR. It changes
-nothing on any host, and no runner behaves differently after it merges.
+Status: pilot. Runner 22 (`netcup-agent-22`) registers as a just-in-time (JIT) runner
+at every start (fleet-ops#11960, "Pilot: runner 22" below). The other 29 agent runners
+and the review, Claude and deploy runners do not change.
 
-Issue: #10041.
+Issue: #10041, #11960 (re-filed from #10153).
 
 ## Why
 
@@ -66,48 +67,57 @@ One cycle per runner unit, repeated forever:
   stale record of the same name, so an orphan does not block the next start.
   Where today's runner has no default labels, add `--no-default-labels` so the
   label set stays identical.
-- The registration token. `config.sh` accepts `--pat <token>` and then asks
+- The registration token (the `--pat` route, not taken: see "Chosen for the pilot"). `config.sh` accepts `--pat <token>` and then asks
   GitHub for a registration token itself, through the org endpoint
   `POST /orgs/{org}/actions/runners/registration-token`. That means the
   mint step is part of `config.sh`, so it needs no script. This is in the
   runner source (`ConfigurationManager.GetRunnerTokenAsync`), but the runner's
   `--help` text describes `--pat` only for `--check`. Step 0 of the rollout
-  proves it on one runner before anything else depends on it. If Step 0 fails,
-  the JIT fallback in the next section applies.
+  proved the JIT route instead, which is the one the pilot uses.
 - Restart: `Restart=always` in a drop-in. systemd documents that an exit with
   status 0 does not restart under `on-failure`, and an ephemeral runner exits
   cleanly after its job, so `always` is needed.
   https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html
-- The pre-start commands are plain `ExecStartPre=` lines in a drop-in that call
-  `config.sh` directly. A leading `-` on a line (`ExecStartPre=-... remove
+- Not used for the pilot (see the next section): the pre-start commands as plain
+  `ExecStartPre=` lines in a drop-in that call `config.sh` directly. A leading `-` on a line (`ExecStartPre=-... remove
   --local`) clears a leftover local registration after a crash, and the next
   line registers again.
 
 The unit names stay the same, so every existing drop-in prefix keeps applying.
-The change is one new drop-in per pool (for example `30-ephemeral.conf`) and
-nothing else.
+The change is one new drop-in per runner or pool and nothing else.
 
-### Fallback: just-in-time (JIT) configuration
+### Chosen for the pilot: just-in-time (JIT) configuration
 
-GitHub has a second stock route. `POST /orgs/{org}/actions/runners/generate-jitconfig`
-returns `encoded_jit_config`, and the runner is started with
-`run.sh --jitconfig <encoded_jit_config>`. The body takes `name`,
-`runner_group_id` and `labels` (all required, 1 to 100 labels) and an optional
-`work_folder` (default `_work`). The runner is ephemeral and registered by the
-API call, so `config.sh` is not run at all. The caller needs admin access to
-the org (classic token scope `admin:org`).
+Step 0 settled the first open question the other way round from the plan above:
+`config.sh --pat` is not used. GitHub's "Secure use reference", section "Using just-in-time
+runners", names JIT as the way "to improve runner registration security". With JIT the token
+that can register runners never enters a process of the job user; only a one-job config
+does. `config.sh --pat` would hand that token to a process every job can read.
+https://docs.github.com/en/actions/reference/security/secure-use
+
+`POST /orgs/{org}/actions/runners/generate-jitconfig` returns `encoded_jit_config`. The body
+takes `name`, `runner_group_id` and `labels` (all required, 1 to 100 labels; the runner gets
+the labels exactly as given) and an optional `work_folder`. The runner is ephemeral and the
+API call registers it, so `config.sh` is not run. The runner takes the config from the
+environment variable `ACTIONS_RUNNER_INPUT_JITCONFIG`, so the unchanged `runsvc.sh` starts
+it and nothing secret is on a command line.
 https://docs.github.com/en/rest/actions/self-hosted-runners
 
-`--jitconfig` is an argument of the runner's `run` command (see
-`Constants.Runner.CommandLine.Args.JitConfig` in
-https://github.com/actions/runner). The API page itself says only that the
-config "can be passed to the runner application at startup".
+Proven on the box on 2026-11-13, on a scratch runner that is now removed:
 
-The cost: systemd cannot pass the output of one `ExecStartPre=` line to
-`ExecStart=`. Joining the API call to `run.sh` needs a small wrapper or a shell
-one-liner in the unit, and the fleet quality bar counts that as glue. So JIT is
-the fallback only if `config.sh --pat` is not usable, and it then needs an
-explicit decision before anything is built.
+- A token minted with only the organization "Self-hosted runners" write permission got 201
+  from `generate-jitconfig`, and 404 on a private repo's issue and 403 on a repo's secrets
+  list. The worker App already holds that permission, so no new credential exists. The
+  repo's mint (`config/github-app-token`) takes it from `TOKEN_PERMISSIONS`.
+- Started with the config in `ACTIONS_RUNNER_INPUT_JITCONFIG` through `runsvc.sh`, as the
+  job user, the runner was online in 5 seconds with the labels asked for.
+- A runner stopped before it takes a job leaves its record, and a second request for the
+  same name returns 409 "Already exists".
+
+The earlier objection (systemd cannot pass the output of one `ExecStartPre=` line to
+`ExecStart=`) is met without a wrapper: the pre-start line writes the config to a root-only
+environment file and the unit reads it with `EnvironmentFile=`, which systemd does before
+it drops to the job user. `config/github-app-token` and the unit are the only pieces.
 
 ### Considered: Actions Runner Controller and scale sets
 
@@ -134,7 +144,7 @@ own isolation, so the reset is the unit stopping and not a clean-up command:
 | `/tmp` and `/var/tmp` | `PrivateTmp=yes`. |
 | The runner's home directory | A tmpfs over the home directory with explicit `BindPaths=` for what the pool needs. `fleet-ci-3` already works this way. |
 | Credentials on disk | Not a separate case. A credential a job should not read is hidden by the lockdown drop-in as today. A credential that is written during the job lives in a path under the tmpfs mounts above, so it goes away at stop. |
-| Runner registration files | `config.sh` writes them at each start and the runner removes them after the job. |
+| Runner registration files | The runner writes them into its own folder at start. The pilot's pre-start step deletes any left over (`.runner`, `.credentials`, `.credentials_rsaparams`) and the whole `_work` folder first, so the work folder is empty at each start. |
 
 What is not reset, on purpose: package caches that are bound in read-write
 (for example the npm and pip caches on `fleet-ci-3`). They save minutes per job
@@ -143,19 +153,20 @@ it.
 
 ## Token handling
 
-- Who mints: the runner itself, through `config.sh --pat`, at each start. No
-  other process mints a token.
-- Scope: the smallest that GitHub accepts for the org registration-token
-  endpoint, which is org admin access (classic scope `admin:org`). A GitHub App
-  with the "Self-hosted runners" organization permission set to write is
-  preferred if the runner can take an App token, and that is part of Step 0.
-- Lifetime: the registration token GitHub returns is valid for one hour, and
-  this design uses it once. The long-lived credential that mints it is the one that
-  matters. It must be a credential for this purpose only, held outside the
-  repo, and stored where job code does not read it. Where exactly it lives is
-  decided together with the work that moves runners onto separate users. This
-  design does not widen what any job can read.
-- It is never printed, never written to the repo and never put in a workflow.
+- Who mints: the pre-start step of the runner's unit, before the runner starts, as nish (who
+  already holds the worker App's key, mode 0600) through the repo's mint, asking for exactly
+  `{"organization_self_hosted_runners":"write"}`. The job user cannot read the key, and the
+  token never enters a process of the job user.
+- Where it goes: into a shell variable, to curl on stdin (`-H @-`), never a command line
+  (every user on the box reads command lines) and never the journal. The JIT config is
+  written to a root-only file in `/run`, read by systemd as root, and removed when the unit
+  stops.
+- Lifetime: the installation token lasts one hour and is used for three calls. The JIT
+  config is for one runner and one job. The long-lived credential is the App key, which
+  stays where it was.
+- Stale records: the step deletes every record of the runner's name before it asks for one.
+  A stable name keeps one record per runner; a unique name per start would leave one
+  offline record per stop and need the same deleting.
 
 ## Trade-offs
 
@@ -179,20 +190,20 @@ it.
     one day.
     https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/removing-self-hosted-runners
   - The token call fails (the credential expired, GitHub is unreachable). The
-    pre-start step fails, `Restart=on-failure` retries after the drop-in's
-    `RestartSec=30s`, and the runner is absent until it succeeds. The drop-in
-    (`10-*.conf` above) also sets `StartLimitIntervalSec=10min` and
-    `StartLimitBurst=5`, so five failed starts inside ten minutes stop the
-    retries and leave the unit `failed`, which `systemctl --failed` and the
+    pre-start step fails, `Restart=always` retries after the unit's
+    `RestartSec=30s`, and the runner is absent until it succeeds. A clean exit after
+    each job is a start too, so the pilot drop-in sets `StartLimitIntervalSec=30min` and
+    `StartLimitBurst=20`: real jobs cannot reach 20 starts (a cycle is at least the 30s
+    restart wait), and a dead start does, so it leaves the unit `failed`, which `systemctl --failed` and the
     `node_systemd_unit_state` gauge report. `StartLimitIntervalSec=0` was the
     earlier choice and it hid the failure (fleet-ops#10253): with no start
     limit a restart loop never reaches `failed`, so nothing alerted while the
     runner was absent. Recovery after a benched unit is `systemctl reset-failed`
     and a start.
   - The runner dies mid-job. The job fails, the record is removed by GitHub
-    or replaced by `--replace`, and the unit restarts.
-  - Orphan records of the same name. `--replace` covers the same-name case,
-    and the Step 4 check lists any leftover.
+    or deleted by the next start's pre-step, and the unit restarts.
+  - Orphan records of the same name. The pre-step deletes them before it
+    registers, and the Step 4 check lists any leftover.
   - GitHub's hardening guide notes there is no way to guarantee that a
     self-hosted runner runs only one job, so the design leans on the
     unit-level reset above and not on the runner alone.
@@ -208,19 +219,21 @@ finishes. Runner names below are examples.
    spare runner directory, run `config.sh --unattended --ephemeral --replace
    --pat ...` against the org. Check: the runner appears in
    `gh api orgs/Nishfleet/actions/runners` with the expected labels, takes one
-   test job, and then is gone from the list. If it does not, stop and take the JIT fallback to a
-   decision.
-1. **One runner, one job.** Add the drop-in for one agent runner (for example
-   `netcup-agent-22`) in a PR. After deploy and a restart of that unit, check:
-   - the runner shows `online` in `gh api orgs/Nishfleet/actions/runners` with
-     the same labels as before (the list does not report an ephemeral flag, so
-     the proof of one-job-only is the next two lines);
-   - it takes exactly one job, and the job's `runs-on` matched through the
-     labels (run URL recorded);
-   - after the job it is gone from `gh api orgs/Nishfleet/actions/runners`;
+   test job, and then is gone from the list. Run on 2026-11-13 with the JIT route instead
+   (a scratch runner started from `ACTIONS_RUNNER_INPUT_JITCONFIG`, online in 5 seconds with the
+   labels asked for); the end-of-job check moved to Step 1.
+1. **One runner, one job: the pilot (fleet-ops#11960).** Runner 22 only, through
+   `rootfs/etc/systemd/system/fleet-runner@22.service.d/10-jit.conf`. The deploy restarts
+   that one unit when the drop-in changes. Checks, pasted from the box:
+   - the runner shows `online` in `gh api orgs/Nishfleet/actions/runners` with the same
+     labels as before (the list does not report an ephemeral flag, so the proof of
+     one-job-only is the next two lines);
+   - it takes exactly one job (run URL recorded) and the unit then starts again: this
+     proves the service exits after its one job, which Step 0 did not;
+   - after the job its record is gone from `gh api orgs/Nishfleet/actions/runners`;
    - within a minute a new record with the same name is `online`;
-   - the work directory and home directory of the new run are empty of the
-     previous job's files (`ls` of the runner's `_work` shows no checkout).
+   - the new run's `_work` shows nothing from the previous job;
+   - after a restart of the idle pilot there is exactly one record of the name.
 2. **Repeat on the same runner for a day.** Check: no job that missed its
    runner, `systemctl show -p NRestarts` equals the number of jobs, and the
    registration call count stays near the job count.
@@ -234,21 +247,41 @@ finishes. Runner names below are examples.
 
 ## How to switch it off
 
-Revert the one PR that adds or widens the drop-ins. After the deploy, stop the
-affected runner units and do not start them yet. The old `ExecStart` and
-`Restart=on-failure` apply again. A reverted unit starts without the pre-start
-step, so it would loop on failure with no registration. Before starting it, run
-`config.sh remove --local` (only if a leftover local registration exists) and
-then `config.sh --unattended` without `--ephemeral`, once for each runner that
-was already converted, to put back a standing registration, then start the
-unit. The Step 1 PR keeps that to a single runner, and the later steps keep
-the same revert shape.
+For the pilot (runner 22), in order:
 
-This design PR changes nothing live, so merging it needs no rollback.
+1. A PR that deletes `10-jit.conf` and adds
+   `/etc/systemd/system/fleet-runner@22.service.d/10-jit.conf` to `retired` in
+   `ansible/host.yml` (a revert alone leaves the file on the box, because the play's copy
+   never deletes). Merge and let the deploy run. Removing a drop-in through `retired` does not
+   restart its unit, so the next steps do that.
+2. `systemctl stop fleet-runner@22.service`. The old `ExecStart` and `Restart=on-failure`
+   apply after the next reload; the deploy already reloaded.
+3. As `fleet-runner`, in `/var/lib/fleet-runner/22`, remove any JIT record of the name
+   (`gh api -X DELETE orgs/Nishfleet/actions/runners/<id>`), then register again with an
+   org registration token from the worker App, group `agent`, labels `self-hosted,agent`:
+   `./config.sh --unattended --url https://github.com/Nishfleet --token <token> --name
+   netcup-agent-22 --runnergroup agent --labels agent --replace`. The token is typed once
+   by the lead and not stored.
+4. `systemctl start fleet-runner@22.service`. Check the runner is `online` with its labels.
+
+A reverted unit that starts without the pre-start step and without a registration would
+loop on failure until the start limit, so do not start it before step 3.
+
+The wider rollout (Steps 2 to 4) is not part of the pilot and is reverted the same way,
+one drop-in at a time.
 
 ## Open questions for the build PR
 
-- Does `config.sh --pat` accept an App installation token, or only a PAT? (Step 0)
+Settled by the pilot (fleet-ops#11960):
+
+- `config.sh --pat` is not used; JIT is (see "Chosen for the pilot"), so the question of an
+  App token for `config.sh` is moot.
+- The minting credential is the worker App's key where it already is, readable by nish and
+  not by the job user.
+
+Still open:
+
 - Memory or disk for `_work`, per pool.
-- Where the minting credential is stored, so that job code cannot read it.
 - Whether the vault runner (registered outside the org) joins at all.
+- The private home and the root-owned tools folder (fleet-ops#11998), which need the unit
+  stop this pilot adds.

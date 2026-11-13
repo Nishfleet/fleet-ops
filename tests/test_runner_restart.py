@@ -39,8 +39,15 @@ def test_the_unit_env_and_path_tasks_notify_their_pool():
                                   ("Restart the review runners", "fleet-reviewer-runner@.service", "/var/lib/fleet-reviewer/")):
         notifying = [t for t in tasks if name in _notifies(t)]
         dests = sorted(t["ansible.builtin.copy"]["dest"] for t in notifying)
+        # Runner 22's just-in-time drop-in (fleet-ops#11960) changes how its unit starts.
+        extra = ["/etc/systemd/system/fleet-runner@22.service.d/10-jit.conf"] if home == "/var/lib/fleet-runner/" else []
         assert dests == sorted([f"/etc/systemd/system/{unit_file}", f"{home}{{{{ item }}}}/.env",
-                                f"{home}{{{{ item }}}}/.path"])
+                                f"{home}{{{{ item }}}}/.path", *extra])
+
+
+def test_only_runner_22_restarts_when_its_just_in_time_drop_in_changes():
+    handler = next(h for h in _play()["handlers"] if h["name"] == "Restart the agent runners")
+    assert "item == 22 and fleet_runner_jit.changed" in handler["when"]
 
 
 def test_the_runner_units_are_copied_before_the_unit_tree():
