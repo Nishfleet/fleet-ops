@@ -119,10 +119,12 @@ def owner_review(state, sha=SHA, body="finding"):
     return review(state, sha, body, user="nish3451", association="MEMBER")
 
 
-def round_data(reviews, ref="agent/issue-7", failing=(), red_answers=0):
+def round_data(reviews, ref="agent/issue-7", failing=(), red_answers=0, merged="false"):
     # The round step reads the check runs of the head sha too, so a red CI head can be
-    # answered (failing = names of failed check runs). A green head by default.
-    return {"repos/o/r/pulls/12": {"head": {"ref": ref, "sha": SHA}},
+    # answered (failing = names of failed check runs). A green head by default. merged is
+    # the PR's boolean: a merged PR's head branch is deleted with the merge, so a
+    # dispatch that arrives late runs nothing (fleet-ops#12000, runs 505/548/549).
+    return {"repos/o/r/pulls/12": {"merged": merged, "head": {"ref": ref, "sha": SHA}},
             "repos/o/r/pulls/12/reviews?per_page=100": reviews,
             f"repos/o/r/commits/{SHA}/check-runs?per_page=100":
                 {"check_runs": [{"name": n, "status": "completed", "conclusion": "failure"}
@@ -228,6 +230,27 @@ def test_the_bots_latest_verdict_opens_the_round_and_a_comment_closes_nothing(tm
 def test_a_pr_off_the_issues_branch_is_refused(tmp_path):
     proc, _, _ = run_step(tmp_path, step("claim", "round"), round_data([review("CHANGES_REQUESTED")], ref="feature"), ISSUE="7", PR="12")
     assert proc.returncode != 0
+
+
+def test_a_merged_pr_runs_no_round(tmp_path):
+    # Runs 505/548/549 (fleet-ops#12000): the merge queue closes the PR and deletes the
+    # branch, and a fix round dispatched in the same minutes still tried to answer —
+    # the checkout died on the branch that no longer exists. A merged PR runs nothing:
+    # no round comment, no ref, no checkout of a deleted branch.
+    reviews = [review("CHANGES_REQUESTED", OLD, "a finding left before the merge")]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews, merged="true"), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert out == "go=false\n"
+    assert not any("repos/o/r/issues/12/comments" in " ".join(c) for c in calls)
+
+
+def test_a_merged_pr_declines_a_red_head_too(tmp_path):
+    # Red checks on the merged sha belong to the default branch now (deploy on main),
+    # so the red-CI answer does not fire either: the push target is gone either way.
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data([], failing=("ci",), merged="true"), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert out == "go=false\n"
+    assert not any("repos/o/r/issues/12/comments" in " ".join(c) for c in calls)
 
 
 # A red head can never carry the bot's change request (the reviewer reads green CI only), so
