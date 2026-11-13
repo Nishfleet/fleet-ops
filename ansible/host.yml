@@ -29,10 +29,16 @@
     # tasks/runners.yml.
     fleet_runner_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
     fleet_runner_pi_version: 1.4.0
-    # The review runner (tasks/runners.yml): the stock actions/runner release, pinned by
-    # version and the sha256 GitHub publishes with it.
-    fleet_reviewer_runner_version: 2.338.2
-    fleet_reviewer_runner_sha256: baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
+    # The agent pool's stock actions/runner release, pinned by version and the sha256
+    # GitHub publishes with it. The play unpacks this for every runner id, so a missing
+    # or hand-copied install is repaired on apply and a new id needs no manual step
+    # (GitHub docs: "Adding self-hosted runners").
+    fleet_runner_version: 2.338.2
+    fleet_runner_sha256: baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
+    fleet_runner_tarball: "/var/cache/actions-runner-linux-x64-{{ fleet_runner_version }}.tar.gz"
+    # The review runner (tasks/runners.yml) uses the same stock actions/runner release.
+    fleet_reviewer_runner_version: "{{ fleet_runner_version }}"
+    fleet_reviewer_runner_sha256: "{{ fleet_runner_sha256 }}"
     # netcup-reviewer-1 to 3, so reviews of different pull requests run side by side.
     fleet_reviewer_runner_ids: [1, 2, 3]
     # The two router instances' loopback ports, behind HAProxy on 127.0.0.1:4000
@@ -224,6 +230,11 @@
          | reject('match', '^(#|$)') | unique | list }}
 
   tasks:
+    # The runner install and the pre-restart Node check come before install-config.yml:
+    # a missing bundled Node must fail the apply before a unit, .env or .path change
+    # can notify a restart (fleet-ops#11826, #11927).
+    - ansible.builtin.import_tasks: tasks/runner-install.yml
+
     - ansible.builtin.import_tasks: tasks/install-config.yml
 
     - ansible.builtin.import_tasks: tasks/tincan-relay-policy.yml
