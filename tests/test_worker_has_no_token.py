@@ -25,9 +25,16 @@ def on_agent_runners(job) -> bool:
     labels = job.get("runs-on")
     labels = labels.get("labels", []) if isinstance(labels, dict) else labels
     # agent.yml's work job picks its label from the engine input (fleet-ops#11958): the
-    # expression still names the shared pool (`agent`) it falls back to, so the job stays
-    # covered here instead of slipping out through a literal-only match.
-    return "agent" in ([labels] if isinstance(labels, str) else labels or [])
+    # expression string is not equal to `agent`, so match inside the label instead of on
+    # whole-element equality; the fallback pool it names (`agent`) keeps the job covered.
+    return any("agent" in str(l) for l in ([labels] if isinstance(labels, str) else labels or []))
+
+
+def test_the_work_job_is_still_among_the_jobs_checked():
+    # The check above only guards jobs it matches (fleet-ops#11971): pin agent.yml's work
+    # job to this file so a future label change cannot drop it silently.
+    assert any(wf == "agent.yml" and name == "work" and on_agent_runners(job)
+               for wf, name, job in jobs())
 
 
 def test_no_job_on_the_worker_runners_gets_a_github_credential():
