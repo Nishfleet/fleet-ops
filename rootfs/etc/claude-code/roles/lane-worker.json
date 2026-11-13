@@ -8,6 +8,10 @@
       "Read",
       "Skill",
       "TodoWrite"
+    ],
+    "deny": [
+      "Read(//var/lib/fleet-runner/.config/fleet-ops/seats/**)",
+      "Edit(//var/lib/fleet-runner/.config/fleet-ops/seats/**)"
     ]
   },
   "sandbox": {
@@ -25,6 +29,9 @@
     "filesystem": {
       "allowWrite": [
         "~/.npm"
+      ],
+      "denyRead": [
+        "/var/lib/fleet-runner/.config/fleet-ops/seats/**"
       ]
     },
     "network": {
@@ -39,5 +46,8 @@
         "127.0.0.1:4000"
       ]
     }
+  },
+  "env": {
+    "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"
   }
 }

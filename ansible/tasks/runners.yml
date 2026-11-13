@@ -1,9 +1,10 @@
 # The agent runner pool (fleet-ops#10935): fleet_runner_ids run as the unprivileged
 # user fleet-runner through rootfs/etc/systemd/system/fleet-runner@.service, per
 # GitHub's "Security hardening for self-hosted runners". Its home holds only the
-# runner installs, pi, pi's model file and the scoped router key: no Claude, gh or
-# Cloudflare login, no git credential and no App key. agent.yml mints the App token
-# only on GitHub-hosted runners, which the worker cannot reach (fleet-ops#11715).
+# runner installs, pi, pi's model file, the scoped router key and the lane's two
+# Claude seat tokens (fleet-ops#11958): no gh or Cloudflare login, no git credential
+# and no App key. agent.yml mints the App token only on GitHub-hosted runners, which
+# the worker cannot reach (fleet-ops#11715).
 #
 # Runners 1 and 15 reuse registrations copied once from nish's runner directory:
 # only while the copy has no runsvc.sh, so a re-run never overwrites a live
@@ -171,6 +172,26 @@
     owner: fleet-runner
     group: fleet-runner
     mode: '0600'
+  no_log: true
+  diff: false
+
+# The lane's Claude login (fleet-ops#11958, owner 2026-11-13): the two one-year Team-seat
+# tokens from `claude setup-token`, seat A and seat B, both prepaid so both carry work;
+# agent.yml alternates the run over them by run id parity. A one-year token set as
+# CLAUDE_CODE_OAUTH_TOKEN is the documented login for CI and scripts
+# (code.claude.com/docs/en/authentication, "Generate a long-lived token"). The src files are
+# nish-held credential .env files: as the copy above, no_log with diff: false keeps their
+# values out of the ansible-pull log
+# (docs.ansible.com/ansible/latest/playbook_guide/playbooks_privacy.html).
+- name: Give fleet-runner the Claude seat tokens
+  ansible.builtin.copy:
+    src: "{{ nish_home }}/.config/fleet-ops/seats/{{ item }}"
+    dest: "/var/lib/fleet-runner/.config/fleet-ops/seats/{{ item }}"
+    remote_src: true
+    owner: fleet-runner
+    group: fleet-runner
+    mode: '0600'
+  loop: [claude-seat-a.env, claude-seat-b.env]
   no_log: true
   diff: false
 
