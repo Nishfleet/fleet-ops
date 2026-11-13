@@ -33,13 +33,10 @@ A transient unit carries its command's exit status, and the command's last
 statement owns it. A probe that ends on a diagnostic ends the way the
 diagnostic ends, not the way the check ends: `which node npm` exits 1 when
 any named command is missing, so a jail that carries pi but not npm fails a
-probe on that line alone, whatever its check printed, and the unit stays
-loaded in `failed` state — firing `SystemUnitFailed` and leaving a leftover
-that only a privileged hand can clear (RUNBOOK, "The failed-unit check and
-leftover ad-hoc units"). Seen 2026-11-13 as the run-u344764.service alert:
-a lane-health probe in a jail that bound only `~/.local/bin/pi` ended on
-`which node npm`. End a probe with its own check's status, and bind every
-tool its command names into the jail.
+probe on that line alone, whatever its check printed, and the unit is left
+in `failed` state for a privileged hand to clear (RUNBOOK, "The failed-unit
+check and leftover ad-hoc units"). End a probe with its own check's status,
+and bind every tool its command names into the jail.
 
 ## Why system scope, never `--user` and never `--collect`
 

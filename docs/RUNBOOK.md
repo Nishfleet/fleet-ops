@@ -69,12 +69,11 @@ something a script can read):
 Then one line clears it: `systemctl --user reset-failed <unit>`.
 
 A failed system unit reads the same way and clears the same way with the
-`--user` prefix dropped. The hand must be a privileged one: polkit
+`--user` prefix dropped, but the hand must be a privileged one: polkit
 (rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules) lets nish start
 three named units and nothing else, so every other system-scope `systemctl`
-call from a fleet agent or runner job is refused ("Interactive
-authentication required"), and the unit keeps firing `SystemUnitFailed`
-until the reset lands through nish's own sudo session.
+call from a fleet agent or runner job is refused. Run the reset through
+nish's own sudo session.
 
 The failed-unit check itself has not been what turned a run red lately. The
 three most recent runs that reported it all read `failed units: []`, and all
