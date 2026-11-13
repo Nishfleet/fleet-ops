@@ -197,6 +197,12 @@ its own `bin/runsvc.sh`. A runner's self-update and restarts are unaffected:
 The 2026-11-01 reset deleted the test that pinned the line; this paragraph
 is the record of the gate as it stood.
 
+## Builder runners and model seats (fleet-ops#11942)
+
+The builder runners equal the `worker-capable` model seats, so `fleet_runner_ids`
+in `ansible/host.yml` and the seats in `config/litellm-proxy.yaml` change
+together; a runner that cannot get a seat dies with code 1.
+
 ## Dashboards
 
 `systemctl --user is-active fleet-grafana.service` prints `active`. The service is

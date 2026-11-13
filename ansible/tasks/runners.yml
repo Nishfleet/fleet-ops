@@ -5,11 +5,11 @@
 # Cloudflare login, no git credential and no App key. agent.yml mints the App token
 # only on GitHub-hosted runners, which the worker cannot reach (fleet-ops#11715).
 #
-# Runners 1 and 15 reuse registrations copied once from nish's runner directory:
-# only while the copy has no runsvc.sh, so a re-run never overwrites a live
-# runner's state. Runners 2 to 14 and 16 to 30 were copied from another runner's install and
-# registered with `config.sh` and an org registration token minted by the
-# nishfleet-worker App (GitHub docs: "Adding self-hosted runners").
+# Runner 1 reuses a registration copied once from nish's runner directory: only
+# while the copy has no runsvc.sh, so a re-run never overwrites a live runner's
+# state. Runners 2 to 14 were copied from another runner's install and registered
+# with `config.sh` and an org registration token minted by the nishfleet-worker
+# App (GitHub docs: "Adding self-hosted runners").
 - name: Create the runner user
   ansible.builtin.user:
     name: fleet-runner
@@ -25,6 +25,20 @@
     state: stopped
   loop: "{{ fleet_runner_ids }}"
   when: ('/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-' ~ item ~ '.service') is exists
+
+# Shrinking fleet_runner_ids (ansible/host.yml) only stops the play from managing
+# the cut runners: the units already installed for them stay enabled and keep
+# registering, and a runner that cannot get a `worker-capable` seat dies with code 1
+# (fleet-ops#11942). So the tail above the list is stopped and disabled here. The
+# template fleet-runner@.service is installed by tasks/install-config.yml before this
+# file runs, so the instances resolve whether or not they ever started, and the task
+# is a no-op on a host that never had them.
+- name: Stop and disable the runners cut from the pool
+  ansible.builtin.systemd_service:
+    name: "fleet-runner@{{ item }}.service"
+    enabled: false
+    state: stopped
+  loop: "{{ range(15, 31) | list }}"
 
 - name: Copy each runner registration to fleet-runner once
   ansible.builtin.copy:
