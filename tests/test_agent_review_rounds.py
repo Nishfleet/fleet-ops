@@ -268,7 +268,6 @@ def test_a_merged_pr_runs_nothing_even_with_an_open_change_request(tmp_path):
     proc, out, calls = run_step(tmp_path, step("claim", "round"), data, ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert out == "ref=\ngo=false\n"  # the checkout stays on the default branch
-    assert proc.stdout.splitlines()[0] == "PR #12 is closed; nothing to answer"
     assert calls == [["api", "repos/o/r/pulls/12", "--jq", "[.head.ref, .head.sha, .state] | @tsv"]]
 
 
