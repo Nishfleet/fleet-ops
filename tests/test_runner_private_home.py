@@ -3,8 +3,8 @@
 Every runner shares one user and home, so a job could leave a tool (a no-op `claude`) in the
 home's bin folder that every later job ran. The pilot's drop-in puts a tmpfs over the home
 (systemd.exec(5), TemporaryFileSystem=) and binds back only read-only paths and the runner's
-own _work and _diag. Its pi and the check tools are installed by the play into one
-root-owned folder outside the home, and pi's session files go to the runtime directory.
+own install folder (read-write, its .path read-only). Its pi and the check tools are installed by the play into one
+root-owned folder outside the home, and pi's agent folder is a copy in the runtime directory.
 Design: docs/design/ephemeral-runners.md, "Where the reset happens".
 """
 import pathlib
@@ -14,7 +14,7 @@ import ansible_host
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DROPIN = ROOT / "rootfs/etc/systemd/system/fleet-runner@22.service.d/10-private-home.conf"
 HOME = "/var/lib/fleet-runner"
-RW_ALLOWED = {f"{HOME}/22/_work", f"{HOME}/22/_diag"}
+RW_ALLOWED = {f"{HOME}/22"}
 
 
 def _values(key):
@@ -54,14 +54,14 @@ def test_the_home_is_a_tmpfs_a_job_cannot_write():
     assert "mode=0755" in opts and "uid=" not in opts, "the tmpfs root must stay root-owned"
 
 
-def test_only_work_and_diag_are_read_write_under_the_home():
+def test_only_the_runner_install_is_read_write_under_the_home():
     rw = set(_values("BindPaths"))
     assert rw == RW_ALLOWED, rw
 
 
 def test_everything_else_bound_back_is_read_only():
     ro = set(_values("BindReadOnlyPaths"))
-    assert f"{HOME}/22" in ro, "the runner install must be bound read-only"
+    assert f"{HOME}/22/.path" in ro, "the install's .path must be bound read-only"
     assert not ro & RW_ALLOWED
     # The pinned Node comes back read-only: its bin holds npm and npx, and npm there is a
     # script that runs the node beside it.
@@ -83,12 +83,16 @@ def test_every_folder_on_path_is_root_owned_and_outside_the_home():
                for folder in path), path
 
 
-def test_the_caches_and_pi_sessions_live_in_the_runtime_directory():
+def test_the_caches_and_pi_agent_folder_live_in_the_runtime_directory():
     assert _values("RuntimeDirectory") == ["fleet-runner-22"]
     for env in ["XDG_CACHE_HOME=/run/fleet-runner-22",
                 "npm_config_cache=/run/fleet-runner-22/npm",
-                "PI_CODING_AGENT_SESSION_DIR=/run/fleet-runner-22/pi-sessions"]:
+                "PI_CODING_AGENT_DIR=/run/fleet-runner-22/pi-agent"]:
         assert env in _values("Environment"), env
+    pre = _values("ExecStartPre")
+    assert "/usr/bin/mkdir -p /run/fleet-runner-22/pi-agent" in pre, pre
+    assert ("/usr/bin/cp /var/lib/fleet-runner/.pi/agent/models.json "
+            "/var/lib/fleet-runner/.pi/agent/settings.json /run/fleet-runner-22/pi-agent/") in pre, pre
 
 
 def test_the_play_installs_the_pinned_tools_into_the_root_owned_folder():
