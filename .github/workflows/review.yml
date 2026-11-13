@@ -35,6 +35,9 @@ jobs:
     permissions: {contents: read, pull-requests: read}
     outputs:
       review: ${{ steps.ai.outputs.review || steps.grok.outputs.review }}
+      # The router group that answered, or grok-4.7 from the Grok step: the verdict job
+      # approves only a lead reviewer's verdict (owner 2026-11-13: "AI decides but only opus 5.5").
+      model: ${{ steps.ai.outputs.model || steps.grok.outputs.model }}
     steps:
       # A senior round is reviewed by Fable 5.2 on the owner's decision (fleet-ops#11964, 2026-11-13); the run name still says engine=pi there, so the step looks for the senior comment instead.
       - name: Review with an AI from another family than the builder's
@@ -47,10 +50,12 @@ jobs:
           # Only the author's comments: anyone can comment on a public pull request.
           PR_TEXT: >-
             .author.login as $a | "# \(.title)\n\n\(.body)\n\n# Your last review\n\([.reviews[] | select(.author.login == "nishfleet-approver")] | last | .body // "none")\n\n# The author's answers\n\([.comments[] | select(.author.login == $a) | .body] | join("\n---\n"))"
-        # Claude reviews only a head the lane App pushed from a pi run (GLM, DeepSeek or MiniMax),
-        # and review-claude falls back to review-qwen in the router. Anything else goes to
-        # review-any (Qwen, GLM, DeepSeek; never Claude or MiniMax), whose failed row cools while
-        # another row answers. https://docs.litellm.ai/docs/proxy/reliability#fallbacks
+        # Claude reviews only a head the lane App pushed from a pi run (GLM, DeepSeek or MiniMax).
+        # review-claude and review-fable have no fallback in the router, so a failed call there
+        # ends the review and the Grok step below answers it; no other model answers under a
+        # lead's name. review-any (Qwen, GLM, DeepSeek; never Claude or MiniMax) has one row,
+        # whose failure cools it.
+        # https://docs.litellm.ai/docs/proxy/reliability#fallbacks
         # https://docs.litellm.ai/docs/routing
         # https://docs.github.com/en/rest/repos/repos#list-repository-activities
         run: |
@@ -83,6 +88,7 @@ jobs:
           mv "$RUNNER_TEMP/prompt.part" "$RUNNER_TEMP/prompt.md"
           pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
               --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider litellm --model "$model" < "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/review.md" 2> "$RUNNER_TEMP/pi.err"
+          { echo 'model<<REVIEW_END'; echo "$model"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
           { echo 'review<<REVIEW_END'; echo "Review ($model, fleet-ops review.yml):"; echo; cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
       # The last resort for every build: Grok builds nothing, and pi-grok's own login on this
       # runner reaches it without the router. https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepsif
@@ -93,6 +99,7 @@ jobs:
           set -euo pipefail
           pi --print --no-tools --no-session --no-context-files --no-skills --no-mcp \
             --system-prompt "$(cat "$RUNNER_TEMP/bar.md")" --provider xai-oauth --model grok-4.7 < "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/review.md"
+          { echo 'model<<REVIEW_END'; echo "grok-4.7"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
           { echo 'review<<REVIEW_END'; echo "Review (grok-4.7, fleet-ops review.yml):"; echo; cat "$RUNNER_TEMP/review.md"; echo REVIEW_END; } >> "$GITHUB_OUTPUT"
   verdict:
     # A hosted runner and environment `approver` (main only), so the bot token never sits on the box.
@@ -108,21 +115,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.APPROVER_TOKEN }}
           REVIEW: ${{ needs.review.outputs.review }}
-          # Test files the pull request removes, renames or deletes lines from: CODEOWNERS does
-          # not cover tests/, so the bot holds these itself. https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files
-          TEST_EDITS: >-
-            .[] | select(([.filename, .previous_filename // empty]
-            | any(test("(^|/)(tests?|e2e|__tests__)/|_test\\.go$|\\.(test|spec)\\.[^/]+$|(^|/)test_[^/]*\\.py$")))
-            and (.status == "removed" or .status == "renamed" or .deletions > 0)) | .filename
+          MODEL: ${{ needs.review.outputs.model }}
         run: |
           set -euo pipefail
           read -r head author proof < <(gh pr view "$PR" -R "$REPO" --json headRefOid,author,body --jq '"\(.headRefOid) \(.author.login) \(.body // "" | test("(?im)^run-proof:"))"')
           [ "$head" = "$SHA" ] || { echo "head moved past $SHA; its own CI run starts the next review"; exit 0; }
           # Set on every hold for the owner; only those get the label and the review request.
-          # The reviewer says HOLD-OWNER only on the owner's reserved classes (docs/review-bar.md
-          # point 4, fleet-ops#11921, owner 2026-11-12): money and pricing, privacy, security,
-          # legal, brand, product direction, customer-data deletion, destructive or irreversible
-          # steps. The owner's own pull request and test-line edits below hold regardless.
+          # The reviewer says HOLD-OWNER only when the change itself would spend money, delete
+          # customer data or publish a one-shot public action (docs/review-bar.md point 4,
+          # fleet-ops#11921, owner 2026-11-12; fleet-ops#11975, owner 2026-11-13). The owner's
+          # own pull request holds regardless.
           owner_hold=''
           case "$(grep -oE '^VERDICT: [A-Z-]+' <<<"$REVIEW" | tail -1)" in
             'VERDICT: APPROVE') event=APPROVE ;;
@@ -130,14 +132,19 @@ jobs:
             'VERDICT: HOLD-OWNER') event=COMMENT; REVIEW+=$'\n\nHeld for the owner.'; owner_hold=1 ;;
             *) echo "::error::the reviewer gave no verdict line"; exit 1 ;;
           esac
+          # A lead verdict is one the lead reviewer gave: review-claude (Opus 5.5) or review-fable
+          # (owner 2026-11-13: "AI decides but only opus 5.5"). Only a lead may approve; a verdict
+          # from any other model is a hold for the owner, as a hold is today.
+          case "$MODEL" in
+            review-claude|review-fable) lead=1 ;;
+            *) lead='' ;;
+          esac
+          [ "$event" != APPROVE ] || [ "$lead" = 1 ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: only the lead reviewer approves.'; owner_hold=1; }
           # GitHub counts the code owner's own pull request as owner-reviewed, so the bot's
           # approval alone merged fleet-ops#11741. The bot never approves the owner's pull request.
           [ "$event" != APPROVE ] || [ "$author" != nish3451 ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: the owner opened this pull request.'; owner_hold=1; }
           # agent.yml tells the worker the bot will not approve without a run-proof line; this holds it.
           [ "$event" != APPROVE ] || [ "$proof" = true ] || { event=COMMENT; REVIEW+=$'\n\nNot approved: the body has no run-proof line.'; }
-          # An assignment, so a failed call stops the job instead of approving.
-          edits=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq "$TEST_EDITS")
-          [ "$event" != APPROVE ] || [ -z "$edits" ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: this PR deletes or changes existing test lines.'; owner_hold=1; }
           new_id=$(gh api "repos/$REPO/pulls/$PR/reviews" -f commit_id="$SHA" -f event="$event" -f body="$REVIEW" --jq .id)
           # A hold posts as a comment, and a comment does not replace the reviewer's own
           # change request: GitHub keeps it in force until the same reviewer approves or
