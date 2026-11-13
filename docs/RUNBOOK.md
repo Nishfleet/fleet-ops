@@ -68,6 +68,11 @@ something a script can read):
 
 Then one line clears it: `systemctl --user reset-failed <unit>`.
 
+A failed system unit clears the same way with the `--user` prefix dropped, but
+the hand must be a privileged one: polkit
+(rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules) lets nish start three
+named units and nothing else. Run the reset through nish's own sudo session.
+
 The failed-unit check itself has not been what turned a run red lately. The
 three most recent runs that reported it all read `failed units: []`, and all
 three ended red on other checks (an unpinned pi extension, runners resumed,

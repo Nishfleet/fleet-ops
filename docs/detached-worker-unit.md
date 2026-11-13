@@ -29,6 +29,15 @@ One line, stock systemd, no wrapper script:
 - The `ExecStopPost=` line is the deliverable check: a stop at exit 0 with no
   artifact becomes `Result=exit-code`, i.e. `failed`.
 
+A transient unit carries its command's exit status, and the command's last
+statement owns it. A probe that ends on a diagnostic ends the way the
+diagnostic ends, not the way the check ends: `which node npm` exits 1 when
+any named command is missing, so a jail that carries pi but not npm fails a
+probe on that line alone, whatever its check printed, and the unit is left
+in `failed` state for a privileged hand to clear (RUNBOOK, "The failed-unit
+check and leftover ad-hoc units"). End a probe with its own check's status,
+and bind every tool its command names into the jail.
+
 ## Why system scope, never `--user` and never `--collect`
 
 Two reasons, both proven 2026-10-25 with `sudo systemd-run --uid=nish` probes:
