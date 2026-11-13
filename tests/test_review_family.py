@@ -35,6 +35,12 @@ if args[:2] == ["run", "list"]:
     data = [{"displayTitle": t} for t in json.loads(os.environ["RUNS"])]
 elif any("/activity" in a for a in args):
     data = json.loads(os.environ["PUSHES"])
+elif any("/issues/" in a for a in args):
+    # The ticket read succeeds only when the test sets ISSUE; a failed read leaves the
+    # marker line in the prompt and the review goes on.
+    if not os.environ.get("ISSUE") or os.environ.get("ISSUE_FAIL"):
+        sys.exit(1)
+    data = json.loads(os.environ["ISSUE"])
 elif os.environ.get("GH_FAIL") and any("github.diff" in a for a in args):
     sys.exit(1)
 elif args[:2] == ["pr", "view"]:
@@ -81,6 +87,28 @@ def reviewer(tmp_path, branch, pushes=(), runs=()):
     outcome, called, out = run_job(tmp_path, branch, pushes, runs)
     assert outcome == "success" and "VERDICT: APPROVE" in out
     return called[0].removeprefix("litellm/")
+
+
+def test_the_ticket_reaches_the_prompt_on_an_issue_branch(tmp_path):
+    run_job(tmp_path, "agent/issue-7", [push()], [(7, "pi")],
+            ISSUE=json.dumps({"title": "Add the widget", "body": "the ticket asks for the widget"}))
+    prompt = (tmp_path / "prompt.md").read_text()
+    assert "# The ticket this pull request closes\nAdd the widget\n\nthe ticket asks for the widget" in prompt
+    assert prompt.index("# The ticket this pull request closes") < prompt.index("# Diff")
+
+
+@pytest.mark.parametrize("branch", ["agent/issue-7", "lead/x"], ids=["issue", "other"])
+def test_a_failed_ticket_read_leaves_a_marker_and_the_review_goes_on(tmp_path, branch):
+    outcome, called, out = run_job(tmp_path, branch, [push()], [(7, "pi")], ISSUE_FAIL="1")
+    assert outcome == "success" and called == ["litellm/review-claude" if branch == "agent/issue-7" else "litellm/review-any"]
+    assert "VERDICT: APPROVE" in out
+    prompt = (tmp_path / "prompt.md").read_text()
+    assert ("# The ticket this pull request closes\n(the ticket could not be read)" in prompt) == (branch == "agent/issue-7")
+
+
+def test_no_ticket_section_when_the_branch_has_no_ticket(tmp_path):
+    run_job(tmp_path, "lead/x")
+    assert "# The ticket this pull request closes" not in (tmp_path / "prompt.md").read_text()
 
 
 def test_the_senior_round_goes_to_fable(tmp_path):
