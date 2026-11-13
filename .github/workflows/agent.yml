@@ -140,7 +140,7 @@ jobs:
           if [ -z "$PR" ]; then echo go=true >> "$GITHUB_OUTPUT"; exit 0; fi
           read -r ref sha < <(gh api "repos/$REPO/pulls/$PR" --jq '[.head.ref, .head.sha] | @tsv')
           [ "$ref" = "agent/issue-$ISSUE" ] || { echo "::error::PR #$PR is on $ref, not agent/issue-$ISSUE"; exit 1; }
-          gh api "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq '[.[] | select(.user.login == "nishfleet-approver" or .author_association == "OWNER")]' > "$RUNNER_TEMP/reviews.json"
+          gh api "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq '[.[] | select(.user.login == "nishfleet-approver" or .user.login == "nish3451")]' > "$RUNNER_TEMP/reviews.json"
           rounds=$(jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' "$RUNNER_TEMP/reviews.json")
           # A review round is the bot's or the owner's last look asking for changes on this
           # head. A red head cannot get the bot's, the reviewer reads green CI only

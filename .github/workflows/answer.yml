@@ -24,7 +24,7 @@ jobs:
       (github.event_name == 'pull_request_review' &&
         github.event.review.state == 'changes_requested' &&
         (github.event.review.user.login == 'nishfleet-approver' ||
-          github.event.review.author_association == 'OWNER') &&
+          github.event.review.user.login == 'nish3451') &&
         github.event.pull_request.head.repo.full_name == github.repository &&
         startsWith(github.event.pull_request.head.ref, 'agent/issue-')) ||
       (github.event_name == 'workflow_run' &&
