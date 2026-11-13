@@ -50,12 +50,11 @@
     tether_node_sha256: df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
     tether_node_dir: "/opt/node-v{{ tether_node_version }}"
     tether_node_cache: /var/cache
-    # The pilot runner 22 (fleet-runner@22.service.d/10-private-home.conf): one root-owned
-    # folder outside the pool's home holds its pi and the check tools (tasks/runners.yml),
-    # and this PATH is what the drop-in and the runner's .path both set. The drop-in hides
-    # the home behind a tmpfs, so the home's tools folder is gone there and no folder in
-    # the home may go on PATH; the pinned Node's bin is on it, so npm and npx resolve to
-    # the pinned Node and not to a job-planted copy.
+    # The pilot runner 22 (fleet-ops#11959, #11990): one root-owned folder outside the
+    # pool's home holds its pi and the check tools (tasks/runners.yml), and this PATH is the
+    # runner's .path. Jobs cannot replace a tool on it; the pinned Node's bin is on it, so
+    # npm and npx resolve to the pinned Node and not to a job-planted copy. The home is
+    # the pool's shared home, as for every runner.
     fleet_pilot_tools: /opt/fleet-pilot-tools
     fleet_pilot_path: "{{ fleet_pilot_tools }}/venv/bin:{{ fleet_pilot_tools }}/bin:{{ tether_node_dir }}/bin:/usr/local/bin:/usr/bin:/bin"
     # The tether release: one exact version of the private repo Nishfleet/tether,
@@ -124,6 +123,9 @@
       # auto-update timer has nothing to pull (podman-auto-update(1)).
       - podman-auto-update.timer
     retired:
+      # The pilot runner 22's private-home drop-in (fleet-ops#11990): jobs could not
+      # write to the home it hid; the root-owned tools folder alone closes #11959's hole.
+      - /etc/systemd/system/fleet-runner@22.service.d
       # The single router's drop-in; systemd never reads foo.service.d/ for the
       # foo@N.service instances that replaced it (systemd.unit(5), "Drop-in files").
       - /etc/systemd/user/fleet-litellm-proxy.service.d

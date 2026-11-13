@@ -76,7 +76,7 @@
   notify: Restart the agent runners
 
 # The pool's PATH names the home's tools folder; the pilot's (runner 22) is the root-owned
-# tools folder and the pinned Node instead, the same value its drop-in sets as PATH.
+# tools folder and the pinned Node instead.
 - name: Give each runner fleet-runner's PATH
   ansible.builtin.copy:
     content: "{{ fleet_pilot_path if item == 22 else '/var/lib/fleet-runner/.local/bin:/usr/local/bin:/usr/bin:/bin' }}\n"
@@ -138,9 +138,7 @@
     PATH: "{{ tether_node_dir }}/bin:/usr/bin:/bin"
 
 # The pilot runner 22 gets its tools from one root-owned folder outside the pool's home
-# (fleet-runner@22.service.d/10-private-home.conf hides the home behind a tmpfs, so the
-# shared tools folder jobs once filled in ~/.local/bin is gone there, and a folder in
-# the home could not go on PATH anyway). Only what this repo's CI and the enrolled
+# (a job can write to the pool's home, so no folder in it may go on PATH). Only what this repo's CI and the enrolled
 # repos' check commands call is installed: the pinned pip tools in a virtual environment,
 # the two vendor binaries beside it, and pi; npm, npx and node come from the pinned Node
 # above. Nothing else from the old shared folder is reinstalled: system ansible-playbook,
@@ -217,6 +215,17 @@
   environment:
     HOME: /root
     PATH: "{{ tether_node_dir }}/bin:/usr/bin:/bin"
+
+# The play's tight umask leaves the venv and node_modules root-only; every user must be
+# able to list and read the folder, and only root may write it (fleet-ops#11990).
+- name: Make the pilot tools folder readable by every user, writable by root only
+  ansible.builtin.file:
+    path: "{{ fleet_pilot_tools }}"
+    state: directory
+    recurse: true
+    owner: root
+    group: root
+    mode: "u=rwX,g=rX,o=rX"
 
 - name: Make fleet-runner's config directories
   ansible.builtin.file:
