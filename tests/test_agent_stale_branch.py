@@ -3,8 +3,16 @@
 Run 41846745347 (issue 11723) lost its push to "(fetch first)": agent/issue-11723 still held
 the head of closed PR #11730. The push step runs here as written in agent.yml, with real git
 against a local bare repo (github.com rewritten by url.<base>.insteadOf) and a fake `gh`.
+Run 43378639058 then lost its push to "Repository lacks these prerequisite commits": a fix
+round whose worker merged the default branch makes the work bundle's prerequisites the
+branch's boundary commits, so the push repo needs the default branch's history too, and the
+claim bundle must hand the worker origin/<default> without network (fleet-ops#11973). The
+claim bundle step, the worker's clone and merge, the work bundle step and the push step run
+here as written, the same way.
 https://git-scm.com/docs/git-push#Documentation/git-push.txt---force-with-leaseltrefnamegt
 https://git-scm.com/docs/git-config#Documentation/git-config.txt-urlltbasegtinsteadOf
+https://git-scm.com/docs/git-bundle
+https://git-scm.com/docs/partial-clone
 https://docs.github.com/en/rest/pulls/pulls#list-pull-requests
 """
 import json
@@ -67,7 +75,8 @@ def push(lane, open_prs, pr="", move_to=""):
            "GIT_CONFIG_VALUE_0": "https://github.com/o/r.git", "GH_DATA": str(tmp / "data.json"),
            "GH_LOG": str(tmp / "gh.log"), "RUNNER_TEMP": str(tmp), "REPO": "o/r", "GITHUB_REPOSITORY": "o/r",
            "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "1", "ISSUE": "7", "PR": pr,
-           "BASE": lane["base"], "PROOF": "run-proof: x -> 1 passed", "REMOTE": str(lane["remote"]), "MOVE_TO": move_to}
+           "BASE": lane["base"], "DEFAULT": "main", "PROOF": "run-proof: x -> 1 passed",
+           "REMOTE": str(lane["remote"]), "MOVE_TO": move_to}
     proc = subprocess.run(["bash", "-e", "-c", push_step()], env=env, capture_output=True, text=True, check=False)
     return proc, git("--git-dir", str(lane["remote"]), "rev-parse", BRANCH)
 
@@ -123,3 +132,106 @@ def test_the_claim_labels_the_ticket_only_after_the_guard_clears(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert calls[0] == ["api", PULLS, "--jq", "length"]
     assert calls[1] == EDIT
+
+
+def claim_bundle_step():
+    return next(s for s in WF["jobs"]["claim"]["steps"] if s.get("id") == "repo")["run"]
+
+
+def work_bundle_step():
+    return next(s for s in WF["jobs"]["work"]["steps"] if s.get("name", "").startswith("Bundle what the worker left"))["run"]
+
+
+@pytest.fixture
+def stale(tmp_path):
+    """A fix round on a stale PR: main moved after agent/issue-7 was cut, so a worker that
+    merges the default branch carries commits the push repo has never seen (fleet-ops#11973)."""
+    remote, src = tmp_path / "remote.git", tmp_path / "src"
+    git("init", "-q", "--bare", str(remote))
+    # the bare remote opts into object filters the way GitHub does, for the blob-less fetch
+    git("-C", str(remote), "config", "uploadpack.allowFilter", "true")
+    git("init", "-q", "-b", "main", str(src))
+    base = commit(src, "base")
+    git("checkout", "-q", "-b", "agent/issue-7", cwd=src)
+    old = commit(src, "old-run")
+    git("push", "-q", str(remote), "agent/issue-7", cwd=src)
+    git("checkout", "-q", "main", cwd=src)
+    newer = commit(src, "newer-main")
+    git("push", "-q", str(remote), "main", cwd=src)
+    # the claim checkout holds the default branch as a remote-tracking ref (fetch-depth: 0),
+    # the branch tip is its head, and there is no local main on a PR run
+    git("update-ref", "refs/remotes/origin/main", newer, cwd=src)
+    git("checkout", "-q", "agent/issue-7", cwd=src)
+    return {"tmp": tmp_path, "remote": remote, "src": src, "base": base, "old": old, "newer": newer}
+
+
+def run_pipeline(stale, merge):
+    """The claim bundle step, the worker's clone and task, the work bundle step and the push
+    step, each as written in agent.yml, with real git and a fake `gh`."""
+    tmp = stale["tmp"]
+    bin_dir = tmp / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(FAKE_GH)
+    (bin_dir / "git").write_text(MOVE_THEN_GIT)
+    for f in ("gh", "git"):
+        (bin_dir / f).chmod(0o755)
+    (tmp / "data.json").write_text(json.dumps({
+        OPEN: [], "repos/o/r": {"default_branch": "main"},
+        "repos/o/r/issues/7": {"title": "t"}, "repos/o/r/pulls/12": {"body": ""}}))
+    (tmp / "gh.log").touch()
+    (tmp / "issue.md").write_text("the task\n")
+    (tmp / "run-proof.md").write_text("run-proof: pytest -> 1 passed\n")
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_PATH": os.environ["PATH"], "HOME": str(tmp),
+           "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": f"url.file://{stale['remote']}.insteadOf",
+           "GIT_CONFIG_VALUE_0": "https://github.com/o/r.git", "GH_DATA": str(tmp / "data.json"),
+           "GH_LOG": str(tmp / "gh.log"), "RUNNER_TEMP": str(tmp), "REPO": "o/r", "GITHUB_REPOSITORY": "o/r",
+           "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "1", "ISSUE": "7", "PR": "12",
+           "MOVE_TO": "", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    out = tmp / "out"
+    out.touch()
+
+    def run(script, cwd=None, **extra):
+        return subprocess.run(["bash", "-e", "-c", script], cwd=cwd,
+                              env={**env, "GITHUB_OUTPUT": str(out), **extra},
+                              capture_output=True, text=True, check=False)
+
+    # claim: the bundle step, on the checkout it left (branch checked out, origin/* fetched)
+    proc = run(claim_bundle_step(), cwd=str(stale["src"]))
+    assert proc.returncode == 0, proc.stderr
+    claim = dict(line.split("=", 1) for line in out.read_text().splitlines())
+    assert claim == {"base": stale["old"], "default": "main"}
+
+    # the worker: clone from the bundle, as the Worker step clones, then do the task
+    work = tmp / "work"
+    git("clone", "-q", "--branch", "agent/issue-7", str(tmp / "repo.bundle"), str(work))
+    # the bundle gave the worker the default branch without any network
+    assert git("rev-parse", "refs/remotes/origin/main", cwd=work) == stale["newer"]
+    if merge:
+        git("merge", "-q", "--no-edit", "origin/main", cwd=work)
+        # a merge, not a rebase: the branch tip keeps the old remote head as its first parent
+        assert git("rev-list", "--parents", "-n1", "HEAD", cwd=work).split()[1:] == [stale["old"], stale["newer"]]
+    else:
+        (work / "worker-change").write_text("worker-change")
+        git("add", "worker-change", cwd=work)
+        git("commit", "-qm", "worker change", cwd=work)
+
+    # the work job bundles what the worker left; the push job pushes it
+    proc = run(work_bundle_step(), dir=str(work), BASE=claim["base"])
+    assert proc.returncode == 0, proc.stderr
+    proc = run(push_step(), BASE=claim["base"], DEFAULT=claim["default"], PROOF="run-proof: pytest -> 1 passed")
+    assert proc.returncode == 0, proc.stderr
+    # the push repo holds the default branch's history, fetched without file contents
+    assert git("rev-parse", "refs/heads/default", cwd=tmp / "push") == stale["newer"]
+    return git("rev-parse", "HEAD", cwd=work), git("--git-dir", str(stale["remote"]), "rev-parse", BRANCH)
+
+
+def test_a_fix_round_that_merged_the_default_branch_pushes_a_fast_forward(stale):
+    tip, head = run_pipeline(stale, merge=True)
+    assert head == tip  # the pushed head is the merge, so the push was a fast-forward
+    assert head != stale["old"]
+
+
+def test_the_plain_case_without_a_merge_still_pushes(stale):
+    tip, head = run_pipeline(stale, merge=False)
+    assert head == tip

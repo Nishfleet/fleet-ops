@@ -80,6 +80,8 @@ def run_worker(work, engine, verdict=None, run_id=1000, stubs=None):
            # The work job's job-level env (agent.yml): the base the clone starts from, so
            # the claude arm can tell a commit the worker made from an untouched tree.
            "BASE": git("rev-parse", "agent/issue-7", cwd=work / "src"),
+           # The Worker step's env (agent.yml): the default branch the packet names for merges.
+           "DEFAULT_BRANCH": "main",
            # The claude arm reads its seat from fleet-claude's own home and picks the seat
            # by run id parity.
            "HOME": str(work / "home"), "GITHUB_RUN_ID": str(run_id)}

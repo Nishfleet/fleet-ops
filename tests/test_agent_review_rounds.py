@@ -305,7 +305,7 @@ def push_step():
 def test_a_review_answer_appends_its_proof_to_the_body_before_the_push(tmp_path, proof, tail):
     data = {"repos/o/r/pulls/12": {"body": "Closes #7\n\nrun-proof: old -> 1 passed"}}
     (tmp_path / "push").mkdir()  # the stub git does not create it
-    proc, _, calls = run_step(tmp_path, push_step(), data, stubs=("git",), ISSUE="7", PR="12", BASE=SHA, PROOF=proof)
+    proc, _, calls = run_step(tmp_path, push_step(), data, stubs=("git",), ISSUE="7", PR="12", BASE=SHA, DEFAULT="main", PROOF=proof)
     assert proc.returncode == 0, proc.stderr
     edit = calls.index(["api", "-X", "PATCH", "repos/o/r/pulls/12", "-f",
                         f"body=Closes #7\n\nrun-proof: old -> 1 passed\n\nReview answer by the agent lane: https://github.com/o/r/actions/runs/1\n\n{tail}"])
