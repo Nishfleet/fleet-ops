@@ -73,13 +73,13 @@ def run_prestart(stub):
     script = (prestart_script()
               .replace("/usr/sbin/runuser -u nish -- ", "")
               .replace("/opt/node-v22.23.3/bin/node", shutil.which("node"))
+              .replace("/etc/fleet-runner-jit-app.env", str(stub.dir / "app.env"))
               .replace("/run/fleet-runner-jit-22.env", str(env_file)))
+    (stub.dir / "app.env").write_text(f"APP_ID=4728578\nAPP_KEY={stub.dir / 'app.pem'}\n"
+                                      f"MINT={ROOT / 'config/github-app-token/mint.mjs'}\n")
     env = {
         "PATH": os.environ["PATH"],
         "GITHUB_API_URL": f"http://127.0.0.1:{stub.port}",
-        "APP_ID": setting("APP_ID"),
-        "APP_KEY": str(stub.dir / "app.pem"),
-        "MINT": str(ROOT / "config/github-app-token/mint.mjs"),
         "TOKEN_PERMISSIONS": setting("TOKEN_PERMISSIONS"),
     }
     done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=False)
@@ -127,11 +127,16 @@ def test_a_start_that_cannot_reach_github_fails_and_leaves_no_config_or_secret_b
 
 def test_the_unit_restarts_after_each_job_and_a_dead_start_ends_failed():
     text = dropin_text()
-    assert re.search(r"^Restart=always$", text, flags=re.MULTILINE)
-    limit = int(re.search(r"^StartLimitBurst=(\d+)$", text, flags=re.MULTILINE).group(1))
-    window = re.search(r"^StartLimitIntervalSec=(\S+)$", text, flags=re.MULTILINE).group(1)
-    assert limit > 0 and window not in {"0", "0s", "infinity"}, "no start limit hides a dead start (fleet-ops#10253)"
-    assert re.search(r"^TimeoutStartSec=\d+s$", text, flags=re.MULTILINE), "a hung API call must fail the start"
+    assert re.search(r"^Restart=on-success$", text, flags=re.MULTILINE), "a failed start must not loop (fleet-ops#10253)"
+    # mint 30s plus the list, one delete and the POST at 20s each
+    assert int(re.search(r"^TimeoutStartSec=(\d+)s$", text, flags=re.MULTILINE).group(1)) > 30 + 3 * 20
+
+
+def test_the_app_id_and_key_paths_stay_out_of_git_and_out_of_the_runner_environment():
+    text = dropin_text()
+    assert not re.search(r"^Environment='?(APP_ID|APP_KEY|MINT)=", text, flags=re.MULTILINE)
+    assert "/home/nish" not in "".join(l for l in text.splitlines() if not l.startswith("#"))
+    assert ". /etc/fleet-runner-jit-app.env" in prestart_script()
 
 
 def test_the_token_asks_for_the_one_permission_and_the_config_never_reaches_the_job_user_or_argv():
