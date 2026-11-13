@@ -88,7 +88,10 @@ def review(state, sha=SHA, body="finding", user="nishfleet-approver", associatio
 
 
 def owner_review(state, sha=SHA, body="finding"):
-    return review(state, sha, body, user="repo-owner", association="OWNER")
+    # On an org repo GitHub reports the owner's reviews as MEMBER, never OWNER
+    # (https://docs.github.com/en/graphql/reference/enums#commentauthorassociation),
+    # so the lane goes by the login: the fixture is MEMBER nish3451.
+    return review(state, sha, body, user="nish3451", association="MEMBER")
 
 
 def round_data(reviews, ref="agent/issue-7", failing=(), red_answers=0):
@@ -243,7 +246,7 @@ def test_the_hop_fires_only_on_a_change_request_from_the_bot_or_the_owner_and_ho
     # lane too, because the reviewer reads green CI only, so a red PR drew no review.
     assert on["workflow_run"] == {"workflows": ["CI"], "types": ["completed"]}
     for cond in ("github.event.review.state == 'changes_requested'", "github.event.review.user.login == 'nishfleet-approver'",
-                 "github.event.review.author_association == 'OWNER'",
+                 "github.event.review.user.login == 'nish3451'",
                  "startsWith(github.event.pull_request.head.ref, 'agent/issue-')",
                  "github.event.pull_request.head.repo.full_name == github.repository"):
         assert cond in hop["if"]
