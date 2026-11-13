@@ -354,7 +354,7 @@ jobs:
           git push -q "${lease[@]}" "https://github.com/$REPO.git" "refs/work/agent/issue-$ISSUE:refs/heads/agent/issue-$ISSUE"
           if [ -n "$PR" ]; then gh pr comment "$PR" -R "$REPO" --body "agent: pushed the answer; CI and the re-review run next"; exit 0; fi
           title=$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)
-          pr=$(gh pr create -R "$REPO" --head "agent/issue-$ISSUE" --title "$title" --body "Refs #$ISSUE"$'\n\n'"Built by the agent lane: $run"$'\n\n'"$proof")
+          pr=$(gh pr create -R "$REPO" --head "agent/issue-$ISSUE" --title "$title" --body "Closes #$ISSUE"$'\n\n'"Built by the agent lane: $run"$'\n\n'"$proof")
           gh issue comment "$ISSUE" -R "$REPO" --body "agent: PR $pr"
           # https://cli.github.com/manual/gh_pr_merge: with a merge queue --auto queues the PR.
           # A failure fails the job, so park labels the issue agent-blocked.
