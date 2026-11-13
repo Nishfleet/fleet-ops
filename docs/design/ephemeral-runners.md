@@ -192,7 +192,7 @@ it.
   - The token call fails (the credential expired, GitHub is unreachable). The
     pre-start step fails, `Restart=always` retries after the unit's
     `RestartSec=30s`, and the runner is absent until it succeeds. A clean exit after
-    each job is a start too, so the pilot drop-in sets `StartLimitIntervalSec=30min` and
+    each job is a start too, so the pilot drop-in sets `StartLimitIntervalSec=45min` and
     `StartLimitBurst=20`: real jobs cannot reach 20 starts (a cycle is at least the 30s
     restart wait), and a dead start does, so it leaves the unit `failed`, which `systemctl --failed` and the
     `node_systemd_unit_state` gauge report. `StartLimitIntervalSec=0` was the

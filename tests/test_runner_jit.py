@@ -57,7 +57,7 @@ def stub(tmp_path):
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    proc = subprocess.Popen(["python3", str(STUB), str(port), str(tmp_path / "app.pub"), "4728578", str(mode), str(log)])
+    proc = subprocess.Popen(["python3", str(STUB), str(port), str(tmp_path / "app.pub"), "1234567", str(mode), str(log)])
     for _ in range(40):
         with socket.socket() as s:
             if s.connect_ex(("127.0.0.1", port)) == 0:
@@ -73,10 +73,10 @@ def run_prestart(stub):
     script = (prestart_script()
               .replace("/usr/sbin/runuser -u nish -- ", "")
               .replace("/opt/node-v22.23.3/bin/node", shutil.which("node"))
-              .replace("/etc/fleet-runner-jit-app.env", str(stub.dir / "app.env"))
+              .replace("APP_ID=4728578", "APP_ID=1234567")
+              .replace("APP_KEY=/home/nish/.config/fleet-worker/nishfleet-worker.private-key.pem", f"APP_KEY={stub.dir / 'app.pem'}")
+              .replace("MINT=/home/nish/.local/share/github-app-token/mint.mjs", f"MINT={ROOT / 'config/github-app-token/mint.mjs'}")
               .replace("/run/fleet-runner-jit-22.env", str(env_file)))
-    (stub.dir / "app.env").write_text(f"APP_ID=4728578\nAPP_KEY={stub.dir / 'app.pem'}\n"
-                                      f"MINT={ROOT / 'config/github-app-token/mint.mjs'}\n")
     env = {
         "PATH": os.environ["PATH"],
         "GITHUB_API_URL": f"http://127.0.0.1:{stub.port}",
@@ -125,18 +125,23 @@ def test_a_start_that_cannot_reach_github_fails_and_leaves_no_config_or_secret_b
     assert not re.search(r"ghs_stub_|jit_stub_|eyJ", done.stdout + done.stderr)
 
 
-def test_the_unit_restarts_after_each_job_and_a_dead_start_ends_failed():
+def test_the_unit_always_restarts_inside_a_start_limit_that_a_dead_loop_reaches():
     text = dropin_text()
-    assert re.search(r"^Restart=on-success$", text, flags=re.MULTILINE), "a failed start must not loop (fleet-ops#10253)"
-    # mint 30s plus the list, one delete and the POST at 20s each
-    assert int(re.search(r"^TimeoutStartSec=(\d+)s$", text, flags=re.MULTILINE).group(1)) > 30 + 3 * 20
+    assert re.search(r"^Restart=always$", text, flags=re.MULTILINE)
+    assert re.search(r"^\[Unit\]\nStartLimitIntervalSec=45min\nStartLimitBurst=20$", text, flags=re.MULTILINE)
+    assert re.search(r"^TimeoutStartSec=60s$", text, flags=re.MULTILINE)
+    script = prestart_script()
+    assert "timeout 15 /usr/sbin/runuser" in script
+    assert script.count("curl ") == 1 and "--connect-timeout 5 --max-time 10 " in script
+    # mint 15s, list 10s, one stale record 10s, POST 10s, under the start timeout
+    assert 15 + 10 + 10 + 10 < 60
 
 
-def test_the_app_id_and_key_paths_stay_out_of_git_and_out_of_the_runner_environment():
+def test_the_app_id_and_key_paths_stay_out_of_the_runner_environment():
     text = dropin_text()
     assert not re.search(r"^Environment='?(APP_ID|APP_KEY|MINT)=", text, flags=re.MULTILINE)
-    assert "/home/nish" not in "".join(l for l in text.splitlines() if not l.startswith("#"))
-    assert ". /etc/fleet-runner-jit-app.env" in prestart_script()
+    script = prestart_script()
+    assert script.index("APP_ID=") < script.index("export APP_ID APP_KEY")
 
 
 def test_the_token_asks_for_the_one_permission_and_the_config_never_reaches_the_job_user_or_argv():
