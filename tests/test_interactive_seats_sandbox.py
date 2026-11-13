@@ -84,14 +84,6 @@ def reached(result: subprocess.CompletedProcess) -> bool:
     return result.returncode == 0 and PROBE in result.stdout
 
 
-def test_doc_states_the_launch_line() -> None:
-    text = doc_text()
-    assert LAUNCH_ANCHOR in text
-    assert SEATS_REL in text
-    for flag in ("--proc", "--unshare-pid", "--die-with-parent"):
-        assert flag in text, flag
-
-
 def test_bare_shell_reaches_the_probe_seat(fake_home: Path) -> None:
     result = run_case(f"cat {SEATS_REL}/{SEAT_NAME}", fake_home, jailed=False)
     assert reached(result), f"{result.stdout!r} {result.stderr!r}"

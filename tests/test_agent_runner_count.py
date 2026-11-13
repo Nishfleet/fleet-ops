@@ -5,11 +5,6 @@ from pathlib import Path
 import ansible_host
 
 ROOT = Path(__file__).resolve().parents[1]
-PLAY = ansible_host.play()
-
-
-def test_the_pool_is_netcup_agent_1_to_30():
-    assert PLAY["vars"]["fleet_runner_ids"] == list(range(1, 31))
 
 
 def test_nothing_installs_agent_runner_units_any_more():

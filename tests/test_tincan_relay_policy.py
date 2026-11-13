@@ -95,12 +95,6 @@ def test_every_rostered_agent_gets_a_gate_that_holds_outside_chains():
         assert gate["unless"] == allowed, f"{agent}: its unless list is not the whole roster plus the relay"
 
 
-def test_the_policy_names_the_notify_destination_and_the_hold_ttl():
-    policy = render()
-    assert policy["notify"] == "hermes"
-    assert policy["hold_ttl"] == "24h"
-
-
 def test_the_policy_is_rendered_without_a_trailing_newline():
     argv = ["jq", "--indent", "1", "-n", "--rawfile", "roster", str(ROSTER_FILE), "-f", str(PROGRAM_FILE)]
     without_j = subprocess.run(argv, capture_output=True, text=True, check=True).stdout

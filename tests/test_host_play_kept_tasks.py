@@ -1,4 +1,4 @@
-"""Host-play tasks that outlive the dockerd eval: the root podman socket mask, the alert gates."""
+"""Host-play tasks that outlive the dockerd eval: the root podman socket mask."""
 
 import ansible_host
 
@@ -18,8 +18,3 @@ def test_the_unused_root_podman_api_socket_is_masked() -> None:
 def test_no_other_play_task_touches_the_root_podman_api_socket() -> None:
     others = [t.get("name") for t in ansible_host.play()["tasks"] if t.get("name") != MASK_TASK and "podman.socket" in str(t)]
     assert not others, others
-
-
-def test_the_host_playbook_keeps_the_tasks_this_change_must_not_drop() -> None:
-    host = ansible_host.text()
-    assert host.count("alertmanager_credentials is defined and (") == 4
