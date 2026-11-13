@@ -18,6 +18,7 @@ https://docs.github.com/en/rest/pulls/pulls#list-pull-requests
 import json
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 from test_agent_review_rounds import FAKE_GH, WF, push_step, run_step
@@ -235,3 +236,76 @@ def test_a_fix_round_that_merged_the_default_branch_pushes_a_fast_forward(stale)
 def test_the_plain_case_without_a_merge_still_pushes(stale):
     tip, head = run_pipeline(stale, merge=False)
     assert head == tip
+
+
+ENV_KEYS = ("PATH", "REAL_PATH", "HOME", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0", "GH_DATA", "GH_LOG", "RUNNER_TEMP", "REPO",
+            "GITHUB_REPOSITORY", "GITHUB_SERVER_URL", "GITHUB_RUN_ID", "ISSUE", "PR",
+            "MOVE_TO", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL")
+
+
+@pytest.fixture
+def env(stale, tmp_path):
+    """The claim job's env, with a fake `gh` on PATH, as run_pipeline's."""
+    tmp = stale["tmp"]
+    bin_dir = tmp / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(FAKE_GH)
+    (bin_dir / "git").write_text(MOVE_THEN_GIT)
+    for f in ("gh", "git"):
+        (bin_dir / f).chmod(0o755)
+    (tmp / "data.json").write_text(json.dumps({
+        OPEN: [], "repos/o/r": {"default_branch": "main"},
+        "repos/o/r/issues/7": {"title": "t"}, "repos/o/r/pulls/12": {"body": ""}}))
+    (tmp / "gh.log").touch()
+    (tmp / "issue.md").write_text("the task\n")
+    (tmp / "run-proof.md").write_text("run-proof: pytest -> 1 passed\n")
+    return {"PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_PATH": os.environ["PATH"], "HOME": str(tmp),
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": f"url.file://{stale['remote']}.insteadOf",
+            "GIT_CONFIG_VALUE_0": "https://github.com/o/r.git", "GH_DATA": str(tmp / "data.json"),
+            "GH_LOG": str(tmp / "gh.log"), "RUNNER_TEMP": str(tmp), "REPO": "o/r",
+            "GITHUB_REPOSITORY": "o/r", "GITHUB_SERVER_URL": "https://github.com",
+            "GITHUB_RUN_ID": "1", "ISSUE": "7", "PR": "12", "MOVE_TO": "",
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+
+def run_in(env, script, cwd, **extra):
+    out = Path(env["RUNNER_TEMP"]) / "outputs"
+    out.write_text("")
+    proc = subprocess.run(["bash", "-e", "-c", script], cwd=cwd,
+                          env={**env, "GITHUB_OUTPUT": str(out), **extra},
+                          capture_output=True, text=True, check=False)
+    outputs = dict(line.split("=", 1) for line in out.read_text().splitlines() if line)
+    return proc, outputs
+
+
+# fleet-ops#12008: the round-3 task says "say in the commit message why a finding is
+# wrong", so a worker may deliver its answer as a commit that changes no file. The bundle
+# step counts the commits the branch carries, not tree differences: a zero-diff verdict
+# commit is a delivered answer that bundles and pushes, and only a branch with no commit
+# at all is "the worker changed nothing".
+# https://git-scm.com/docs/git-rev-list
+def test_a_verdict_commit_is_an_answer_the_bundle_pushes(stale, env):
+    proc, claim = run_in(env, claim_bundle_step(), cwd=str(stale["src"]))
+    assert proc.returncode == 0, proc.stderr
+    git("commit", "-q", "--allow-empty", "-m", "the findings are already addressed",
+        cwd=stale["src"])
+    proc, outputs = run_in(env, work_bundle_step(), cwd=stale["src"], dir=str(stale["src"]),
+                           BASE=claim["base"])
+    assert proc.returncode == 0, proc.stderr
+    assert outputs == {"proof": "run-proof: pytest -> 1 passed"}
+    heads = subprocess.run(["git", "bundle", "list-heads", str(stale["tmp"] / "work.bundle")],
+                           check=True, capture_output=True, text=True).stdout
+    assert "agent/issue-7" in heads
+
+
+def test_a_worker_that_left_no_commit_is_still_nochange(stale, env):
+    proc, claim = run_in(env, claim_bundle_step(), cwd=str(stale["src"]))
+    assert proc.returncode == 0, proc.stderr
+    proc, outputs = run_in(env, work_bundle_step(), cwd=stale["src"], dir=str(stale["src"]),
+                           BASE=claim["base"])
+    assert proc.returncode == 0, proc.stderr
+    assert outputs == {"proof": "run-proof: pytest -> 1 passed", "nochange": "true"}
+    assert not (stale["tmp"] / "work.bundle").exists()

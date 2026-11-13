@@ -126,7 +126,7 @@ def owner_review(state, sha=SHA, body="finding"):
 def round_data(reviews, ref="agent/issue-7", failing=(), red_answers=0):
     # The round step reads the check runs of the head sha too, so a red CI head can be
     # answered (failing = names of failed check runs). A green head by default.
-    return {"repos/o/r/pulls/12": {"head": {"ref": ref, "sha": SHA}},
+    return {"repos/o/r/pulls/12": {"state": "open", "head": {"ref": ref, "sha": SHA}},
             "repos/o/r/pulls/12/reviews?per_page=100": reviews,
             f"repos/o/r/commits/{SHA}/check-runs?per_page=100":
                 {"check_runs": [{"name": n, "status": "completed", "conclusion": "failure"}
@@ -254,6 +254,22 @@ def test_the_bots_latest_verdict_opens_the_round_and_a_comment_closes_nothing(tm
     assert out.endswith(f"go={go}\n")
     if go == "true":
         assert out.split("\n", 1)[1].startswith("Answer review round 1 on #12\n\nFrom nishfleet-approver:\nold finding\n")
+
+
+# A PR the queue merged seconds ago (fleet-ops#12008: runs 43432811785 and 43432818390,
+# 13:20, seconds after PR #11993 merged at 13:19:53) is closed: its branch is deleted, so
+# an answer would check out a head that no longer exists and the run would fail. A CI run
+# that finishes after the merge, or a late verdict on the merged PR, dispatches the hop
+# (answer.yml) just as before the merge; the closed PR is nothing to answer.
+# upstream: https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request
+def test_a_merged_pr_runs_nothing_even_with_an_open_change_request(tmp_path):
+    data = round_data([review("CHANGES_REQUESTED")])
+    data["repos/o/r/pulls/12"]["state"] = "closed"
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), data, ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert out == "ref=\ngo=false\n"  # the checkout stays on the default branch
+    assert proc.stdout.splitlines()[0] == "PR #12 is closed; nothing to answer"
+    assert calls == [["api", "repos/o/r/pulls/12", "--jq", "[.head.ref, .head.sha, .state] | @tsv"]]
 
 
 def test_a_pr_off_the_issues_branch_is_refused(tmp_path):

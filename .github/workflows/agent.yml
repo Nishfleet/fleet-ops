@@ -159,7 +159,20 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$PR" ]; then echo go=true >> "$GITHUB_OUTPUT"; exit 0; fi
-          read -r ref sha < <(gh api "repos/$REPO/pulls/$PR" --jq '[.head.ref, .head.sha] | @tsv')
+          read -r ref sha state < <(gh api "repos/$REPO/pulls/$PR" --jq '[.head.ref, .head.sha, .state] | @tsv')
+          # A PR that is not open was merged or rejected, and its branch is deleted, so an
+          # answer for it would check out and push a head that no longer exists and the run
+          # would fail (fleet-ops#12008: runs 43432811785 and 43432818390 failed so at 13:20,
+          # seconds after PR #11993 merged at 13:19:53). A CI run that finishes after the
+          # merge, or a late verdict on the merged PR, dispatches the hop (answer.yml) just
+          # as before the merge; a closed PR is nothing to answer, and an empty ref leaves
+          # the claim's checkout on the default branch.
+          # https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request
+          if [ "$state" != "open" ]; then
+            echo "PR #$PR is $state; nothing to answer"
+            echo "ref=" >> "$GITHUB_OUTPUT"
+            echo go=false >> "$GITHUB_OUTPUT"; exit 0
+          fi
           [ "$ref" = "agent/issue-$ISSUE" ] || { echo "::error::PR #$PR is on $ref, not agent/issue-$ISSUE"; exit 1; }
           gh api "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq '[.[] | select(.user.login == "nishfleet-approver" or .user.login == "nish3451")]' > "$RUNNER_TEMP/reviews.json"
           # A review round is a head that got a change request: the count is the distinct
@@ -341,7 +354,14 @@ jobs:
           git add -A
           git commit -qm "$(head -n1 "$RUNNER_TEMP/issue.md") (#$ISSUE)" || true
           echo "proof=$(grep -m1 '^run-proof: ' "$RUNNER_TEMP/run-proof.md" | tr -d '\r' || true)" >> "$GITHUB_OUTPUT"
-          if git diff --quiet "$BASE" HEAD; then echo "nochange=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # A worker that left nothing left no COMMIT on the branch, not merely an empty tree:
+          # the round-3 task tells it to "say in the commit message why a finding is wrong",
+          # and a zero-diff verdict commit is a delivered answer that must be bundled and
+          # pushed so the re-review starts. Reading the tree instead read verdict commits as
+          # "the worker changed nothing" and failed the run (fleet-ops#12008: four senior
+          # rounds failed so, 43392355592, 43473699162, 43482980042, 43486746199).
+          # https://git-scm.com/docs/git-rev-list
+          if [ "$(git rev-list --count "$BASE"..HEAD)" = 0 ]; then echo "nochange=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           git bundle create "$RUNNER_TEMP/work.bundle" "^$BASE" "agent/issue-$ISSUE"
       - if: steps.bundle.outputs.nochange != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
