@@ -407,6 +407,12 @@ def test_the_hop_refuses_a_branch_that_is_not_an_issue_number(tmp_path):
 
 
 def test_agent_yml_asks_no_more_than_the_product_stubs_grant():
+    # The ticket check (fleet-ops#11949, report only) is the one exception: its call needs
+    # contents: read to fetch the ticket and docs/review-bar.md, and issues: write to post
+    # the verdict as one comment on the ticket. A product stub that calls the lane grants
+    # the same on its calling job; until then the check fails red there and, report only,
+    # building carries on.
+    allowed = ({}, {"issues": "read"}, {"contents": "read", "issues": "write"})
     asked = [(name, job.get("permissions")) for name, job in WF["jobs"].items()
-             if job.get("permissions") not in ({}, {"issues": "read"})]
+             if job.get("permissions") not in allowed]
     assert asked == []
