@@ -75,9 +75,11 @@
   register: fleet_runner_env
   notify: Restart the agent runners
 
+# The pool's PATH names the home's tools folder; the pilot's (runner 22) is the root-owned
+# tools folder and the pinned Node instead, the same value its drop-in sets as PATH.
 - name: Give each runner fleet-runner's PATH
   ansible.builtin.copy:
-    content: "/var/lib/fleet-runner/.local/bin:/usr/local/bin:/usr/bin:/bin\n"
+    content: "{{ fleet_pilot_path if item == 22 else '/var/lib/fleet-runner/.local/bin:/usr/local/bin:/usr/bin:/bin' }}\n"
     dest: "/var/lib/fleet-runner/{{ item }}/.path"
     owner: fleet-runner
     group: fleet-runner
@@ -133,6 +135,87 @@
     creates: "/var/lib/fleet-runner/.local/lib/node_modules/@earendil-works/pi-coding-agent/package.json"
   environment:
     HOME: /var/lib/fleet-runner
+    PATH: "{{ tether_node_dir }}/bin:/usr/bin:/bin"
+
+# The pilot runner 22 gets its tools from one root-owned folder outside the pool's home
+# (fleet-runner@22.service.d/10-private-home.conf hides the home behind a tmpfs, so the
+# shared tools folder jobs once filled in ~/.local/bin is gone there, and a folder in
+# the home could not go on PATH anyway). Only what this repo's CI and the enrolled
+# repos' check commands call is installed: the pinned pip tools in a virtual environment,
+# the two vendor binaries beside it, and pi; npm, npx and node come from the pinned Node
+# above. Nothing else from the old shared folder is reinstalled: system ansible-playbook,
+# gh, jq and git already resolve, and no check command calls tofu, tincan, litellm, the
+# huggingface CLI, yt-dlp, mcp or the opentelemetry commands. A bump of any pin is a
+# reviewed PR that changes the version and the checksum together, as with Node above.
+- name: Create the pilot tools folder, root-owned
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ fleet_pilot_tools }}"
+    - "{{ fleet_pilot_tools }}/bin"
+
+- name: Install the pinned Python check tools for the pilot
+  ansible.builtin.pip:
+    name:
+      - ansible-lint==26.11.0
+      - black==26.10.1
+      - pytest==8.3.5
+      - ruff==0.17.3
+      - semgrep==1.183.0
+      - yamllint==1.38.0
+      - zizmor==1.32.0
+      - uv==0.13.7
+    virtualenv: "{{ fleet_pilot_tools }}/venv"
+    virtualenv_command: python3 -m venv
+
+# One binary, one tarball, the checksum of the vendor's actionlint_1.7.12_checksums.txt.
+- name: Download the pinned actionlint release
+  ansible.builtin.get_url:
+    url: https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+    dest: /var/cache/actionlint_1.7.12_linux_amd64.tar.gz
+    checksum: "sha256:8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the pinned actionlint for the pilot
+  ansible.builtin.unarchive:
+    src: /var/cache/actionlint_1.7.12_linux_amd64.tar.gz
+    dest: "{{ fleet_pilot_tools }}/bin"
+    remote_src: true
+    include: [actionlint]
+    owner: root
+    group: root
+    mode: "0755"
+    creates: "{{ fleet_pilot_tools }}/bin/actionlint"
+
+# One binary straight into the tools folder, the sha256 of the vendor's checksums file.
+- name: Install the pinned yq for the pilot
+  ansible.builtin.get_url:
+    url: https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+    dest: "{{ fleet_pilot_tools }}/bin/yq"
+    checksum: "sha256:a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Drop the actionlint download
+  ansible.builtin.file:
+    path: /var/cache/actionlint_1.7.12_linux_amd64.tar.gz
+    state: absent
+
+# The same pin as the pool install above; the launcher is a relative symlink beside the
+# package inside this folder, and node comes from the pinned Node's bin on the PATH.
+- name: Install pi into the pilot tools folder
+  ansible.builtin.command:
+    argv: ["{{ tether_node_dir }}/bin/npm", install, --global, --prefix, "{{ fleet_pilot_tools }}", "@earendil-works/pi-coding-agent@{{ fleet_runner_pi_version }}"]
+    creates: "{{ fleet_pilot_tools }}/lib/node_modules/@earendil-works/pi-coding-agent/package.json"
+  environment:
+    HOME: /root
     PATH: "{{ tether_node_dir }}/bin:/usr/bin:/bin"
 
 - name: Make fleet-runner's config directories
