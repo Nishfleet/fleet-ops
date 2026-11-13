@@ -238,15 +238,8 @@ def test_the_plain_case_without_a_merge_still_pushes(stale):
     assert head == tip
 
 
-ENV_KEYS = ("PATH", "REAL_PATH", "HOME", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0",
-            "GIT_CONFIG_VALUE_0", "GH_DATA", "GH_LOG", "RUNNER_TEMP", "REPO",
-            "GITHUB_REPOSITORY", "GITHUB_SERVER_URL", "GITHUB_RUN_ID", "ISSUE", "PR",
-            "MOVE_TO", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
-            "GIT_COMMITTER_EMAIL")
-
-
 @pytest.fixture
-def env(stale, tmp_path):
+def env(stale):
     """The claim job's env, with a fake `gh` on PATH, as run_pipeline's."""
     tmp = stale["tmp"]
     bin_dir = tmp / "bin"
@@ -287,6 +280,14 @@ def run_in(env, script, cwd, **extra):
 # commit is a delivered answer that bundles and pushes, and only a branch with no commit
 # at all is "the worker changed nothing".
 # https://git-scm.com/docs/git-rev-list
+#
+# Round 1 of review #12009 asked whether the claim step merges the default branch into
+# agent/issue-N after BASE is taken, which would make a worker-less branch non-empty. It
+# does not: the claim bundle step takes base= from the branch tip as the checkout left it,
+# before the worker runs, and never merges (a worker-less stale branch still ends as
+# nochange, the next test). The merge of the default branch is the worker's own action in
+# the work job, as the packet instructs, so a merge-only branch is a delivered answer that
+# bundles and pushes — the last test pins that.
 def test_a_verdict_commit_is_an_answer_the_bundle_pushes(stale, env):
     proc, claim = run_in(env, claim_bundle_step(), cwd=str(stale["src"]))
     assert proc.returncode == 0, proc.stderr
@@ -309,3 +310,18 @@ def test_a_worker_that_left_no_commit_is_still_nochange(stale, env):
     assert proc.returncode == 0, proc.stderr
     assert outputs == {"proof": "run-proof: pytest -> 1 passed", "nochange": "true"}
     assert not (stale["tmp"] / "work.bundle").exists()
+
+
+def test_a_merge_only_round_is_an_answer_the_bundle_pushes(stale, env):
+    """The worker merged the default branch as the packet says but added nothing else: the
+    merge commit is work the push repo lacks, so the branch bundles and pushes."""
+    proc, claim = run_in(env, claim_bundle_step(), cwd=str(stale["src"]))
+    assert proc.returncode == 0, proc.stderr
+    git("merge", "-q", "--no-edit", "origin/main", cwd=stale["src"])
+    proc, outputs = run_in(env, work_bundle_step(), cwd=stale["src"], dir=str(stale["src"]),
+                           BASE=claim["base"])
+    assert proc.returncode == 0, proc.stderr
+    assert outputs == {"proof": "run-proof: pytest -> 1 passed"}
+    heads = subprocess.run(["git", "bundle", "list-heads", str(stale["tmp"] / "work.bundle")],
+                           check=True, capture_output=True, text=True).stdout
+    assert "agent/issue-7" in heads
