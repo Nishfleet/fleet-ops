@@ -255,16 +255,16 @@ def test_a_green_head_without_a_change_request_still_runs_nothing(tmp_path):
 # One group holds the whole run, with a real queue: a second change request minutes after
 # the first starts a second run, which then waits for the first to push before its claim
 # bundles the head, so its push is not refused and the issue is not parked agent-blocked.
-# `queue: max` lets more than one run wait in the group, cancelling nothing pending, so a
-# run that skips in gate on the issue's other labels cannot cancel the waiting agent-ready
-# run as a pending twin.
+# Stock concurrency holds the queue by itself: with `cancel-in-progress: false` the group's
+# pending runs wait and nothing pending is cancelled, so a run that skips in gate on the
+# issue's other labels cannot cancel the waiting agent-ready run as a pending twin. (`queue`
+# is not a concurrency key; only `group` and `cancel-in-progress` exist.)
 # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
 # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
 def test_one_group_holds_the_whole_run_with_a_queue_and_nothing_pending_is_cancelled():
     assert WF["concurrency"] == {
         "group": "agent-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}",
         "cancel-in-progress": False,
-        "queue": "max",
     }
     assert "concurrency" not in WF["jobs"]["work"]
 
