@@ -185,6 +185,30 @@
     - Reload systemd
     - Restart the agent runners
 
+# Runner 22's just-in-time drop-in (fleet-ops#11960). A drop-in that changes how the unit
+# starts takes effect only at a restart, so its own copy notifies the restart of runner 22
+# alone (handlers: ansible/host.yml). Taking it out is a revert plus a `retired` entry, which
+# restarts nothing: the PR that does it says to restart the unit (docs/design/ephemeral-runners.md).
+- name: Make the folder for runner 22's just-in-time drop-in
+  ansible.builtin.file:
+    path: /etc/systemd/system/fleet-runner@22.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install runner 22's just-in-time drop-in
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/system/fleet-runner@22.service.d/10-jit.conf"
+    dest: /etc/systemd/system/fleet-runner@22.service.d/10-jit.conf
+    owner: root
+    group: root
+    mode: preserve
+  register: fleet_runner_jit
+  notify:
+    - Reload systemd
+    - Restart the agent runners
+
 - name: Install the review runner unit
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/systemd/system/fleet-reviewer-runner@.service"
