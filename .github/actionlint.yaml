@@ -4,3 +4,10 @@ self-hosted-runner:
     - agent
     - fleet-ci
     - reviewer
+paths:
+  .github/workflows/agent.yml:
+    ignore:
+      # `queue` is a real GitHub key (workflow syntax, "concurrency"), but actionlint
+      # 1.7.12 does not know it: rhysd/actionlint#654 and #657. The key stays; only this
+      # one message is silenced, and this entry goes when a release knows the key.
+      - 'unexpected key "queue" for "concurrency" section'

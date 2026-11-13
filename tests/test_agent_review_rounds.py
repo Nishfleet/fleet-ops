@@ -4,6 +4,10 @@ and obeys the pause.
 global-standing-rules.md: the builder answers each finding, the same reviewer signs off, a
 finding it keeps open goes to the owner, hard cap 3 review rounds per PR. While
 FLEET_DISPATCH_PAUSED is true only gardener and alert issues run (owner, 2026-11-04).
+What is open on the PR is each reviewer's latest review that is a verdict at all —
+APPROVED, CHANGES_REQUESTED or DISMISSED, the rule branch protection uses; a comment review
+is not a verdict — and it is open while it asks for changes. A round is a distinct change
+request head, so the bot and the owner asking on one head count once (fleet-ops#11987).
 The steps run here as written in agent.yml, under bash, with a fake `gh` that answers from
 canned REST data and logs every call.
 https://docs.github.com/en/rest/pulls/reviews#list-reviews-for-a-pull-request
@@ -77,7 +81,28 @@ def test_a_review_round_passes_the_same_gate():
     assert WF["jobs"]["claim"]["needs"] == "gate"
 
 
-SHA, OLD = "a" * 40, "b" * 40
+# fleet-ops#11987: the group holds the whole run, so a run that queues behind another
+# reads the branch head only after the previous run's push instead of bundling a head
+# that run is about to replace; `queue: max` keeps a run that skips on the issue's other
+# labels from replacing a pending one.
+def test_one_group_holds_the_whole_run():
+    assert WF["concurrency"] == {
+        "group": "agent-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}",
+        "cancel-in-progress": False,
+        "queue": "max",
+    }
+    assert "concurrency" not in WF["jobs"]["work"]
+
+
+# The key is GitHub's (workflow syntax, "concurrency"); actionlint 1.7.12 does not know it
+# (rhysd/actionlint#654, #657), so the ignore stays this one message, on this one file.
+def test_actionlint_ignores_only_the_real_queue_key():
+    cfg = yaml.safe_load((ROOT / ".github/actionlint.yaml").read_text())
+    assert cfg["paths"][".github/workflows/agent.yml"]["ignore"] == \
+        ['unexpected key "queue" for "concurrency" section']
+
+
+SHA, OLD, OLDER = "a" * 40, "b" * 40, "c" * 40
 
 
 def review(state, sha=SHA, body="finding", user="nishfleet-approver", association=None):
@@ -110,25 +135,54 @@ def labelled(calls):
     return [c for c in calls if c[:2] == ["api", "repos/o/r/issues/12/labels"]]
 
 
-def test_round_one_and_two_run_the_worker_on_that_review_only(tmp_path):
+def test_the_bots_latest_verdict_runs_on_that_verdict_only(tmp_path):
+    # The bot's latest look is the change request on this head, so the older one is
+    # superseded; a stranger's comment review never reaches the step at all, because the
+    # API call keeps only the bot and the owner.
     reviews = [review("CHANGES_REQUESTED", OLD, "old finding"), review("COMMENTED", OLD, "stranger", user="someone"),
                review("CHANGES_REQUESTED", body="fix the gate")]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert "go=true" in out and "ref=agent/issue-7" in out
     task = out.split("\n", 1)[1]
-    assert task.startswith("Answer review round 2 on #12\n\nfix the gate\n")
+    assert task.startswith("Answer review round 2 on #12\n\nFrom nishfleet-approver:\nfix the gate\n")
     assert "old finding" not in out and "stranger" not in out
     assert labelled(calls) == []
 
 
-def test_an_owners_change_request_runs_the_worker_on_the_owners_text(tmp_path):
+def test_the_owner_alone_runs_the_worker_on_the_owners_text(tmp_path):
     reviews = [review("APPROVED", OLD), owner_review("CHANGES_REQUESTED", body="set the limit to 30 per 5 minutes")]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert "go=true" in out and "ref=agent/issue-7" in out
     task = out.split("\n", 1)[1]
-    assert task.startswith("Answer review round 1 on #12\n\nset the limit to 30 per 5 minutes\n")
+    assert task.startswith("Answer review round 1 on #12\n\nFrom nish3451:\nset the limit to 30 per 5 minutes\n")
+    assert labelled(calls) == []
+
+
+def test_the_bot_and_the_owner_on_one_head_count_once_and_both_findings_run(tmp_path):
+    reviews = [review("CHANGES_REQUESTED", body="fix the gate"),
+               owner_review("CHANGES_REQUESTED", body="set the limit to 30 per 5 minutes")]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    task = out.split("\n", 1)[1]
+    # One head, one round; the task carries every open change request, each under the
+    # reviewer's login (fleet-ops#11987).
+    assert task.startswith("Answer review round 1 on #12\n\nFrom nish3451:\nset the limit to 30 per 5 minutes\n\n"
+                           "From nishfleet-approver:\nfix the gate\n")
+    assert labelled(calls) == []
+
+
+def test_the_owners_request_on_an_older_head_runs_next_to_the_bots_on_this_head(tmp_path):
+    reviews = [owner_review("CHANGES_REQUESTED", OLD, "old finding"), review("CHANGES_REQUESTED", body="fix the gate")]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert "go=true" in out and "ref=agent/issue-7" in out
+    task = out.split("\n", 1)[1]
+    # Two heads, two rounds: the owner's request on the old head is still open next to the
+    # bot's on this one, because each reviewer's latest verdict is what counts.
+    assert task.startswith("Answer review round 2 on #12\n\nFrom nish3451:\nold finding\n\n"
+                           "From nishfleet-approver:\nfix the gate\n")
     assert labelled(calls) == []
 
 
@@ -136,19 +190,39 @@ def test_an_owners_change_request_runs_the_worker_on_the_owners_text(tmp_path):
     review("CHANGES_REQUESTED"),
     owner_review("CHANGES_REQUESTED"),
 ], ids=("bot", "owner"))
-def test_round_three_goes_to_the_owner_instead_of_running(tmp_path, last):
-    reviews = [review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD), last]
+def test_three_change_request_heads_go_to_the_owner_instead_of_running(tmp_path, last):
+    reviews = [review("CHANGES_REQUESTED", OLDER, "first"), review("CHANGES_REQUESTED", OLD, "second"), last]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert out == "go=false\n"
     assert labelled(calls) == [["api", "repos/o/r/issues/12/labels", "-f", "labels[]=needs-owner"]]
 
 
-@pytest.mark.parametrize("last", [review("APPROVED"), review("CHANGES_REQUESTED", OLD), review("COMMENTED")])
-def test_no_run_unless_the_bots_last_review_requests_changes_on_the_head(tmp_path, last):
-    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data([review("CHANGES_REQUESTED", OLD), last]), ISSUE="7", PR="12")
+def test_change_requests_from_both_on_two_heads_leave_a_third_round_of_room(tmp_path):
+    # The bot and the owner on one head count once, so four change-request reviews are
+    # still only two rounds (fleet-ops#11987).
+    reviews = [review("CHANGES_REQUESTED", OLD, "old"), owner_review("CHANGES_REQUESTED", OLD, "old"),
+               review("CHANGES_REQUESTED", body="new"), owner_review("CHANGES_REQUESTED", body="new")]
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
-    assert out == "go=false\n" and labelled(calls) == []
+    assert "go=true" in out and "Answer review round 2 on #12" in out
+    assert labelled(calls) == []
+
+
+@pytest.mark.parametrize(("last", "go"), [
+    (review("APPROVED"), "false"),
+    (review("DISMISSED"), "false"),
+    (review("COMMENTED"), "true"),
+], ids=("approved", "dismissed", "commented"))
+def test_the_bots_latest_verdict_opens_the_round_and_a_comment_closes_nothing(tmp_path, last, go):
+    # The rule branch protection uses: a comment review is not a verdict, so a comment
+    # after a change request leaves it open; an approval or a dismissal closes it.
+    proc, out, _ = run_step(tmp_path, step("claim", "round"), round_data([review("CHANGES_REQUESTED", OLD, "old finding"), last]),
+                            ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert out.endswith(f"go={go}\n")
+    if go == "true":
+        assert out.split("\n", 1)[1].startswith("Answer review round 1 on #12\n\nFrom nishfleet-approver:\nold finding\n")
 
 
 def test_a_pr_off_the_issues_branch_is_refused(tmp_path):
@@ -171,6 +245,8 @@ def test_a_red_head_with_a_stale_change_request_still_runs_the_worker(tmp_path):
     task = out.split("\n", 1)[1]
     assert task.startswith(f"The CI on #12 is red on {SHA}; the failed jobs are: ci")
     assert "run-proof" in task
+    # The open change request rides along with the red CI: the worker answers both.
+    assert "From nishfleet-approver:\nfinding" in task
     assert RED_COMMENT in calls
     assert labelled(calls) == []
 
@@ -181,8 +257,8 @@ def test_a_red_head_on_a_fresh_pr_runs_too(tmp_path):
     assert out.endswith("go=true\n") and RED_COMMENT in calls and labelled(calls) == []
 
 
-def test_a_third_red_answer_after_the_change_requests_goes_to_the_owner(tmp_path):
-    reviews = [review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD), review("CHANGES_REQUESTED", OLD)]
+def test_a_red_head_after_two_change_request_heads_goes_to_the_owner(tmp_path):
+    reviews = [review("CHANGES_REQUESTED", OLDER, "first"), review("CHANGES_REQUESTED", OLD, "second")]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews, failing=("ci",)), ISSUE="7", PR="12")
     assert proc.returncode == 0 and out == "go=false\n"
     assert labelled(calls) == [["api", "repos/o/r/issues/12/labels", "-f", "labels[]=needs-owner"]]
