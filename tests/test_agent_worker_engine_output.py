@@ -102,6 +102,21 @@ def test_an_engine_that_prints_a_verdict_passes_the_step(work, engine):
     assert "changed the gate" in proc.stdout
 
 
+def test_a_worker_commit_carries_the_lane_identity(work):
+    # fleet-ops#11978: no pool runner has a git identity, so a worker's own `git commit`
+    # used to fail and the fallback commit carried the identity by hand. The Worker step
+    # now exports the lane's GIT_AUTHOR_* and GIT_COMMITTER_* before the engine runs, for
+    # both engines: a stub engine that runs a plain `git commit`, with no -c pairs and no
+    # repo config, succeeds and the commit's author and committer are the lane identity.
+    # https://git-scm.com/docs/git-commit
+    proc = run_worker(work, "pi", stubs={"pi": "git commit -q --allow-empty -m w\necho verdict"})
+    assert proc.returncode == 0, proc.stderr
+    who = subprocess.run(["git", "log", "-1", "--format=%an <%ae> %cn <%ce>"], cwd=work / "work",
+                         check=True, capture_output=True, text=True).stdout.strip()
+    assert who == ("nishfleet-worker <nishfleet-worker@users.noreply.github.com> "
+                   "nishfleet-worker <nishfleet-worker@users.noreply.github.com>")
+
+
 @pytest.mark.parametrize("engine", ["claude", "pi"])
 def test_an_engine_that_prints_then_exits_nonzero_fails_the_step(work, engine):
     proc = run_worker(work, engine, "printf 'partial verdict\\n'\nexit 1")
