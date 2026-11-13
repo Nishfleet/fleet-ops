@@ -150,6 +150,10 @@ jobs:
       # branch protection uses), and it is open while it asks for changes. The task
       # carries every open change request, each under a "From <login>:" line. This step
       # always runs, so `go` is always one step output; an issue run is always a go.
+      # A merged PR runs nothing (fleet-ops#12000, runs 505/548/549): the merge deleted its
+      # head branch, so the checkout and the push below both fail on it, and a change
+      # request a review left on it rides in with the merge. The answer to a finding on a
+      # merged PR is a new issue, not a push to a branch that no longer exists.
       # https://docs.github.com/en/rest/pulls/reviews#list-reviews-for-a-pull-request
       # https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
       - name: Read the review or the red CI
@@ -158,8 +162,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$PR" ]; then echo go=true >> "$GITHUB_OUTPUT"; exit 0; fi
-          read -r ref sha < <(gh api "repos/$REPO/pulls/$PR" --jq '[.head.ref, .head.sha] | @tsv')
+          read -r ref sha merged < <(gh api "repos/$REPO/pulls/$PR" --jq '[.head.ref, .head.sha, .merged] | @tsv')
           [ "$ref" = "agent/issue-$ISSUE" ] || { echo "::error::PR #$PR is on $ref, not agent/issue-$ISSUE"; exit 1; }
+          # The merged flag arrives with the ref, in the same call; a merged PR's state
+          # stays "closed" (github.com/docs/rest/pulls), so read the boolean. A stale
+          # dispatch on a PR the merge queue closed minutes ago goes out quietly, with no
+          # checkout to fail.
+          [ "$merged" = true ] && { echo "PR #$PR is merged; its branch is gone, nothing to answer"; echo go=false >> "$GITHUB_OUTPUT"; exit 0; }
           gh api "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq '[.[] | select(.user.login == "nishfleet-approver" or .user.login == "nish3451")]' > "$RUNNER_TEMP/reviews.json"
           # A review round is a head that got a change request: the count is the distinct
           # commit_id among all change-request reviews from the bot or the owner, so the
