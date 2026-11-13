@@ -12,7 +12,7 @@ import os
 import subprocess
 
 import pytest
-from test_agent_review_rounds import FAKE_GH, push_step
+from test_agent_review_rounds import FAKE_GH, WF, push_step, run_step
 
 BRANCH = "refs/heads/agent/issue-7"
 OPEN = "repos/o/r/pulls?head=o:agent/issue-7&state=open"
@@ -102,3 +102,24 @@ def test_a_first_run_creates_the_branch(lane):
     proc, head = push(lane, [])
     assert proc.returncode == 0, proc.stderr
     assert head == lane["new"]
+
+
+def claim_step():
+    return next(s for s in WF["jobs"]["claim"]["steps"] if s.get("id") == "claim")["run"]
+
+
+PULLS = "repos/o/r/pulls?head=o:agent/issue-7&state=open"
+EDIT = ["issue", "edit", "7", "-R", "o/r", "--remove-label", "agent-ready", "--add-label", "agent-in-progress"]
+
+
+def test_the_claim_stops_before_the_label_swap_when_an_open_pr_uses_the_branch(tmp_path):
+    proc, _, calls = run_step(tmp_path, claim_step(), {PULLS: [{"number": 12}]}, ISSUE="7")
+    assert proc.returncode != 0
+    assert calls == [["api", PULLS, "--jq", "length"]]
+
+
+def test_the_claim_labels_the_ticket_only_after_the_guard_clears(tmp_path):
+    proc, _, calls = run_step(tmp_path, claim_step(), {PULLS: []}, ISSUE="7")
+    assert proc.returncode == 0, proc.stderr
+    assert calls[0] == ["api", PULLS, "--jq", "length"]
+    assert calls[1] == EDIT
