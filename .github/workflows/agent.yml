@@ -101,6 +101,7 @@ jobs:
       base: ${{ steps.repo.outputs.base }}
       default: ${{ steps.repo.outputs.default }}
       go: ${{ steps.round.outputs.go }}
+      engine: ${{ steps.round.outputs.engine }}
     steps:
       - name: App token
         id: app-token
@@ -166,10 +167,11 @@ jobs:
           # bot and the owner asking on one head count once (fleet-ops#11987). A red head
           # cannot get the bot's, the reviewer reads green CI only (review.yml), so the
           # lane answers a failure the checks report on this sha instead: a check run with
-          # conclusion "failure" names the dead job. All rounds ride the same cap of 3:
-          # each distinct change-request head, each "answering red CI" comment this step
-          # left on the PR, and this red head itself count one round, so the third labels
-          # the PR needs-owner and runs nothing.
+          # conclusion "failure" names the dead job. All rounds ride the same cap of 3
+          # answered rounds: each distinct change-request head, each "answering red CI"
+          # comment this step left on the PR, and this red head itself count one round;
+          # rounds 1 and 2 go to the regular builder, round 3 to the senior builder, and
+          # a fourth labels the PR needs-owner and runs nothing.
           # https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
           # https://docs.github.com/en/rest/issues/comments#list-issue-comments
           rounds=$(jq '[.[] | select(.state == "CHANGES_REQUESTED") | .commit_id] | unique | length' "$RUNNER_TEMP/reviews.json")
@@ -185,19 +187,35 @@ jobs:
           if [ -z "$failing" ] && [ "$(jq 'length' "$RUNNER_TEMP/open.json")" = 0 ]; then
             echo "no open change request from the bot or the owner and the checks on $sha are green; nothing to answer"; echo go=false >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if [ "$rounds" -ge 3 ]; then
+          if [ "$rounds" -ge 4 ]; then
             gh api "repos/$REPO/issues/$PR/labels" -f 'labels[]=needs-owner' > /dev/null
-            gh api "repos/$REPO/issues/$PR/comments" -f body="agent: review round $rounds still asks for changes; the cap is 3 rounds, so the owner decides." > /dev/null
+            gh api "repos/$REPO/issues/$PR/comments" -f body="agent: review round $rounds still asks for changes; three rounds were answered, the third by the senior builder, so the owner decides." > /dev/null
             echo go=false >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # The third answered round goes to the senior builder (fleet-ops#11964, owner
+          # 2026-11-13): the work job reads engine=claude and lands on the Claude pool's
+          # `senior` runner. The comment marks the round, so review.yml hands the
+          # re-review to review-fable.
+          senior=''
+          if [ "$rounds" -eq 3 ]; then
+            echo "engine=claude" >> "$GITHUB_OUTPUT"
+            senior=1
+            gh api "repos/$REPO/issues/$PR/comments" -f body="agent: senior builder takes round 3: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
           fi
           if [ -n "$failing" ]; then
             gh api "repos/$REPO/issues/$PR/comments" -f body="agent: answering red CI on $sha ($failing): $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
             eof="RED_$(openssl rand -hex 16)"
-            { echo "task<<$eof"; echo "The CI on #$PR is red on $sha; the failed jobs are: $failing. Fix the failures with the smallest change on this same branch and leave the run-proof line the prompt asks for."; if [ -n "$findings" ]; then echo; echo "$findings"; fi; echo "$eof"; echo "ref=$ref"; echo go=true; } >> "$GITHUB_OUTPUT"; exit 0
+            { echo "task<<$eof"
+              if [ "$senior" ]; then echo "Two earlier answers did not close this. Fix every open finding below, or say in the commit message why a finding is wrong."; echo; fi
+              echo "The CI on #$PR is red on $sha; the failed jobs are: $failing. Fix the failures with the smallest change on this same branch and leave the run-proof line the prompt asks for."
+              if [ -n "$findings" ]; then echo; echo "$findings"; fi
+              echo "$eof"; echo "ref=$ref"; echo go=true; } >> "$GITHUB_OUTPUT"; exit 0
           fi
           gh api "repos/$REPO/issues/$PR/comments" -f body="agent: answering review round $rounds: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
           eof="REVIEW_$(openssl rand -hex 16)"
-          { echo "task<<$eof"; echo "Answer review round $rounds on #$PR"; echo; echo "$findings"; echo "$eof"; echo "ref=$ref"; echo go=true; } >> "$GITHUB_OUTPUT"
+          { echo "task<<$eof"
+            if [ "$senior" ]; then echo "Two earlier answers did not close this. Fix every open finding below, or say in the commit message why a finding is wrong."; echo; fi
+            echo "Answer review round $rounds on #$PR"; echo; echo "$findings"; echo "$eof"; echo "ref=$ref"; echo go=true; } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
@@ -229,15 +247,18 @@ jobs:
     needs: claim
     if: needs.claim.outputs.go == 'true'
     # engine=claude goes to the Claude pool's `senior` label (tasks/runners.yml), everything else to `agent`.
+    # A senior round sets engine in the claim job (fleet-ops#11964), so a dispatched
+    # engine=claude and a senior round both land here.
     # https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/using-labels-with-self-hosted-runners
-    runs-on: [self-hosted, "${{ inputs.engine == 'claude' && 'senior' || 'agent' }}"]
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability
+    runs-on: [self-hosted, "${{ (needs.claim.outputs.engine || inputs.engine) == 'claude' && 'senior' || 'agent' }}"]
     timeout-minutes: 90
     permissions: {}
     outputs:
       nochange: ${{ steps.bundle.outputs.nochange }}
       proof: ${{ steps.bundle.outputs.proof }}
     env:
-      ENGINE: ${{ inputs.engine || 'pi' }}
+      ENGINE: ${{ needs.claim.outputs.engine || inputs.engine || 'pi' }}
       BASE: ${{ needs.claim.outputs.base }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

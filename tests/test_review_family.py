@@ -38,7 +38,8 @@ elif any("/activity" in a for a in args):
 elif os.environ.get("GH_FAIL") and any("github.diff" in a for a in args):
     sys.exit(1)
 elif args[:2] == ["pr", "view"]:
-    data = {"title": "t", "body": "b", "author": {"login": "a"}, "reviews": [], "comments": []}
+    data = {"title": "t", "body": "b", "author": {"login": "a"}, "reviews": [],
+            "comments": json.loads(os.environ.get("COMMENTS", "[]"))}
 else:
     print("diff or bar"); sys.exit(0)
 out = json.dumps(data)
@@ -80,6 +81,17 @@ def reviewer(tmp_path, branch, pushes=(), runs=()):
     outcome, called, out = run_job(tmp_path, branch, pushes, runs)
     assert outcome == "success" and "VERDICT: APPROVE" in out
     return called[0].removeprefix("litellm/")
+
+
+def test_the_senior_round_goes_to_fable(tmp_path):
+    # fleet-ops#11964: the lane's "agent: senior builder" comment marks round 3, and the
+    # owner (2026-11-13: "fable 5.2 will review it") sends it to review-fable, whatever
+    # engine pushed the head. The run name still says engine=pi there, so the comment is
+    # what the step reads.
+    outcome, called, out = run_job(tmp_path, "agent/issue-7", [push()], [(7, "pi")],
+                                   COMMENTS=json.dumps([{"body": "agent: senior builder takes round 3: x"}]))
+    assert outcome == "success" and called == ["litellm/review-fable"]
+    assert "Review (review-fable," in out and "VERDICT: APPROVE" in out
 
 
 def test_a_lane_head_from_a_pi_run_goes_to_claude(tmp_path):
