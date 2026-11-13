@@ -1,0 +1,45 @@
+# One Claude engine runner (instance = runner number; label `senior`) as the unprivileged
+# user fleet-claude, per GitHub's "Hardening for self-hosted runners" and the runner's own
+# service template (actions/runner src/Misc/layoutbin/actions.runner.service.template).
+# It runs only fleet-ops agent.yml `engine=claude` runs: the work job's runs-on picks the
+# senior label from the engine. fleet-claude shares no user or group with fleet-runner or
+# nish, so the two Team seat tokens in its home are readable by no job on another pool:
+# ProtectHome= hides /home (nish, the App key) and InaccessiblePaths= hides the worker
+# lane's shared home from this pool's jobs, as the review pool's unit does in reverse
+# (systemd.exec(5)). The unit's PATH names no job-writable folder: every entry is a
+# root-owned system directory, so nothing a job writes is ever searched by the runner
+# itself; the job's own PATH comes from the runner's .path file (ansible/tasks/runners.yml).
+# Installed by ansible/tasks/runners.yml. Registration is one `config.sh` as fleet-claude
+# with an org registration token, and the unit waits for its .runner file, as the review
+# runner's unit does.
+[Unit]
+Description=GitHub Actions runner netcup-claude-%i (fleet-claude)
+After=network-online.target
+Wants=network-online.target
+# Starts once `config.sh` has registered it; until then the start is skipped, not failed.
+ConditionPathExists=/var/lib/fleet-claude/%i/.runner
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+User=fleet-claude
+Group=fleet-claude
+WorkingDirectory=/var/lib/fleet-claude/%i
+Environment=HOME=/var/lib/fleet-claude
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/var/lib/fleet-claude/%i/bin/runsvc.sh
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=5min
+Restart=on-failure
+RestartSec=30s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+InaccessiblePaths=-/var/lib/fleet-runner
+UMask=0077
+Slice=agent.slice
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

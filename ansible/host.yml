@@ -35,6 +35,16 @@
     fleet_reviewer_runner_sha256: baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
     # netcup-reviewer-1 to 3, so reviews of different pull requests run side by side.
     fleet_reviewer_runner_ids: [1, 2, 3]
+    # The Claude engine pool (tasks/runners.yml): netcup-claude-1 to 2, label senior, so
+    # engine=claude runs go side by side as their own user fleet-claude. Registration is one
+    # config.sh as fleet-claude per runner with the senior label, by the lead, after the
+    # merge, the way the review pool's was (fleet-ops#11958).
+    fleet_claude_runner_ids: [1, 2]
+    # The npm distribution of Claude Code for the senior runners (tasks/runners.yml), pinned
+    # like pi: one exact version, bumped by a reviewed PR. The lane's two one-year Team seat
+    # tokens cover the npm rate (fleet-ops#11958).
+    # https://www.npmjs.com/package/@anthropic-ai/claude-code
+    fleet_claude_code_version: 2.1.323
     # The two router instances' loopback ports, behind HAProxy on 127.0.0.1:4000
     # (containers/quadlet/fleet-litellm-proxy@.container, rootfs/etc/haproxy/haproxy.cfg).
     litellm_proxy_ports: [4001, 4002]
@@ -295,6 +305,18 @@
         or (fleet_reviewer_env.results | default([])
             | selectattr('item', 'equalto', item) | selectattr('changed') | list | length > 0)
         or (fleet_reviewer_path.results | default([])
+            | selectattr('item', 'equalto', item) | selectattr('changed') | list | length > 0)
+
+    - name: Restart the Claude runners
+      ansible.builtin.systemd_service:
+        name: "fleet-claude-runner@{{ item }}.service"
+        state: restarted
+      loop: "{{ fleet_claude_runner_ids }}"
+      when: >-
+        fleet_claude_unit.changed | default(false)
+        or (fleet_claude_env.results | default([])
+            | selectattr('item', 'equalto', item) | selectattr('changed') | list | length > 0)
+        or (fleet_claude_path.results | default([])
             | selectattr('item', 'equalto', item) | selectattr('changed') | list | length > 0)
 
     # The Hermes units restart from tasks/services.yml, not from a handler: the

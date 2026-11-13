@@ -24,6 +24,9 @@ def jobs():
 def on_agent_runners(job) -> bool:
     labels = job.get("runs-on")
     labels = labels.get("labels", []) if isinstance(labels, dict) else labels
+    # agent.yml's work job picks its label from the engine input (fleet-ops#11958): the
+    # expression still names the shared pool (`agent`) it falls back to, so the job stays
+    # covered here instead of slipping out through a literal-only match.
     return "agent" in ([labels] if isinstance(labels, str) else labels or [])
 
 
