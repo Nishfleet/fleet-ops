@@ -12,6 +12,9 @@ What is open on the PR is each reviewer's latest review that is a verdict at all
 APPROVED, CHANGES_REQUESTED or DISMISSED, the rule branch protection uses; a comment review
 is not a verdict — and it is open while it asks for changes. A round is a distinct change
 request head, so the bot and the owner asking on one head count once (fleet-ops#11987).
+An answer whose PR's head branch is gone (the merge queue merged the PR mid-flight,
+fleet-ops#12020) stands down green before checkout, because checkout cannot fetch a
+deleted branch and an unguarded failure parks the issue and retries into the same wall.
 The steps run here as written in agent.yml, under bash, with a fake `gh` that answers from
 canned REST data and logs every call.
 https://docs.github.com/en/rest/pulls/reviews#list-reviews-for-a-pull-request
@@ -125,8 +128,11 @@ def owner_review(state, sha=SHA, body="finding"):
 
 def round_data(reviews, ref="agent/issue-7", failing=(), red_answers=0):
     # The round step reads the check runs of the head sha too, so a red CI head can be
-    # answered (failing = names of failed check runs). A green head by default.
+    # answered (failing = names of failed check runs). A green head by default. The head
+    # branch exists, because the round step checks it before checkout (fleet-ops#12020);
+    # a missing key reads as a deleted branch, which is the stand-down test below.
     return {"repos/o/r/pulls/12": {"head": {"ref": ref, "sha": SHA}},
+            f"repos/o/r/git/ref/heads/{ref}": {"ref": f"refs/heads/{ref}"},
             "repos/o/r/pulls/12/reviews?per_page=100": reviews,
             f"repos/o/r/commits/{SHA}/check-runs?per_page=100":
                 {"check_runs": [{"name": n, "status": "completed", "conclusion": "failure"}
@@ -259,6 +265,26 @@ def test_the_bots_latest_verdict_opens_the_round_and_a_comment_closes_nothing(tm
 def test_a_pr_off_the_issues_branch_is_refused(tmp_path):
     proc, _, _ = run_step(tmp_path, step("claim", "round"), round_data([review("CHANGES_REQUESTED")], ref="feature"), ISSUE="7", PR="12")
     assert proc.returncode != 0
+
+
+GONE_COMMENT = ["api", "repos/o/r/issues/12/comments", "-f",
+                "body=agent: the head branch agent/issue-7 is gone (the PR merged or was closed); "
+                "nothing to answer: https://github.com/o/r/actions/runs/1"]
+
+
+def test_an_answer_for_a_merged_prs_deleted_branch_stands_down(tmp_path):
+    # fleet-ops#12020: a change request delivered as the merge queue merges the PR (branch
+    # auto-deleted) leaves the answer run nothing to fetch; the run stands down green with
+    # a note on the PR instead of failing checkout and parking the issue.
+    data = round_data([review("CHANGES_REQUESTED", body="fix the gate")])
+    del data["repos/o/r/git/ref/heads/agent/issue-7"]  # the ref API 404s: the branch is gone
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), data, ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert out == "go=false\n"
+    assert GONE_COMMENT in calls
+    # The guard precedes the round logic: no round comment, no senior hand-off, no label.
+    assert not any("answering review round" in " ".join(c) for c in calls)
+    assert not senior_comment(calls) and labelled(calls) == []
 
 
 # A red head can never carry the bot's change request (the reviewer reads green CI only), so

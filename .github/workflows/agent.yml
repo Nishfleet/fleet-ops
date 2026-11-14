@@ -161,6 +161,22 @@ jobs:
           if [ -z "$PR" ]; then echo go=true >> "$GITHUB_OUTPUT"; exit 0; fi
           read -r ref sha < <(gh api "repos/$REPO/pulls/$PR" --jq '[.head.ref, .head.sha] | @tsv')
           [ "$ref" = "agent/issue-$ISSUE" ] || { echo "::error::PR #$PR is on $ref, not agent/issue-$ISSUE"; exit 1; }
+          # The dispatch this run answers can arrive after the merge queue merged the PR and
+          # its branch was deleted: the PR record still names the head ref, so the round reads
+          # a change request or red CI from before the merge, but checkout cannot fetch the
+          # branch, and an unguarded failure parks the issue and invites a retry that fails
+          # the same way (fleet-ops#12020, 2026-11-13: two dispatches for merged PR #11993
+          # failed a minute apart, "A branch or tag with the name 'agent/issue-11987' could
+          # not be found", and the pair pushed the failure share past 2% for two days). The
+          # merge already landed, so there is nothing to answer: stand down green. The git
+          # refs endpoints take a slash-bearing ref in the path (the docs example itself is
+          # heads/featureA); the branches endpoint does not — GET branches/agent/issue-12020
+          # returned 404 on 2026-11-14 for a branch git ls-remote showed on the repo.
+          # https://docs.github.com/en/rest/git/refs#get-a-reference
+          if ! gh api "repos/$REPO/git/ref/heads/$ref" --jq .ref > /dev/null 2>&1; then
+            gh api "repos/$REPO/issues/$PR/comments" -f body="agent: the head branch $ref is gone (the PR merged or was closed); nothing to answer: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
+            echo go=false >> "$GITHUB_OUTPUT"; exit 0
+          fi
           gh api "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq '[.[] | select(.user.login == "nishfleet-approver" or .user.login == "nish3451")]' > "$RUNNER_TEMP/reviews.json"
           # A review round is a head that got a change request: the count is the distinct
           # commit_id among all change-request reviews from the bot or the owner, so the
