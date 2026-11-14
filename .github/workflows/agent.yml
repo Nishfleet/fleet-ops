@@ -293,7 +293,7 @@ jobs:
           # https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/keeping-your-pull-request-in-sync-with-the-base-branch
           # https://git-scm.com/docs/git-merge
           merge_conflicts=''
-          if [ -n "$PR" ] && ! git merge-base --is-ancestor "origin/$DEFAULT_BRANCH" HEAD; then
+          if [ -n "${PR:-}" ] && ! git merge-base --is-ancestor "origin/$DEFAULT_BRANCH" HEAD; then
             git merge --no-edit "origin/$DEFAULT_BRANCH" || merge_conflicts=$(git diff --name-only --diff-filter=U)
           fi
           printf '%s\n' "$ISSUE_TEXT" > "$RUNNER_TEMP/issue.md"
