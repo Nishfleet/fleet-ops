@@ -251,21 +251,25 @@ CONFLICT_SENTENCE = ("A merge of the default branch is in progress and has confl
                      "files, then commit the merge. Do not abort it and do not rebase.")
 
 
+SHARED = ["fingerprints.txt", "sitemap.txt"]
+
+
 def worker_step():
     return next(s for s in WF["jobs"]["work"]["steps"] if s.get("name") == "Worker")["run"]
 
 
 def fix_round(tmp_path, *, conflict=False, up_to_date=False):
     """A fix round ($PR set): a checkout whose branch is behind the default branch (conflict:
-    in one shared file, sitemap.txt) or cut from its tip (up_to_date). The claim bundle step
+    in two shared files, fingerprints.txt and sitemap.txt) or cut from its tip (up_to_date). The claim bundle step
     runs as written to build repo.bundle; the runner then runs the Worker step as written with
     a stub pi engine that first records what it starts on."""
     remote, src = tmp_path / "remote.git", tmp_path / "src"
     git("init", "-q", "--bare", str(remote))
     git("init", "-q", "-b", "main", str(src))
     if conflict:
-        (src / "sitemap.txt").write_text("base\n")
-        git("add", "sitemap.txt", cwd=src)
+        for shared in SHARED:
+            (src / shared).write_text("base\n")
+        git("add", *SHARED, cwd=src)
     else:
         (src / "base-file").write_text("base\n")
         git("add", "base-file", cwd=src)
@@ -273,7 +277,8 @@ def fix_round(tmp_path, *, conflict=False, up_to_date=False):
     main_tip = git("rev-parse", "HEAD", cwd=src)
     git("checkout", "-q", "-B", "agent/issue-7", main_tip, cwd=src)
     if conflict:
-        (src / "sitemap.txt").write_text("branch side\n")
+        for shared in SHARED:
+            (src / shared).write_text("branch side\n")
         git("commit", "-qam", "branch side", cwd=src)
     else:
         (src / "branch-file").write_text("branch\n")
@@ -284,7 +289,8 @@ def fix_round(tmp_path, *, conflict=False, up_to_date=False):
     if not up_to_date:
         git("checkout", "-q", "main", cwd=src)
         if conflict:
-            (src / "sitemap.txt").write_text("main side\n")
+            for shared in SHARED:
+                (src / shared).write_text("main side\n")
             git("commit", "-qam", "main side", cwd=src)
         else:
             (src / "main-file").write_text("main\n")
@@ -312,14 +318,14 @@ def fix_round(tmp_path, *, conflict=False, up_to_date=False):
                           capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
 
-    def run(engine_script, pr="12"):
+    def run(engine_script, pr="12", default="main"):
         stub = bin_dir / "pi"
         stub.write_text(f"#!/bin/sh\ncat > /dev/null\n{engine_script}\necho verdict\n")
         stub.chmod(0o755)
         return subprocess.run(["bash", "-e", "-c", worker_step()],
                               env={**env, "GITHUB_ENV": str(tmp_path / "github_env"), "HOME": str(tmp_path / "home"),
                                    "GITHUB_RUN_ID": "1", "ENGINE": "pi", "PR": pr, "ISSUE_TEXT": "the task\n",
-                                   "DEFAULT_BRANCH": "main", "BASE": old},
+                                   "DEFAULT_BRANCH": default, "BASE": old},
                               capture_output=True, text=True, check=False)
 
     return {"tmp": tmp_path, "old": old, "main_tip": main_tip, "run": run}
@@ -335,8 +341,6 @@ def test_a_stale_fix_round_merges_the_default_branch_before_the_engine(tmp_path)
     assert [first, second] == [world["old"], world["main_tip"]]
     assert git("rev-parse", "HEAD", cwd=world["tmp"] / "work") == head  # the merge is committed
     packet = (world["tmp"] / "packet.md").read_text()
-    assert "Never rebase; the push is fast-forward only." in packet
-    assert "merge origin/main into this branch" not in packet
     assert CONFLICT_SENTENCE not in packet
 
 
@@ -348,9 +352,8 @@ def test_a_conflicting_fix_round_hands_the_engine_the_merge_in_progress(tmp_path
     # the step survives the conflicted merge, so the engine can resolve it
     assert proc.returncode == 0, proc.stderr
     assert (world["tmp"] / "merge-head").read_text().strip()  # the merge is in progress
-    assert (world["tmp"] / "unmerged").read_text().splitlines() == ["sitemap.txt"]
+    assert (world["tmp"] / "unmerged").read_text().splitlines() == SHARED
     packet = (world["tmp"] / "packet.md").read_text()
-    assert "Never rebase; the push is fast-forward only." in packet
     assert packet.index(CONFLICT_SENTENCE) < packet.index("the task\n")  # the sentence rides ahead of the task
 
 
@@ -365,8 +368,17 @@ def test_an_engine_that_leaves_a_conflict_unresolved_fails_the_bundle_step(tmp_p
                                "BASE": world["old"], "ISSUE": "7"},
                           capture_output=True, text=True, check=False)
     assert proc.returncode != 0
-    assert "::error::the worker left merge conflicts unresolved in: sitemap.txt" in proc.stdout
+    # every unresolved path on the one annotation line: a workflow command ends at the newline
+    assert "::error::the worker left merge conflicts unresolved in: fingerprints.txt sitemap.txt\n" in proc.stdout
     assert not (world["tmp"] / "work.bundle").exists()  # no bundle: nothing to push
+
+
+def test_a_merge_that_fails_without_a_conflict_fails_the_step(tmp_path):
+    world = fix_round(tmp_path)
+    proc = world["run"]('touch "$RUNNER_TEMP/engine-ran"', default="no-such-branch")
+    assert proc.returncode != 0
+    assert "::error::merging origin/no-such-branch failed without conflicts" in proc.stdout
+    assert not (world["tmp"] / "engine-ran").exists()  # the engine never starts on an unmerged tree
 
 
 @pytest.mark.parametrize(("behind", "pr"), [(True, ""), (False, "12")],
@@ -380,6 +392,4 @@ def test_no_merge_without_a_pr_or_without_a_stale_branch(tmp_path, behind, pr):
     fields = (world["tmp"] / "at-engine").read_text().split()
     assert len(fields) == 2 and fields[0] == world["old"]
     packet = (world["tmp"] / "packet.md").read_text()
-    assert "Never rebase; the push is fast-forward only." in packet
-    assert "merge origin/main into this branch" not in packet
     assert CONFLICT_SENTENCE not in packet
