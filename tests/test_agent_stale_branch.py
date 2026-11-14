@@ -237,6 +237,84 @@ def test_the_plain_case_without_a_merge_still_pushes(stale):
     assert head == tip
 
 
+def test_an_answer_commit_on_an_unchanged_tree_still_pushes(stale):
+    """fleet-ops#12024: the packet tells the worker to "say in the commit message why a
+    finding is wrong", so a fix round whose answer is a commit that changes no file still
+    pushes and the re-review reads the message. Runs 43418837064, 43473699162 and
+    43486746199 failed at push with "the worker changed nothing" there instead, and park's
+    "add agent-ready to retry" cannot re-run a ticket whose PR is open, because claim
+    refuses it. The claim bundle, the worker's clone and the work bundle and push steps
+    run as written in agent.yml, the same way run_pipeline runs them."""
+    tmp = stale["tmp"]
+    bin_dir = tmp / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / "gh").write_text(FAKE_GH)
+    (bin_dir / "git").write_text(MOVE_THEN_GIT)
+    for f in ("gh", "git"):
+        (bin_dir / f).chmod(0o755)
+    (tmp / "data.json").write_text(json.dumps({
+        OPEN: [], "repos/o/r": {"default_branch": "main"},
+        "repos/o/r/issues/7": {"title": "t"}, "repos/o/r/pulls/12": {"body": ""}}))
+    (tmp / "gh.log").touch()
+    (tmp / "issue.md").write_text("the task\n")
+    (tmp / "run-proof.md").write_text("run-proof: not-needed - the answer is the commit message\n")
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_PATH": os.environ["PATH"], "HOME": str(tmp),
+           "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": f"url.file://{stale['remote']}.insteadOf",
+           "GIT_CONFIG_VALUE_0": "https://github.com/o/r.git", "GH_DATA": str(tmp / "data.json"),
+           "GH_LOG": str(tmp / "gh.log"), "RUNNER_TEMP": str(tmp), "REPO": "o/r", "GITHUB_REPOSITORY": "o/r",
+           "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "1", "ISSUE": "7", "PR": "12",
+           "MOVE_TO": "", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    out = tmp / "out"
+    out.write_text("")
+
+    def run(script, cwd=None, **extra):
+        return subprocess.run(["bash", "-e", "-c", script], cwd=cwd,
+                              env={**env, "GITHUB_OUTPUT": str(out), **extra},
+                              capture_output=True, text=True, check=False)
+
+    # claim: the bundle step, on the checkout it left (branch checked out, origin/* fetched)
+    proc = run(claim_bundle_step(), cwd=str(stale["src"]))
+    assert proc.returncode == 0, proc.stderr
+
+    # the worker left the answer as an empty commit and changed no file
+    work = tmp / "work"
+    git("clone", "-q", "--branch", "agent/issue-7", str(tmp / "repo.bundle"), str(work))
+    git("commit", "-q", "--allow-empty", "-m", "answer: the finding is wrong because x", cwd=work)
+
+    # the bundle step does not call this "changed nothing", and bundles the answer
+    proc = run(work_bundle_step(), dir=str(work), BASE=stale["old"])
+    assert proc.returncode == 0, proc.stderr
+    bundle = dict(line.split("=", 1) for line in out.read_text().splitlines())
+    assert "nochange" not in bundle and bundle["proof"].startswith("run-proof: not-needed")
+
+    # the push job pushes the answer fast-forward and appends the proof to the PR body
+    (tmp / "push").mkdir()
+    out.write_text("")
+    proc = run(push_step(), BASE=stale["old"], DEFAULT="main", PROOF=bundle["proof"])
+    assert proc.returncode == 0, proc.stderr
+    assert git("--git-dir", str(stale["remote"]), "rev-parse", BRANCH) == git("rev-parse", "HEAD", cwd=work)
+    assert git("--git-dir", str(stale["remote"]), "log", "-1", "--format=%s", BRANCH) == \
+        "answer: the finding is wrong because x"
+
+
+# An issue run with an unchanged tree is still "changed nothing", empty commit or not: the
+# lane must not open a PR that carries no change.
+def test_an_issue_run_with_an_unchanged_tree_changes_nothing(stale):
+    tmp = stale["tmp"]
+    work = tmp / "work"
+    git("clone", "-q", "--branch", "agent/issue-7", str(stale["src"]), str(work))
+    git("commit", "-q", "--allow-empty", "-m", "answer", cwd=work)
+    out = tmp / "out"
+    out.write_text("")
+    proc = subprocess.run(["bash", "-e", "-c", work_bundle_step()], cwd=str(work),
+                          env={"PATH": os.environ["PATH"], "RUNNER_TEMP": str(tmp), "dir": str(work),
+                               "GITHUB_OUTPUT": str(out), "BASE": stale["old"], "PR": "", "ISSUE": "7"},
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    assert "nochange=true" in out.read_text()
+
+
 # fleet-ops#12004: a fix round on a branch behind its default branch starts with the default
 # branch already merged in by the Worker step itself, before any engine runs (run 43473108129:
 # the senior builder's sandbox keeps .claude/skills read-only and the packet-told `git merge`
