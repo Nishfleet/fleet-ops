@@ -123,10 +123,12 @@ def owner_review(state, sha=SHA, body="finding"):
     return review(state, sha, body, user="nish3451", association="MEMBER")
 
 
-def round_data(reviews, ref="agent/issue-7", failing=(), red_answers=0):
+def round_data(reviews, ref="agent/issue-7", failing=(), red_answers=0, state="open"):
     # The round step reads the check runs of the head sha too, so a red CI head can be
     # answered (failing = names of failed check runs). A green head by default.
-    return {"repos/o/r/pulls/12": {"head": {"ref": ref, "sha": SHA}},
+    # "Get a pull request" carries state; a merged PR reports closed, and its head branch
+    # is deleted, so the checkout of the ref would fail (fleet-ops#12011).
+    return {"repos/o/r/pulls/12": {"state": state, "head": {"ref": ref, "sha": SHA}},
             "repos/o/r/pulls/12/reviews?per_page=100": reviews,
             f"repos/o/r/commits/{SHA}/check-runs?per_page=100":
                 {"check_runs": [{"name": n, "status": "completed", "conclusion": "failure"}
@@ -259,6 +261,22 @@ def test_the_bots_latest_verdict_opens_the_round_and_a_comment_closes_nothing(tm
 def test_a_pr_off_the_issues_branch_is_refused(tmp_path):
     proc, _, _ = run_step(tmp_path, step("claim", "round"), round_data([review("CHANGES_REQUESTED")], ref="feature"), ISSUE="7", PR="12")
     assert proc.returncode != 0
+
+
+def test_an_answer_to_a_merged_pr_runs_nothing_and_goes_green(tmp_path):
+    # fleet-ops#12011: the merge queue may merge the PR while a change request or a red CI
+    # on its head still dispatches an answer, and the merged PR's branch is deleted, so the
+    # checkout of ref fails and the run goes red for nothing. A pull request that is no
+    # longer open is not an answer round: nothing runs, nothing labels, nothing comments.
+    data = round_data([review("CHANGES_REQUESTED")], failing=("ci",), red_answers=1, state="closed")
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), data, ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert out == "go=false\n"
+    assert labelled(calls) == []
+    assert RED_COMMENT not in calls
+    assert not senior_comment(calls)
+    # No reviews and no check runs are read on a pull request that is not open.
+    assert [c[1] for c in calls] == ["repos/o/r/pulls/12"]
 
 
 # A red head can never carry the bot's change request (the reviewer reads green CI only), so
