@@ -34,7 +34,7 @@
       "properties": { "litellm_params": { "type": "object", "required": ["api_key"], "properties": { "api_key": { "const": "os.environ/ANTHROPIC_API_KEY" } } } }
     },
     "reviewClaudeRow": {
-      "$comment": "The review job's Claude row (decisions ledger 2026-11-04: the reviewer may be Claude when the builder is not). Its own group with no fallback, so a failed call ends the review instead of answering from a lane builder's family; its own 20 USD/day wall on the Anthropic key (owner 2026-11-04), apart from Tether's 50. Only the review runner's virtual key lists it.",
+      "$comment": "The lead reviewer's row (owner 2026-11-13: \"AI decides but only opus 5.5\"): this group answers only from anthropic/claude-opus-5-5 on the Anthropic key, and the lead decides the owner's reserved classes itself. It has no fallback, so no other model ever answers under its name: a failed call ends the review and the Grok step picks it up (fleet-ops#11975). Its own 20 USD/day wall (owner 2026-11-04) sits apart from Tether's 50 and review-fable's 5; Opus 5.5 costs 4 and 20 USD per million tokens, twice Sonnet's price, inside that same wall. Only the review runner's virtual key lists it.",
       "type": "object",
       "required": ["model_name", "litellm_params"],
       "properties": {
@@ -43,7 +43,7 @@
           "type": "object",
           "required": ["model", "api_key", "max_budget", "budget_duration"],
           "properties": {
-            "model": { "const": "anthropic/claude-sonnet-5-5" },
+            "model": { "const": "anthropic/claude-opus-5-5" },
             "api_key": { "const": "os.environ/ANTHROPIC_API_KEY" },
             "max_budget": { "const": 20 },
             "budget_duration": { "const": "1d" }
@@ -57,7 +57,7 @@
       "properties": { "model_name": { "const": "review-claude" } }
     },
     "reviewFableRow": {
-      "$comment": "The senior round's reviewer row (owner 2026-11-13: 'fable 5.2 will review it'; fleet-ops#11966). Round 3 of a lane PR is built by the senior builder, and this group reviews it, falling back to review-qwen (review-fable: [review-qwen]). Its group, model and key are pinned together, and its 5 USD/day wall (owner 2026-11-13) sits apart from Tether's 50 and review-claude's 20. Only the review runner's virtual key lists it.",
+      "$comment": "The senior round's reviewer row (owner 2026-11-13: 'fable 5.2 will review it'; fleet-ops#11966). Round 3 of a lane PR is built by the senior builder, and this group reviews it. It has no fallback either (fleet-ops#11975), so no other model ever answers under a lead's name: a failed call ends the review and the Grok step picks it up. Its group, model and key are pinned together, and its 5 USD/day wall (owner 2026-11-13) sits apart from Tether's 50 and review-claude's 20. Only the review runner's virtual key lists it.",
       "type": "object",
       "required": ["model_name", "litellm_params"],
       "properties": {
@@ -89,12 +89,17 @@
       "required": ["tether"],
       "properties": { "tether": { "const": ["assistant"] } }
     },
-    "reviewFallsToQwen": {
-      "$comment": "The only review-* fallbacks: review-claude or review-fable (the senior round's reviewer, fleet-ops#11966) falls to review-qwen and to nothing else, so a review never reaches a builder's row.",
-      "anyOf": [
-        { "const": { "review-claude": ["review-qwen"] } },
-        { "const": { "review-fable": ["review-qwen"] } }
-      ]
+    "reviewFallsBack": {
+      "$comment": "fleet-ops#11975: no review-* group falls back to another model, so no other model ever answers under a lead reviewer's name (owner 2026-11-13: \"AI decides but only opus 5.5\"). A failed lead call ends the review, and the Grok step answers it. At least one review-* key, not only review-* keys: a mixed entry such as {worker-cheap: [...], review-claude: [...]} must match too, or its review-claude fallback escapes this guard.",
+      "type": "object",
+      "minProperties": 1,
+      "not": { "propertyNames": { "not": { "pattern": "^review-" } } }
+    },
+    "fallsIntoReview": {
+      "$comment": "fleet-ops#11975: no group falls into a review group either, so a review never reaches a builder's row and a builder's group never borrows a reviewer's.",
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": { ".*": { "contains": { "pattern": "^review-" } } }
     },
     "workerCapableWalk": {
       "$comment": "fleet-ops#11723: one 429 retry per other worker-capable row (7 rows, so 6, after the 2026-11-10 row cut). The cap keeps a larger value, and the long sleep it buys, out of the config.",
@@ -204,14 +209,14 @@
           }
         },
         "fallbacks": {
-          "$comment": "Tether: the tether entry is exactly [assistant] (a Claude failure falls to the group Hermes already uses, never to a worker group or back), and no other group may fall into tether. The review-* fallbacks are review-claude -> review-qwen and review-fable -> review-qwen (the senior round's reviewer, fleet-ops#11966; Qwen builds nothing), and no other group falls into a review group, so a review never lands in a worker group, in tether, or on a builder's row, never reaches Claude or Fable from the Qwen review a Claude build gets, and the Anthropic credit is spent only by Tether and the review job. W10c: worker-capable is the strong group and never falls down, so no worker-capable entry may name worker-cheap, worker-public or assistant; a strong call with no healthy row fails at the caller.",
+          "$comment": "Tether: the tether entry is exactly [assistant] (a Claude failure falls to the group Hermes already uses, never to a worker group or back), and no other group may fall into tether. No review-* group falls back at all and no group falls into a review group (fleet-ops#11975), so no other model ever answers under a lead reviewer's name: a failed lead call ends the review and the Grok step answers it. A review never lands in a worker group, in tether, or on a builder's row, and the Anthropic credit is spent only by Tether and the review job. W10c: worker-capable is the strong group and never falls down, so no worker-capable entry may name worker-cheap, worker-public or assistant; a strong call with no healthy row fails at the caller.",
           "type": "array",
           "not": { "anyOf": [
             { "contains": { "type": "object", "required": ["worker-capable"], "properties": { "worker-capable": { "contains": { "enum": ["worker-cheap", "worker-public", "assistant"] } } } } },
             { "contains": { "type": "object", "required": ["tether"], "not": { "$ref": "#/$defs/tetherFallsToAssistant" } } },
             { "contains": { "type": "object", "minProperties": 1, "patternProperties": { ".*": { "contains": { "const": "tether" } } } } },
-            { "contains": { "allOf": [ { "type": "object", "not": { "propertyNames": { "not": { "pattern": "^review-" } } } }, { "not": { "$ref": "#/$defs/reviewFallsToQwen" } } ] } },
-            { "contains": { "type": "object", "minProperties": 1, "not": { "$ref": "#/$defs/reviewFallsToQwen" }, "patternProperties": { ".*": { "contains": { "pattern": "^review-" } } } } }
+            { "contains": { "$ref": "#/$defs/reviewFallsBack" } },
+            { "contains": { "$ref": "#/$defs/fallsIntoReview" } }
           ] }
         },
         "redis_host": { "const": "127.0.0.1" },

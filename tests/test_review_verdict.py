@@ -1,5 +1,7 @@
-"""The approver bot posts the reviewer's verdict, and never approves the code owner's own pull request
-or one that deletes or changes existing test lines (CODEOWNERS does not cover tests/).
+"""The approver bot posts the reviewer's verdict, and never approves the code owner's own pull request,
+one that deletes or changes existing test lines (CODEOWNERS does not cover tests/, the owner holds
+the test-line hold on 2026-11-14: "Keep the hold: deleting a check still needs a senior look"), or
+one that any model but the lead reviewer approved (owner 2026-11-13: "AI decides but only opus 5.5").
 
 fleet-ops#11741 was opened under the owner's login; GitHub counted that as code-owner review, and
 it merged on the bot's approval alone. This runs the verdict job's real step against a fake `gh`.
@@ -52,19 +54,20 @@ def f(filename, status="modified", deletions=1, **extra):
 APP_CHANGE = (f("src/app.py"),)
 
 
-def run_verdict(tmp_path, author, review, files=APP_CHANGE, body="Closes #1\n\nrun-proof: pytest -q -> 3 passed", reviews=()):
+def run_verdict(tmp_path, author, review, model="review-claude", files=APP_CHANGE,
+                body="Closes #1\n\nrun-proof: pytest -q -> 3 passed", reviews=()):
     gh = tmp_path / "gh"
     gh.write_text(f"#!{sys.executable}\n{FAKE_GH}")
     gh.chmod(0o755)
     env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "FAKE_GH_DIR": str(tmp_path), "AUTHOR": author,
            "FILES": json.dumps(list(files)), "BODY": body, "REVIEWS": json.dumps(list(reviews)),
-           "REPO": "o/r", "PR": "7", "SHA": "abc", "REVIEW": review, "TEST_EDITS": STEP["env"]["TEST_EDITS"]}
+           "REPO": "o/r", "PR": "7", "SHA": "abc", "REVIEW": review, "TEST_EDITS": STEP["env"]["TEST_EDITS"], "MODEL": model}
     subprocess.run(["bash", "-c", STEP["run"]], env=env, check=True, capture_output=True, text=True)
     return [json.loads(c) for c in (tmp_path / "calls.log").read_text().splitlines()]
 
 
-def verdict(tmp_path, author, review, files=APP_CHANGE, **kw):
-    post = next(c for c in reversed(run_verdict(tmp_path, author, review, files=files, **kw))
+def verdict(tmp_path, author, review, model="review-claude", **kw):
+    post = next(c for c in reversed(run_verdict(tmp_path, author, review, model=model, **kw))
                 if any(a.startswith("event=") for a in c))
     return next(a for a in post if a.startswith("event=")).split("=", 1)[1]
 
@@ -87,16 +90,36 @@ def test_a_pull_request_without_a_run_proof_line_is_never_approved(tmp_path, bod
     assert verdict(tmp_path, "nishfleet-worker[bot]", "fine\nVERDICT: APPROVE", body=body) == "COMMENT"
 
 
+@pytest.mark.parametrize("model", ["review-claude", "review-fable"])
+def test_the_lead_reviewer_approves(tmp_path, model):
+    assert verdict(tmp_path, "nishfleet-worker[bot]", "fine\nVERDICT: APPROVE", model=model) == "APPROVE"
+
+
 @pytest.mark.parametrize("change", [f(n) for n in ["tests/test_a.py", "app/test/x.ts", "e2e/login.ts", "src/__tests__/a.js",
                                                     "pkg/a_test.go", "src/a.test.tsx", "src/a.spec.ts", "lib/test_b.py"]]
                          + [f("tests/test_old.py", "removed"), f("src/a.py", "renamed", 0, previous_filename="tests/test_a.py")])
 def test_a_pull_request_that_changes_existing_test_lines_is_never_approved(tmp_path, change):
-    assert verdict(tmp_path, "nishfleet-worker[bot]", "fine\nVERDICT: APPROVE", [change]) == "COMMENT"
+    assert verdict(tmp_path, "nishfleet-worker[bot]", "fine\nVERDICT: APPROVE", files=[change]) == "COMMENT"
 
 
 def test_new_test_files_and_pure_additions_are_approved(tmp_path):
     files = [f("tests/test_new.py", "added", 0), f("tests/test_old.py", deletions=0), f("src/app.py", deletions=9)]
-    assert verdict(tmp_path, "nishfleet-worker[bot]", "fine\nVERDICT: APPROVE", files) == "APPROVE"
+    assert verdict(tmp_path, "nishfleet-worker[bot]", "fine\nVERDICT: APPROVE", files=files) == "APPROVE"
+
+
+@pytest.mark.parametrize("model", ["review-any", "review-qwen", "grok-4.7"])
+def test_a_verdict_from_any_model_but_the_lead_is_held_for_the_owner(tmp_path, model):
+    calls = run_verdict(tmp_path, "nishfleet-worker[bot]", "fine\nVERDICT: APPROVE", model=model)
+    post = next(c for c in reversed(calls) if any(a.startswith("event=") for a in c))
+    assert next(a for a in post if a.startswith("event=")).split("=", 1)[1] == "COMMENT"
+    body = next(a for a in post if a.startswith("body="))
+    assert "Held for the owner: only the lead reviewer approves." in body
+    assert ["api", "repos/o/r/issues/7/labels", "-f", "labels[]=needs-owner"] in calls
+    assert ["api", "repos/o/r/pulls/7/requested_reviewers", "-f", "reviewers[]=nish3451"] in calls
+
+
+def test_a_hold_from_any_model_still_holds(tmp_path):
+    assert verdict(tmp_path, "nishfleet-worker[bot]", "money\nVERDICT: HOLD-OWNER", model="review-any") == "COMMENT"
 
 
 def test_no_verdict_line_fails_the_job_instead_of_posting(tmp_path):
