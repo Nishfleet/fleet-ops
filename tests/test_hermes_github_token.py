@@ -15,9 +15,18 @@ SUDO = ["sudo", "-n"] if IN_CI else []
 SCOPE = [] if IN_CI else ["--user"]
 RUN_DIR = pathlib.Path("/run" if IN_CI else os.environ.get("XDG_RUNTIME_DIR", "/nonexistent"))
 UNIT_DIR = pathlib.Path("/etc/systemd/system" if IN_CI else pathlib.Path.home() / ".config/systemd/user")
+
+
+def passwordless_sudo():
+    """The CI path drives system units through sudo, so a runner without passwordless
+    sudo cannot run it and skips, the way a missing systemd manager skips."""
+    return shutil.which("sudo") is not None and subprocess.run(["sudo", "-n", "true"], check=False, capture_output=True).returncode == 0
+
+
 pytestmark = pytest.mark.skipif(
-    shutil.which("systemd-run") is None or not (IN_CI or (RUN_DIR / "bus").exists()),
-    reason="needs a systemd manager",
+    shutil.which("systemd-run") is None or not (IN_CI or (RUN_DIR / "bus").exists())
+    or (IN_CI and not passwordless_sudo()),
+    reason="needs a systemd manager, and in CI passwordless sudo",
 )
 
 
