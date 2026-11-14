@@ -1,3 +1,4 @@
+import getpass
 import os
 import pathlib
 import re
@@ -15,9 +16,25 @@ SUDO = ["sudo", "-n"] if IN_CI else []
 SCOPE = [] if IN_CI else ["--user"]
 RUN_DIR = pathlib.Path("/run" if IN_CI else os.environ.get("XDG_RUNTIME_DIR", "/nonexistent"))
 UNIT_DIR = pathlib.Path("/etc/systemd/system" if IN_CI else pathlib.Path.home() / ".config/systemd/user")
+
+
+def system_manager():
+    """The CI path drives system units through sudo, so a runner without passwordless
+    sudo, or whose system manager is not reachable (a container runner that does not
+    boot systemd), cannot run it and skips, the way a missing systemd-run skips."""
+    if shutil.which("sudo") is None or shutil.which("systemctl") is None:
+        return False
+    if subprocess.run(["sudo", "-n", "true"], check=False, capture_output=True).returncode != 0:
+        return False
+    return subprocess.run(
+        ["systemctl", "show", "--property=Version", "--value"], check=False, capture_output=True
+    ).returncode == 0
+
+
 pytestmark = pytest.mark.skipif(
-    shutil.which("systemd-run") is None or not (IN_CI or (RUN_DIR / "bus").exists()),
-    reason="needs a systemd manager",
+    shutil.which("systemd-run") is None or not (IN_CI or (RUN_DIR / "bus").exists())
+    or (IN_CI and not system_manager()),
+    reason="needs a systemd manager, and in CI passwordless sudo with a reachable system manager",
 )
 
 
@@ -60,7 +77,8 @@ def test_hermes_login_unit_writes_the_hosts_yml_gh_reads(mint):
     text = re.sub(r"^Environment=MINT=.*$", f"Environment=MINT={ROOT / 'config/github-app-token/mint.mjs'}", text, flags=re.MULTILINE)
     text = text.replace("/opt/node-v22.23.3/bin/node", shutil.which("node"))
     text = re.sub(r"^RuntimeDirectory=.*$", f"RuntimeDirectory={name}", text, flags=re.MULTILINE)
-    text = re.sub(r"^User=.*$", f"User={os.environ['USER']}" if IN_CI else "", text, flags=re.MULTILINE)
+    # getuser falls back to the uid's passwd entry when the image exports no USER
+    text = re.sub(r"^User=.*$", f"User={getpass.getuser()}" if IN_CI else "", text, flags=re.MULTILINE)
     unit = mint.dir / f"{name}.service"
     unit.write_text(text)
     target = UNIT_DIR / unit.name

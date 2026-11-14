@@ -9,6 +9,12 @@ branch's boundary commits, so the push repo needs the default branch's history t
 claim bundle must hand the worker origin/<default> without network (fleet-ops#11973). The
 claim bundle step, the worker's clone and merge, the work bundle step and the push step run
 here as written, the same way.
+
+Fleet-ops#12004, filed from the AgentRunFailureShare alert (fleet-ops#12017): the workflow
+merges the default branch into a fix round that is behind it, before the engine runs, because
+the senior builder's read-only sandbox cannot run the merge and the run died at push with
+"the worker changed nothing". The Worker step and the commit-and-bundle step run here as
+written too, with a stub `pi` engine that only records the head it started on.
 https://git-scm.com/docs/git-push#Documentation/git-push.txt---force-with-leaseltrefnamegt
 https://git-scm.com/docs/git-config#Documentation/git-config.txt-urlltbasegtinsteadOf
 https://git-scm.com/docs/git-bundle
@@ -224,6 +230,149 @@ def run_pipeline(stale, merge):
     # the push repo holds the default branch's history, fetched without file contents
     assert git("rev-parse", "refs/heads/default", cwd=tmp / "push") == stale["newer"]
     return git("rev-parse", "HEAD", cwd=work), git("--git-dir", str(stale["remote"]), "rev-parse", BRANCH)
+
+
+# --- fleet-ops#12004: the workflow merges the default branch into a fix round ----------
+
+# The exact sentence the Worker step adds to the packet when its merge stopped on a conflict.
+CONFLICT_NOTE = ("A merge of the default branch is in progress and has conflicts. Resolve every "
+                 "conflicted file, keeping both sides' entries in shared lists such as sitemaps and "
+                 "fingerprint files, then commit the merge. Do not abort it and do not rebase.")
+
+# A stub engine: it records the head it started on and prints a verdict, nothing else.
+PI_STUB = """#!/bin/sh
+PATH="$REAL_PATH" git rev-parse HEAD > "$ENGINE_SAW"
+cat
+"""
+
+
+def worker_step():
+    return next(s for s in WF["jobs"]["work"]["steps"] if s.get("name") == "Worker")["run"]
+
+
+def run_worker(stale, pr="12"):
+    """The claim bundle step and the Worker step, as written in agent.yml, with real git, a
+    fake `gh` and the stub `pi` engine. Returns the Worker step's result."""
+    tmp = stale["tmp"]
+    bin_dir = tmp / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / "gh").write_text(FAKE_GH)
+    (bin_dir / "git").write_text(MOVE_THEN_GIT)
+    (bin_dir / "pi").write_text(PI_STUB)
+    for f in ("gh", "git", "pi"):
+        (bin_dir / f).chmod(0o755)
+    (tmp / "data.json").write_text(json.dumps({"repos/o/r": {"default_branch": "main"}}))
+    (tmp / "gh.log").touch()
+    (tmp / "run-proof.md").write_text("run-proof: pytest -> 1 passed\n")
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_PATH": os.environ["PATH"], "HOME": str(tmp),
+           "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": f"url.file://{stale['remote']}.insteadOf",
+           "GIT_CONFIG_VALUE_0": "https://github.com/o/r.git", "GH_DATA": str(tmp / "data.json"),
+           "GH_LOG": str(tmp / "gh.log"), "RUNNER_TEMP": str(tmp), "REPO": "o/r", "GITHUB_REPOSITORY": "o/r",
+           "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "1", "ISSUE": "7", "PR": pr,
+           "ENGINE": "pi", "ISSUE_TEXT": "the task", "FLEET_TASK_ID": "run-1-1", "DEFAULT_BRANCH": "main",
+           "GITHUB_ENV": str(tmp / "job.env"), "ENGINE_SAW": str(tmp / "engine-saw"),
+           "GITHUB_OUTPUT": str(tmp / "out"),
+           "REMOTE": str(stale["remote"]), "MOVE_TO": ""}
+
+    def run(script, cwd=None, **extra):
+        return subprocess.run(["bash", "-e", "-c", script], cwd=cwd,
+                              env={**env, **extra}, capture_output=True, text=True, check=False)
+
+    proc = run(claim_bundle_step(), cwd=str(stale["src"]))
+    assert proc.returncode == 0, proc.stderr
+    (tmp / "out").write_text("")
+    return run(worker_step())
+
+
+def bundle_after_worker(stale):
+    """The commit-and-bundle step after a Worker step run, with the identity the job env
+    carries over from GITHUB_ENV, and its outputs."""
+    tmp = stale["tmp"]
+    out = tmp / "bundle-out"
+    out.touch()
+    proc = subprocess.run(["bash", "-e", "-c", work_bundle_step()], cwd=str(tmp),
+                          env={"PATH": os.environ["PATH"], "HOME": str(tmp), "RUNNER_TEMP": str(tmp),
+                               "dir": str(tmp / "work"), "BASE": stale["old"], "ISSUE": "7",
+                               "GITHUB_OUTPUT": str(out), "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
+                          capture_output=True, text=True, check=False)
+    return proc, out.read_text()
+
+
+def test_a_behind_clean_fix_round_arrives_merged_before_the_engine_runs(stale):
+    proc = run_worker(stale)
+    assert proc.returncode == 0, proc.stderr
+    work = stale["tmp"] / "work"
+    # a merge, not a rebase: the old head is the first parent, the default branch tip the second
+    assert git("rev-list", "--parents", "-n1", "HEAD", cwd=work).split()[1:] == [stale["old"], stale["newer"]]
+    # the merge was already HEAD when the engine started (fleet-ops#12004: the senior
+    # builder's sandbox cannot run the merge, so the workflow does)
+    assert (stale["tmp"] / "engine-saw").read_text().strip() == git("rev-parse", "HEAD", cwd=work)
+    packet = (stale["tmp"] / "packet.md").read_text()
+    assert "Never rebase; the push is fast-forward only." in packet
+    assert "merge origin/main" not in packet and CONFLICT_NOTE not in packet
+
+
+@pytest.fixture
+def conflicting(stale):
+    """A fix round whose branch and default branch both edit shared.txt, so the workflow's
+    merge stops on it and the engine starts with the merge in progress (fleet-ops#12004)."""
+    src = stale["src"]
+    git("checkout", "-q", "main", cwd=src)
+    (src / "shared.txt").write_text("main-side")
+    git("add", "shared.txt", cwd=src)
+    git("commit", "-qm", "main edits shared.txt", cwd=src)
+    stale["main"] = git("rev-parse", "HEAD", cwd=src)
+    git("push", "-q", str(stale["remote"]), "main", cwd=src)
+    git("update-ref", "refs/remotes/origin/main", stale["main"], cwd=src)
+    git("checkout", "-q", "agent/issue-7", cwd=src)
+    (src / "shared.txt").write_text("branch-side")
+    git("add", "shared.txt", cwd=src)
+    git("commit", "-qm", "branch edits shared.txt", cwd=src)
+    return stale
+
+
+def test_a_conflicting_fix_round_reaches_the_engine_with_the_merge_in_progress(conflicting):
+    proc = run_worker(conflicting)
+    # the step carries on: resolving the conflict is the engine's job, the packet says so
+    assert proc.returncode == 0, proc.stderr
+    work = conflicting["tmp"] / "work"
+    assert git("diff", "--name-only", "--diff-filter=U", cwd=work).splitlines() == ["shared.txt"]
+    assert git("rev-parse", "--verify", "MERGE_HEAD", cwd=work) == conflicting["main"]
+    assert CONFLICT_NOTE in (conflicting["tmp"] / "packet.md").read_text()
+
+
+def test_an_engine_that_leaves_the_conflict_unresolved_commits_and_bundles_nothing(conflicting):
+    proc = run_worker(conflicting)
+    assert proc.returncode == 0, proc.stderr
+    proc, out = bundle_after_worker(conflicting)
+    assert proc.returncode != 0
+    assert "::error::the worker left merge conflicts unresolved in: shared.txt" in proc.stdout
+    assert out == "" and not (conflicting["tmp"] / "work.bundle").exists()
+
+
+def test_an_up_to_date_fix_round_gains_no_merge_commit(stale):
+    git("update-ref", "refs/remotes/origin/main", stale["old"], cwd=stale["src"])
+    proc = run_worker(stale)
+    assert proc.returncode == 0, proc.stderr
+    work = stale["tmp"] / "work"
+    # the head stays the branch's own tip, a single-parent commit (fleet-ops#12004)
+    assert git("rev-parse", "HEAD", cwd=work) == stale["old"]
+    assert git("rev-list", "--parents", "-n1", "HEAD", cwd=work).split()[1:] == [stale["base"]]
+    assert (stale["tmp"] / "engine-saw").read_text().strip() == stale["old"]
+    assert CONFLICT_NOTE not in (stale["tmp"] / "packet.md").read_text()
+
+
+def test_a_first_run_with_no_pull_request_stays_a_plain_issue_run(stale):
+    proc = run_worker(stale, pr="")
+    assert proc.returncode == 0, proc.stderr
+    work = stale["tmp"] / "work"
+    assert git("rev-parse", "HEAD", cwd=work) == stale["old"]
+    assert CONFLICT_NOTE not in (stale["tmp"] / "packet.md").read_text()
+    # a worker that changed nothing still bundles as no change, exactly as today
+    proc, out = bundle_after_worker(stale)
+    assert proc.returncode == 0, proc.stderr
+    assert out == "proof=run-proof: pytest -> 1 passed\nnochange=true\n" and not (stale["tmp"] / "work.bundle").exists()
 
 
 def test_a_fix_round_that_merged_the_default_branch_pushes_a_fast_forward(stale):
