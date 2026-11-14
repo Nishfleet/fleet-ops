@@ -1,11 +1,12 @@
 """Each review comes from another AI family than the builder's, and never from MiniMax (owner 2026-11-04).
 
 Runs the review steps' real shell with a fake `gh` and `pi` over the records GitHub keeps (the
-branch's push log and the agent.yml run names), and checks the router rows, the one review
-fallback and the schema guards that keep a review away from a builder's row. A pi build reaches
-Claude then Qwen, any other build reaches DeepSeek, and Grok answers only when the
-router step failed (owner 2026-11-04: "need the others as backup", never MiniMax; the Qwen
-review-any row left on the owner's 2026-11-10 audit, decision 14, fleet-ops#11876).
+branch's push log and the agent.yml run names), and checks the router rows, the absence of any
+review fallback and the schema guards that keep a review away from a builder's row. A pi build
+reaches Opus 5.5, any other build reaches DeepSeek, and Grok answers only when the router step
+failed (owner 2026-11-04: "need the others as backup", never MiniMax; the Qwen review-any row
+left on the owner's 2026-11-10 audit, decision 14, fleet-ops#11876). Since fleet-ops#11975 no
+review-* group falls back at all, so no other model ever answers under a lead reviewer's name.
 https://docs.litellm.ai/docs/proxy/reliability#fallbacks
 https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepscontinue-on-error
 """
@@ -87,6 +88,18 @@ def reviewer(tmp_path, branch, pushes=(), runs=()):
     outcome, called, out = run_job(tmp_path, branch, pushes, runs)
     assert outcome == "success" and "VERDICT: APPROVE" in out
     return called[0].removeprefix("litellm/")
+
+
+def test_the_review_job_names_the_model_that_answered(tmp_path):
+    """The verdict job approves only a lead reviewer's verdict (fleet-ops#11975), so the review
+    job reports the router group that answered, or grok-4.7 from the Grok step."""
+    _, _, out = run_job(tmp_path, "agent/issue-7", [push()], [(7, "pi")])
+    assert "model<<REVIEW_END\nreview-claude\nREVIEW_END" in out
+    _, _, out = run_job(tmp_path, "lead/x")
+    assert "model<<REVIEW_END\nreview-any\nREVIEW_END" in out
+    _, _, out = run_job(tmp_path, "lead/x", PI_FAIL="litellm")
+    assert "model<<REVIEW_END\ngrok-4.7\nREVIEW_END" in out
+    assert JOB["outputs"]["model"] == "${{ steps.ai.outputs.model || steps.grok.outputs.model }}"
 
 
 def test_the_ticket_reaches_the_prompt_on_an_issue_branch(tmp_path):
@@ -175,7 +188,7 @@ def test_the_lane_builders_are_neither_claude_nor_qwen():
 def test_the_review_groups_hold_their_families():
     groups = {g: [r["litellm_params"]["model"] for r in ROUTER["model_list"] if r["model_name"] == g]
               for g in ("review-claude", "review-fable", "review-qwen", "review-any")}
-    assert groups == {"review-claude": ["anthropic/claude-sonnet-5-5"], "review-fable": ["anthropic/claude-fable-5-2"],
+    assert groups == {"review-claude": ["anthropic/claude-opus-5-5"], "review-fable": ["anthropic/claude-fable-5-2"],
                       "review-qwen": ["openai/qwen3.8-max"], "review-any": ["openai/deepseek-v4.1-flash"]}
 
 
@@ -191,7 +204,7 @@ def reachable(group):
 
 
 def test_a_pi_build_never_reaches_glm_deepseek_or_minimax():
-    assert reachable("review-claude") == {"anthropic/claude-sonnet-5-5", "openai/qwen3.8-max"}
+    assert reachable("review-claude") == {"anthropic/claude-opus-5-5"}
 
 
 def test_any_other_build_never_reaches_claude_or_minimax():
@@ -215,9 +228,12 @@ def test_the_review_any_row_answers_a_review_call():
     assert answer.choices[0].message.content == "deepseek answered"
 
 
-def test_claude_and_fable_fall_to_qwen_and_nothing_else_touches_a_review_group():
+def test_no_review_group_falls_to_another_model_and_nothing_else_touches_a_review_group():
+    """fleet-ops#11975 (owner 2026-11-13: "AI decides but only opus 5.5"): no review-* group has a
+    fallback, so no other model ever answers under a lead reviewer's name, and no group falls into
+    a review group either."""
     edges = [(k, v) for entry in ROUTER["router_settings"]["fallbacks"] for k, vs in entry.items() for v in vs]
-    assert [e for e in edges if any(n.startswith("review-") for n in e)] == [("review-claude", "review-qwen"), ("review-fable", "review-qwen")]
+    assert [e for e in edges if any(n.startswith("review-") for n in e)] == []
     assert not any(k.startswith("review-") or v.startswith("review-") for k, v in ROUTER["router_settings"]["model_group_alias"].items())
 
 
@@ -246,17 +262,22 @@ def anthropic_row(group):
     lambda c: c["model_list"].append(builder_row("review-any")),
     lambda c: c["model_list"].append(dict(worker_row("zai-glm53flash-worker-capable"), model_name="review-qwen")),
     lambda c: c["model_list"].append(dict(worker_row("opencodego-ds41flash-worker-capable"), model_name="review-claude")),
-    lambda c: c["model_list"].append(dict(worker_row("anthropic-sonnet55-review"), model_name="review-any")),
+    lambda c: c["model_list"].append(dict(worker_row("anthropic-opus55-review"), model_name="review-any")),
     lambda c: c["router_settings"]["fallbacks"].append({"review-any": ["review-claude"]}),
     lambda c: c["router_settings"]["fallbacks"].append({"review-claude": ["worker-capable"]}),
     lambda c: c["router_settings"]["fallbacks"].append({"review-qwen": ["review-claude"]}),
     lambda c: c["router_settings"]["fallbacks"].append({"review-qwen": ["tether"]}),
     lambda c: c["router_settings"]["fallbacks"].append({"review-qwen": ["assistant"]}),
     lambda c: c["router_settings"]["fallbacks"].append({"worker-cheap": ["worker-capable", "review-qwen"]}),
+    lambda c: c["router_settings"]["fallbacks"].append({"worker-cheap": ["worker-capable"], "review-claude": ["review-qwen"]}),
 ], ids=["minimax-in-review-qwen", "minimax-in-review-claude", "anthropic-key-on-review-qwen", "minimax-in-review-any",
         "glm-in-review-qwen", "deepseek-in-review-claude", "claude-in-review-any", "review-any-falls-to-claude", "review-falls-to-worker",
-        "qwen-falls-to-claude", "review-falls-to-tether", "review-falls-to-assistant", "worker-falls-to-review"])
+        "qwen-falls-to-claude", "review-falls-to-tether", "review-falls-to-assistant", "worker-falls-to-review",
+        "mixed-entry-hides-a-review-fallback"])
 def test_the_schema_rejects_a_review_that_could_reach_a_builder_or_the_claude_credit(change):
+    """The mixed-entry case (fleet-ops#11975 review round 1) pins the shape of reviewFallsBack:
+    an entry with any review-* key matches the guard, so a plain key cannot hide a lead's
+    fallback next to it."""
     jsonschema = pytest.importorskip("jsonschema")
     validator = jsonschema.Draft202012Validator(json.loads(SCHEMA.read_text(encoding="utf-8")))
     config = json.loads(json.dumps(ROUTER))
@@ -265,22 +286,38 @@ def test_the_schema_rejects_a_review_that_could_reach_a_builder_or_the_claude_cr
     assert list(validator.iter_errors(config))
 
 
-def test_claude_over_its_max_budget_falls_back_to_qwen():
+@pytest.mark.parametrize("fixture", ["review-fable-row-wrong-model.yaml", "review-claude-falls-to-qwen.yaml"])
+def test_the_schema_rejects_each_review_fixture(fixture):
+    """The reject cases for the lead reviewer's row and its no-fallback rule (fleet-ops#11975):
+    the live config passes, and each fixture fails on the rule it names."""
+    jsonschema = pytest.importorskip("jsonschema")
+    validator = jsonschema.Draft202012Validator(json.loads(SCHEMA.read_text(encoding="utf-8")))
+    assert [e.message for e in validator.iter_errors(json.loads(json.dumps(ROUTER)))] == []
+    doc = yaml.safe_load((ROOT / "config/litellm-proxy.schema.rejects" / fixture).read_text(encoding="utf-8"))
+    errors = list(validator.iter_errors(doc))
+    assert errors, fixture
+    assert any(e.absolute_path[0] in {"model_list", "router_settings"} for e in errors), (fixture, [list(e.absolute_path) for e in errors])
+
+
+def test_claude_over_its_max_budget_ends_the_review_instead_of_another_model_answering():
+    """fleet-ops#11975: review-claude has no fallback, so a call over its 20 USD/day wall fails and
+    the Grok step answers the review; no other model answers under the lead's name."""
     litellm = pytest.importorskip("litellm")
     import asyncio
 
     row = json.loads(json.dumps(next(r for r in ROUTER["model_list"] if r["model_name"] == "review-claude")))
     row["litellm_params"].update(input_cost_per_token=1.0, output_cost_per_token=1.0, mock_response="claude answered", api_key="test")
     row["model_info"]["id"] = "review-claude-budget-drill"
-    qwen = json.loads(json.dumps(next(r for r in ROUTER["model_list"] if r["model_name"] == "review-qwen")))
-    qwen["litellm_params"].update(mock_response="qwen answered", api_key="test")
     messages = [{"role": "user", "content": "review this diff please"}]
 
     async def drill():
-        router = litellm.Router(model_list=[row, qwen], fallbacks=ROUTER["router_settings"]["fallbacks"], num_retries=0)
+        router = litellm.Router(model_list=[row], fallbacks=ROUTER["router_settings"]["fallbacks"], num_retries=0)
         first = await router.acompletion(model="review-claude", messages=messages)
         await asyncio.sleep(0.5)
-        second = await router.acompletion(model="review-claude", messages=messages)
-        return first.choices[0].message.content, second.choices[0].message.content
+        with pytest.raises(Exception) as over_budget:
+            await router.acompletion(model="review-claude", messages=messages)
+        return first.choices[0].message.content, str(over_budget.value)
 
-    assert asyncio.run(drill()) == ("claude answered", "qwen answered")
+    answer, failure = asyncio.run(drill())
+    assert answer == "claude answered"
+    assert "budget" in failure.lower()
