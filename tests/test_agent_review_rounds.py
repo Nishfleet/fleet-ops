@@ -327,6 +327,43 @@ def test_a_green_head_without_a_change_request_still_runs_nothing(tmp_path):
     assert labelled(calls) == [] and RED_COMMENT not in calls
 
 
+# fleet-ops#12024: answer.yml fires on the bot's review and on a CI completion, and either
+# can land seconds after the merge queue merged the PR — runs 43432811785 and 43432818390
+# died there, checking out the branch GitHub deleted on merging PR #11993. A merged PR has
+# nothing to answer: the round closes, nothing is labelled, nothing runs.
+def test_a_round_for_a_merged_pr_runs_nothing(tmp_path):
+    data = round_data([review("CHANGES_REQUESTED")])
+    data["repos/o/r/pulls/12"]["merged"] = True
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), data, ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert out == "go=false\n"
+    assert labelled(calls) == [] and not senior_comment(calls)
+
+
+# The round step can close a run before the checkout (a merged PR, fleet-ops#12024), and
+# the merge deleted the branch the checkout names, so the checkout and the claim bundle
+# hold on go.
+def test_a_closed_round_checks_out_nothing():
+    claim = WF["jobs"]["claim"]
+    checkout = next(s for s in claim["steps"] if s.get("uses", "").startswith("actions/checkout"))
+    repo = next(s for s in claim["steps"] if s.get("id") == "repo")
+    assert checkout["if"] == "steps.round.outputs.go == 'true'"
+    assert repo["if"] == "steps.round.outputs.go == 'true'"
+
+
+# A skipped work job reads empty outputs, which would send the push job after an artifact
+# that does not exist (download-artifact fails when the artifact is missing); a run with
+# nothing to run stays green instead.
+def test_a_run_with_no_work_downloads_and_pushes_nothing():
+    push = WF["jobs"]["push"]
+    gated = [s for s in push["steps"]
+             if s.get("uses", "").startswith("actions/download-artifact")
+             or s.get("name", "").startswith("Push the branch")]
+    assert len(gated) == 2
+    assert all(s["if"] == "needs.work.result == 'success' && needs.work.outputs.nochange != 'true'"
+               for s in gated)
+
+
 def test_only_a_go_starts_the_worker():
     assert WF["jobs"]["work"]["if"] == "needs.claim.outputs.go == 'true'"
 
