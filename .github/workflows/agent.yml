@@ -159,7 +159,16 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$PR" ]; then echo go=true >> "$GITHUB_OUTPUT"; exit 0; fi
-          read -r ref sha < <(gh api "repos/$REPO/pulls/$PR" --jq '[.head.ref, .head.sha] | @tsv')
+          read -r state ref sha < <(gh api "repos/$REPO/pulls/$PR" --jq '[.state, .head.ref, .head.sha] | @tsv')
+          # The merge queue may merge the PR while a change request or a red CI on its head
+          # still dispatches (answer.yml fires on both events), and GitHub deletes a merged
+          # PR's head branch, so the checkout of ref below fails and the run goes red for
+          # nothing: two answer rounds on PR #11993 failed at checkout within seconds of
+          # the merge on 2026-11-13 (alert AgentRunFailureShare, fleet-ops#12011). A pull
+          # request that is no longer open has nothing to answer. "Get a pull request"
+          # reports state (open, closed, merged reports closed):
+          # https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request
+          [ "$state" = open ] || { echo "PR #$PR is $state; nothing to answer"; echo go=false >> "$GITHUB_OUTPUT"; exit 0; }
           [ "$ref" = "agent/issue-$ISSUE" ] || { echo "::error::PR #$PR is on $ref, not agent/issue-$ISSUE"; exit 1; }
           gh api "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq '[.[] | select(.user.login == "nishfleet-approver" or .user.login == "nish3451")]' > "$RUNNER_TEMP/reviews.json"
           # A review round is a head that got a change request: the count is the distinct
