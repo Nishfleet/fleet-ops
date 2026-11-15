@@ -91,3 +91,24 @@
 
 - name: Apply pending handlers before the credential check
   ansible.builtin.meta: flush_handlers
+
+# The retired aiostreams unit (fleet-ops#12039): Nish wiped its container and
+# data on 2026-11-02, so the quadlet only produced a failed unit at every boot.
+# `stop` does not clear a failed state: systemd keeps a failed unit loaded until
+# reset-failed runs (systemd.unit(5), "CollectMode="), and the quadlet file is
+# gone by now, so the box's failed list still names it as `not-found failed`.
+# The play does not reset-failed in general (docs/RUNBOOK.md, "The failed-unit
+# check and leftover ad-hoc units"): this one failure is named and retired by
+# this play, which read it by stopping and disabling the unit. This call goes
+# with the two aiostreams lines in ansible/host.yml. Drop the task once a deploy
+# shows the failed list without it.
+- name: Clear the failed state of the retired aiostreams unit
+  ansible.builtin.command:
+    argv: [/usr/bin/systemctl, --user, --machine=nish@.host, reset-failed, aiostreams.service]
+  register: aiostreams_reset_failed
+  changed_when: aiostreams_reset_failed.rc == 0
+  failed_when: >-
+    aiostreams_reset_failed.rc != 0
+    and 'not loaded' not in aiostreams_reset_failed.stderr | lower
+    and 'does not exist' not in aiostreams_reset_failed.stderr | lower
+    and 'not found' not in aiostreams_reset_failed.stderr | lower

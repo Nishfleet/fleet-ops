@@ -34,6 +34,14 @@ read yet, and it would turn a red run green without anyone reading the name.
 So the run stays red until the named units are reset. That is what it is for:
 a red daily update is a list of names, and the names are the fix.
 
+One unit is the exception, because the play reads it by name: a unit in
+`retired_user_units` is stopped and disabled, so the play has seen its result,
+and a unit that failed and is then retired stays in the failed list as
+`not-found failed` until `reset-failed` runs (systemd.unit(5), "CollectMode=").
+The retired aiostreams unit (fleet-ops#12039) is the one such call today, in
+ansible/tasks/retired-and-drift.yml. It goes with the aiostreams lines in
+ansible/host.yml when the deploy shows the unit gone.
+
 The run reads no `Transient` flag and no stop time. A tolerance window needs a
 start it cannot get: the gap between two runs varies (the drain waits up to
 150 min, apt and the tool updates run long), so a window either equals the run

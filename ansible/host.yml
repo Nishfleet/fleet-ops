@@ -148,7 +148,9 @@
       # Deleting this source file and the user-manager reload below take the
       # generated unit and its default.target want away
       # (https://docs.podman.io/en/v4.9.3/markdown/podman-systemd.unit.5.html).
-      # Drop this line once a deploy shows the path gone.
+      # Drop this line, the unit line above and the reset-failed call in
+      # tasks/retired-and-drift.yml once a deploy shows the path gone: the
+      # `git grep -i aiostreams` criterion closes with that follow-up PR.
       - "{{ nish_home }}/.config/containers/systemd/aiostreams.container"
       # The 0509 runner's lock tree; nothing uses /run/lock/0509 any more (fleet-ops#11714).
       - /etc/tmpfiles.d/github-runner-0509.conf
