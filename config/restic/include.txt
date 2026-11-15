@@ -70,6 +70,3 @@
 
 # Podman container volumes (real container data).
 /home/nish/.local/share/containers/storage/volumes
-
-# Application data.
-/srv/aiostreams

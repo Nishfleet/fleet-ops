@@ -47,7 +47,6 @@ in `include.txt` is dropped.
 | `/home/nish/.hermes` | 2,938 | 239.5 MiB | keep (trimmed by `exclude.txt`) | `state.db`, `skills/`, `kanban.db`; `bin/`, `installs/` and logs are dropped |
 | `/home/nish/.config` | 2,164 | 229.4 MiB | keep (trimmed by `exclude.txt`) | seat keys, gh, Cloudflare, rclone; `google-chrome-headless` (170.0 MiB) and `syncthing` (53.5 MiB) caches are dropped |
 | `/home/nish/.nvm` | 3,195 | 211.9 MiB | drop | node versions, reinstalled |
-| `/srv/aiostreams` | 24 | 184.1 MiB | keep | application data |
 | `/usr/local` | 3 | 157.1 MiB | keep | hand-installed `gh` and `node` |
 | `/home/nish/.cua` | 24 | 107.4 MiB | drop | host tool binaries |
 | `/home/nish/.pi` | 2,305 | 69.7 MiB | keep `agent` (trimmed by `exclude.txt`) | local skills, prompts, extensions |
@@ -99,7 +98,6 @@ hand-installed R2 credentials (`netcup-r2.env`) and the retired
 | `~/workspaces/products` | 74 MiB source + `.git` | product working trees. Uncommitted edits, unpushed branches and repos with no remote yet exist only here; `exclude.txt` drops `node_modules`, `dist`, `build` and other rebuildable outputs at the top of each repo (about 1.3 GiB). Local `.env` files are kept too: the snapshot is encrypted and already holds `~/.config`, and a key that exists only on the box is exactly what a restore would otherwise lose. Local database files, dumps, data exports, archives and `.bak` copies (`.sqlite`, `.db`, `.sql`, `.csv`, `.ndjson`, `.gz`, `.tgz`, `.xz`, `.bz2`, `.zst`, `.zip`, `.7z`, `.tar`, `.bak`, `.old`, `.orig`, `.backup`) are dropped, because the locked copy could never forget a customer's rows; committed ones are still in git. |
 | `/etc` | 10 MiB | units, ssh, polkit, sysctl, cron, rclone and prometheus config. |
 | `/root` | ~4 KiB | root's scripts and keys. |
-| `/srv/aiostreams` | 153 MiB | application data. |
 | `/usr/local` | 158 MiB | hand-installed `gh` and `node`, which no package owns. |
 | `/var/spool/cron` | 8 KiB | cron jobs (the only cron spool on Ubuntu). |
 

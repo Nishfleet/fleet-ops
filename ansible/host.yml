@@ -115,6 +115,11 @@
       # Every image is digest-pinned and moves only by Renovate PR, so podman's
       # auto-update timer has nothing to pull (podman-auto-update(1)).
       - podman-auto-update.timer
+      # aiostreams' quadlet unit (fleet-ops#12039): Nish wiped its container and
+      # data on 2026-11-02 and nothing re-creates them, so the unit fails at every
+      # boot on the env file and data dir it read. Stopped before the quadlet file
+      # in `retired` goes. Drop this line once a deploy shows the unit gone.
+      - aiostreams.service
     retired:
       # The runner-22 pilot is rolled back (fleet-ops#11991): runner 22 gets the same
       # .path as every runner, and its private-home drop-in and root-owned tools folder
@@ -139,11 +144,12 @@
       # The full copy of Syncthing's packaged unit; the drop-in
       # rootfs/etc/systemd/user/syncthing.service.d/override.conf replaces it.
       - "{{ nish_home }}/.config/systemd/user/syncthing.service"
-      # aiostreams' hand-made Compose files; containers/quadlet/aiostreams.container
-      # runs it now ("Stop the Compose copy of aiostreams" stops it first).
-      - /srv/aiostreams/compose.yaml
-      - /srv/aiostreams/compose.yaml.bak-2026-10-22
-      - /srv/aiostreams/.env.bak-1789995543
+      # aiostreams' quadlet (fleet-ops#12039), after the unit above is stopped.
+      # Deleting this source file and the user-manager reload below take the
+      # generated unit and its default.target want away
+      # (https://docs.podman.io/en/v4.9.3/markdown/podman-systemd.unit.5.html).
+      # Drop this line once a deploy shows the path gone.
+      - "{{ nish_home }}/.config/containers/systemd/aiostreams.container"
       # The 0509 runner's lock tree; nothing uses /run/lock/0509 any more (fleet-ops#11714).
       - /etc/tmpfiles.d/github-runner-0509.conf
       # The retired eval engine dockerd-eval.service (fleet-ops#11853): its unit,
@@ -423,12 +429,6 @@
       ansible.builtin.systemd_service:
         name: htpdate.service
         state: restarted
-
-    # A quadlet's generated unit cannot be enabled; its [Install] WantedBy= starts it at
-    # boot, and this restart starts it on the first deploy and after each change.
-    # A failed restart fails the play.
-    - name: Restart aiostreams  # noqa: command-instead-of-module no-changed-when
-      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart aiostreams.service
 
     # A running Grafana keeps the secret files it was started with, so it is restarted
     # only after a change. A failed restart fails the play.
