@@ -70,6 +70,25 @@ tests:
         alertname: AgentRunFailureShare
         exp_alerts: []
 
+  # The GitHub read is unauthenticated (see prometheus.yml), and one refused hour hides a
+  # whole conclusion: on 2026-11-15 the offset sliver of the success series held only
+  # refused scrapes, the series dropped out of the difference, and the alert read 100% for
+  # a day whose true share was 37.5% (fleet-ops#12032). This replays that: the success
+  # count is missing for six scrapes (24:15-25:30) across the offset sliver, 1000
+  # successes finish after it, and 3 failures in the window. True share 0.3%, so quiet.
+  # A 20m lookback lost the series, summed 3 of 3, and fired from 48:51; 75m still finds
+  # the 24:00 sample and keeps the reading true.
+  - interval: 15m
+    input_series:
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="success"}'
+        values: '100x96 _ _ _ _ _ _ 100x2 1100x105'
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="failure"}'
+        values: '20x32 22x72 25x105'
+    alert_rule_test:
+      - eval_time: 49h
+        alertname: AgentRunFailureShare
+        exp_alerts: []
+
   # No run finished for two days (dispatch paused): 0 of 0 is no share, so quiet.
   - interval: 15m
     input_series:
