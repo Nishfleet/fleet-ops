@@ -104,20 +104,27 @@
 # (rootfs/etc/claude-code/managed-settings.json sets DISABLE_AUTOUPDATER, the
 # documented switch for staying on the version the operator provides), so no
 # session grows a second copy in its own home and the runner pools' claude
-# stays the root-owned one. A new version is taken the repo's usual way, at
-# least 3 days after release: root runs `env HOME=/opt/claude-code claude
-# update` (or the folder is deleted for a clean reinstall of current stable).
-# The two links put the one launcher on the system PATH, which a plain shell
-# and both runner pools' job PATH (/usr/local/bin:/usr/bin:/bin) read, and
-# back in nish's ~/.local/bin, which the Remote Control unit, the tincan
-# listener and the two MCP tasks below name; login and plain shells then
-# answer `claude --version` with the same binary.
-- name: Install Claude Code with the native installer
+# stays the root-owned one. The version is the claude_code_version pin in
+# host.yml, passed to the installer the vendor's setup docs name for it
+# (`bash -s <version>`); a new version is a reviewed PR that bumps the pin, at
+# least 3 days after release, and the version check below applies the bump on
+# the next converge with no manual step.
+- name: Read the installed Claude Code version
   ansible.builtin.command:
-    argv: [bash, -c, "curl -fsSL https://claude.ai/install.sh | bash -s stable"]
+    argv: [/opt/claude-code/.local/bin/claude, --version]
+  register: claude_code_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  timeout: 60
+
+- name: Install Claude Code with the native installer, at the pinned version
+  ansible.builtin.command:
+    argv: [bash, -c, "curl -fsSL https://claude.ai/install.sh | bash -s {{ claude_code_version }}"]
     creates: /opt/claude-code/.local/bin/claude
   environment:
     HOME: /opt/claude-code
+  when: claude_code_version not in claude_code_installed.stdout | default('')
   timeout: 900
 
 - name: Put the Claude Code launcher on the system PATH

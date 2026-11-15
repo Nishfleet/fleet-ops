@@ -38,6 +38,12 @@
     # The Claude engine pool (tasks/runners.yml): netcup-claude-1 to 2, label senior, one
     # user fleet-claude, registered by the lead after the merge like the review pool's.
     fleet_claude_runner_ids: [1, 2]
+    # Claude Code (tasks/mcp-and-agent-clis.yml): the native installer's exact release,
+    # the one place the version is written. The box-wide DISABLE_AUTOUPDATER
+    # (rootfs/etc/claude-code/managed-settings.json) keeps every install on this pin, so
+    # a new version is a reviewed PR that changes this line — take one at least 3 days
+    # after release, per AGENTS.md.
+    claude_code_version: 2.1.322
     # The two router instances' loopback ports, behind HAProxy on 127.0.0.1:4000
     # (containers/quadlet/fleet-litellm-proxy@.container, rootfs/etc/haproxy/haproxy.cfg).
     litellm_proxy_ports: [4001, 4002]
