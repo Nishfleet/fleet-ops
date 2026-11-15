@@ -5,10 +5,8 @@ rail are in `README.md`; the rules are in `AGENTS.md`.
 
 ## Live-state check (the canonical order)
 
-1. `ls ~/workspaces/agent-state/FLEET-PAUSED` — if it exists the fleet is
-   deliberately down; respect it. Otherwise step 2 is the truth.
-2. `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers`.
-3. Same prefix, `systemctl --user list-units --state=failed` — must be empty.
+1. `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers`.
+2. Same prefix, `systemctl --user list-units --state=failed` — must be empty.
    From a shell inside a worker or runner jail this ends `Failed to connect to
    bus: Permission denied` because the jail masks the user manager
    (fleet-ops#9983): the error is the jail, not a host fault, and the
@@ -16,11 +14,11 @@ rail are in `README.md`; the rules are in `AGENTS.md`.
    placeholder. From inside the jail the step stays not run and can never be
    cleared. Partial fallback from any shell: `systemctl --failed` (system
    scope), failed system units only.
-4. `curl -s 127.0.0.1:4000/health/readiness` (expect
+3. `curl -s 127.0.0.1:4000/health/readiness` (expect
    `{"status":"healthy","db":"connected"}`), then
    `curl -sL 127.0.0.1:4000/metrics | grep litellm_deployment_state` — one
    gauge per deployment (0 healthy, 1 partial, 2 outage).
-5. `uptime` for load; merged-PR counts per repo for throughput.
+4. `uptime` for load; merged-PR counts per repo for throughput.
 
 ## The failed-unit check and leftover ad-hoc units
 
@@ -36,10 +34,18 @@ read yet, and it would turn a red run green without anyone reading the name.
 So the run stays red until the named units are reset. That is what it is for:
 a red daily update is a list of names, and the names are the fix.
 
+One unit is the exception, because the play reads it by name: a unit in
+`retired_user_units` is stopped and disabled, so the play has seen its result,
+and a unit that failed and is then retired stays in the failed list as
+`not-found failed` until `reset-failed` runs (systemd.unit(5), "CollectMode=").
+The retired aiostreams unit (fleet-ops#12039) is the one such call today, in
+ansible/tasks/retired-and-drift.yml. It goes with the aiostreams lines in
+ansible/host.yml when the deploy shows the unit gone.
+
 The run reads no `Transient` flag and no stop time. A tolerance window needs a
 start it cannot get: the gap between two runs varies (the drain waits up to
-150 min, apt and the tool updates run long, `FLEET_PAUSED` can hold the fleet
-for days), so a window either equals the run period and can miss a red run, or
+150 min, apt and the tool updates run long), so a window either equals the run
+period and can miss a red run, or
 is wide enough to hide a failure for days. Both were tried and cut
 (fleet-ops#10211).
 
@@ -606,7 +612,7 @@ single-name file of its own instead (fleet-ops#10222):
   Its `anthropic/` rows set `api_base` explicitly and take `MINIMAX_API_KEY`,
   so `ANTHROPIC_BASE_URL` is not read.
 - `fleet-sync`, `fleet-litellm-proxy-config`,
-  the postgres, redis and aiostreams quadlets,
+  the postgres and redis quadlets,
   and the `hermes-`, `tailscaled`, `oomd` and slice drop-ins start no agent.
 
 The runner environment is the one thing the repo cannot show (the runner
