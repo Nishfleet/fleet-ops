@@ -266,24 +266,30 @@ groups:
       # neither. github_workflow_runs is GitHub's all-time total_count per conclusion (job
       # agent-runs, json_exporter), so a window's runs are the difference between its two ends;
       # a difference, not increase(), so a deleted run reads as a small dip, not a counter reset.
-      # last_over_time bridges the 15-minute scrape interval. A window with no finished run
-      # divides 0 by 0 and stays quiet. The absent branch is the old rule's error state: the
+      # last_over_time bridges the 15-minute scrape interval, and then some: the GitHub read
+      # is unauthenticated (prometheus.yml shares one 60-calls-an-hour budget with the box),
+      # so a single target can go unanswered for most of an hour, and a conclusion whose
+      # latest sample falls outside the lookback silently drops out of the difference. That
+      # read the 2026-11-15 alert as 100% for a window whose true share was 37.5% (fleet-ops
+      # #12032): the offset side held only refused scrapes for the previous hour. 75m rides
+      # out five missed scrapes; the counts are all-time totals, so an older sample is not
+      # stale. A window with no finished run divides 0 by 0 and stays quiet. The absent branch is the old rule's error state: the
       # counts stopped arriving (exporter down, or GitHub refused the read). `for: 30m` keeps
       # the first load quiet until the first scrape lands.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       - alert: AgentRunFailureShare
         expr: |
           (
-            sum(last_over_time(github_workflow_runs{job="agent-runs",conclusion!="success"}[20m]) - last_over_time(github_workflow_runs{job="agent-runs",conclusion!="success"}[20m] offset 1d))
+            sum(last_over_time(github_workflow_runs{job="agent-runs",conclusion!="success"}[75m]) - last_over_time(github_workflow_runs{job="agent-runs",conclusion!="success"}[75m] offset 1d))
             /
-            sum(last_over_time(github_workflow_runs{job="agent-runs"}[20m]) - last_over_time(github_workflow_runs{job="agent-runs"}[20m] offset 1d))
+            sum(last_over_time(github_workflow_runs{job="agent-runs"}[75m]) - last_over_time(github_workflow_runs{job="agent-runs"}[75m] offset 1d))
             > 0.02
           )
           and on()
           (
-            sum(last_over_time(github_workflow_runs{job="agent-runs",conclusion!="success"}[20m] offset 1d) - last_over_time(github_workflow_runs{job="agent-runs",conclusion!="success"}[20m] offset 2d))
+            sum(last_over_time(github_workflow_runs{job="agent-runs",conclusion!="success"}[75m] offset 1d) - last_over_time(github_workflow_runs{job="agent-runs",conclusion!="success"}[75m] offset 2d))
             /
-            sum(last_over_time(github_workflow_runs{job="agent-runs"}[20m] offset 1d) - last_over_time(github_workflow_runs{job="agent-runs"}[20m] offset 2d))
+            sum(last_over_time(github_workflow_runs{job="agent-runs"}[75m] offset 1d) - last_over_time(github_workflow_runs{job="agent-runs"}[75m] offset 2d))
             > 0.02
           )
           or
