@@ -118,10 +118,13 @@
   check_mode: false
   timeout: 60
 
-- name: Install Claude Code with the native installer, at the pinned version
+# No creates: it skips whenever the binary exists, so a pin bump would never
+# reinstall even with the when: check true. The when: version check alone
+# decides: it is true only when the installed version is not the pin, and that
+# run reinstalls.
+- name: Install Claude Code with the native installer, at the pinned version  # noqa: no-changed-when
   ansible.builtin.command:
     argv: [bash, -c, "curl -fsSL https://claude.ai/install.sh | bash -s {{ claude_code_version }}"]
-    creates: /opt/claude-code/.local/bin/claude
   environment:
     HOME: /opt/claude-code
   when: claude_code_version not in claude_code_installed.stdout | default('')
