@@ -62,24 +62,12 @@ Control, only once the Max login has Remote Control again.
 
 ### Subagents on the Max config dir (2026-10-11)
 
-Historical since 2026-10-22: Remote Control no longer sets `CLAUDE_CONFIG_DIR`
-and reads `~/.claude/agents` directly; the link below stays harmless.
-
-Claude Code reads subagents from `$CLAUDE_CONFIG_DIR/agents`, so with the
-drop-in above every Remote Control thread got "helper not found", and the
-model-lanes gate denies every other subagent type: no thread could delegate.
-`config/claude-agents/` now ships `helper.md` and `scout.md` (until now
-hand-placed in `~/.claude/agents`). `fleet-sync.service` step 2d copies them
-there, `config/user-tmpfiles.d/claude-max-agents.conf` links
-`~/.claude-max/agents` to `~/.claude/agents` (step 5), and step 5b fails the
-sync if that path is anything but the link. Edit an agent here, by PR; a hand
-edit of the live file is overwritten on the next sync.
-`tests/test_claude_max_agents.py` ran those unit lines against a temp home before
-the 2026-11-01 reset deleted it.
-
-Switch off: delete the three step-2d install lines and step 5b, the tmpfiles
-file and its live copy in `~/.config/user-tmpfiles.d/`, then
-`rm ~/.claude-max/agents`. The live agent files stay as plain files.
+Historical: this section once described shipping two Claude helper subagents
+into `~/.claude/agents` while Remote Control still set `CLAUDE_CONFIG_DIR`.
+Remote Control stopped setting it on 2026-10-22, and the subagents went in the
+2026-11-15 clean-up (fleet-ops#12040): work never goes to Claude subagents
+(the standing rule), so the play ships none and the box holds no
+`~/.claude/agents/*.md`.
 
 ### Session retention: the vendor sweep, pinned (fleet-ops#9447)
 

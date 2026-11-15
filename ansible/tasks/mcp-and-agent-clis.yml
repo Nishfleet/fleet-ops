@@ -95,6 +95,47 @@
   when: shared_next != shared_now
   diff: false
 
+# Claude Code, one install for the whole box (fleet-ops#12040). Anthropic's
+# native installer (https://code.claude.com/docs/en/setup) is the vendor's
+# recommended install; it is run once, as plain root with HOME under /opt (the
+# installer refuses a sudo-from-user-shell run and names plain root as its
+# container/CI case), so the binary is root-owned and no runner job can
+# replace it. The vendor's updater is switched off box-wide
+# (rootfs/etc/claude-code/managed-settings.json sets DISABLE_AUTOUPDATER, the
+# documented switch for staying on the version the operator provides), so no
+# session grows a second copy in its own home and the runner pools' claude
+# stays the root-owned one. A new version is taken the repo's usual way, at
+# least 3 days after release: root runs `env HOME=/opt/claude-code claude
+# update` (or the folder is deleted for a clean reinstall of current stable).
+# The two links put the one launcher on the system PATH, which a plain shell
+# and both runner pools' job PATH (/usr/local/bin:/usr/bin:/bin) read, and
+# back in nish's ~/.local/bin, which the Remote Control unit, the tincan
+# listener and the two MCP tasks below name; login and plain shells then
+# answer `claude --version` with the same binary.
+- name: Install Claude Code with the native installer
+  ansible.builtin.command:
+    argv: [bash, -c, "curl -fsSL https://claude.ai/install.sh | bash -s stable"]
+    creates: /opt/claude-code/.local/bin/claude
+  environment:
+    HOME: /opt/claude-code
+  timeout: 900
+
+- name: Put the Claude Code launcher on the system PATH
+  ansible.builtin.file:
+    src: /opt/claude-code/.local/bin/claude
+    dest: /usr/local/bin/claude
+    state: link
+    force: true
+
+- name: Point nish's Claude Code launcher at the one install
+  ansible.builtin.file:
+    src: /opt/claude-code/.local/bin/claude
+    dest: "{{ nish_home }}/.local/bin/claude"
+    state: link
+    force: true
+    owner: nish
+    group: nish
+
 - name: Read Claude Code's drive entry
   become: true
   become_user: nish

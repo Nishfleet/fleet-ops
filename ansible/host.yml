@@ -160,6 +160,16 @@
       # collector the 2026-11-01 reset removed; the file left rootfs/ in
       # fleet-ops#11613, and the copy on /etc was removed by hand 2026-11-10.
       - /etc/claude-code/managed-settings.d/70-beacon-otlp.json
+      # The Claude helper and scout subagents user-files.yml shipped into
+      # ~/.claude/agents (fleet-ops#12040): work never goes to Claude subagents
+      # (the standing rule), so the play ships none and the copies go.
+      - "{{ nish_home }}/.claude/agents/helper.md"
+      - "{{ nish_home }}/.claude/agents/scout.md"
+      # Nish's hand-installed native Claude Code tree (fleet-ops#12040): the one
+      # install is the root-owned one under /opt/claude-code that
+      # tasks/mcp-and-agent-clis.yml declares, and ~/.local/bin/claude is
+      # re-created there as a link to its launcher.
+      - "{{ nish_home }}/.local/share/claude"
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"
