@@ -74,10 +74,10 @@ tests:
   # whole conclusion: on 2026-11-15 the offset sliver of the success series held only
   # refused scrapes, the series dropped out of the difference, and the alert read 100% for
   # a day whose true share was 37.5% (fleet-ops#12032). This replays that: the success
-  # count is missing for five scrapes (24:00-25:15) across the offset sliver, 1000
+  # count is missing for six scrapes (24:15-25:30) across the offset sliver, 1000
   # successes finish after it, and 3 failures in the window. True share 0.3%, so quiet.
-  # A 20m lookback lost the series, summed 3 of 3, and fired from 48:45; 75m still finds
-  # the 23:45 sample and keeps the reading true.
+  # A 20m lookback lost the series, summed 3 of 3, and fired from 48:51; 75m still finds
+  # the 24:00 sample and keeps the reading true.
   - interval: 15m
     input_series:
       - series: 'github_workflow_runs{job="agent-runs",conclusion="success"}'

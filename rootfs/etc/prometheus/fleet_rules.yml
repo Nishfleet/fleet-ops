@@ -272,10 +272,13 @@ groups:
       # latest sample falls outside the lookback silently drops out of the difference. That
       # read the 2026-11-15 alert as 100% for a window whose true share was 37.5% (fleet-ops
       # #12032): the offset side held only refused scrapes for the previous hour. 75m rides
-      # out five missed scrapes; the counts are all-time totals, so an older sample is not
-      # stale. A window with no finished run divides 0 by 0 and stays quiet. The absent branch is the old rule's error state: the
-      # counts stopped arriving (exporter down, or GitHub refused the read). `for: 30m` keeps
-      # the first load quiet until the first scrape lands.
+      # out four missed scrapes (an hour of refusals at a 15-minute scrape): after four
+      # misses the newest sample is just under 75 minutes old and still inside the window,
+      # and after five it is past 75 minutes and gone. The counts are all-time totals, so an
+      # older sample is not stale. A window with no finished run divides 0 by 0 and stays
+      # quiet. The absent branch is the old rule's error state: the counts stopped arriving
+      # (exporter down, or GitHub refused the read). `for: 30m` keeps the first load quiet
+      # until the first scrape lands.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       - alert: AgentRunFailureShare
         expr: |
