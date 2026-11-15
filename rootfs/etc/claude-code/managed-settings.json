@@ -41,5 +41,8 @@
       "Bash(git push *+*main*)",
       "Bash(git push *+*master*)"
     ]
+  },
+  "env": {
+    "DISABLE_AUTOUPDATER": "1"
   }
 }
