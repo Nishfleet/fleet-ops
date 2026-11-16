@@ -3,10 +3,12 @@
 Runs the review steps' real shell with a fake `gh` and `pi` over the records GitHub keeps (the
 branch's push log and the agent.yml run names), and checks the router rows, the absence of any
 review fallback and the schema guards that keep a review away from a builder's row. A pi build
-reaches Opus 5.5, any other build reaches DeepSeek, and Grok answers only when the router step
-failed (owner 2026-11-04: "need the others as backup", never MiniMax; the Qwen review-any row
-left on the owner's 2026-11-10 audit, decision 14, fleet-ops#11876). Since fleet-ops#11975 no
-review-* group falls back at all, so no other model ever answers under a lead reviewer's name.
+reaches Opus 5.5 (review-claude), a head the lane's Claude engine built — round 2 (Sonnet 5.5)
+or round 3 (Opus 5.5), fleet-ops#12057 — reaches Fable 5.2 (review-fable, fleet-ops#11964), any
+other build reaches DeepSeek, and Grok answers only when the router step failed (owner
+2026-11-04: "need the others as backup", never MiniMax; the Qwen review-any row left on the
+owner's 2026-11-10 audit, decision 14, fleet-ops#11876). Since fleet-ops#11975 no review-*
+group falls back at all, so no other model ever answers under a lead reviewer's name.
 https://docs.litellm.ai/docs/proxy/reliability#fallbacks
 https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepscontinue-on-error
 """
@@ -135,20 +137,37 @@ def test_the_senior_round_goes_to_fable(tmp_path):
     assert "Review (review-fable," in out and "VERDICT: APPROVE" in out
 
 
+def test_a_head_from_a_claude_run_goes_to_fable(tmp_path):
+    # fleet-ops#12057: a head an engine=claude run pushed — round 2 (Sonnet 5.5) or
+    # round 3 (Opus 5.5) — is re-reviewed by review-fable, the reviewer the owner chose
+    # for Claude-built heads (fleet-ops#11964), not review-any, which is no lead
+    # reviewer and held every such PR for the owner.
+    assert reviewer(tmp_path, "agent/issue-7", [push()], [(7, "pi"), (7, "claude")]) == "review-fable"
+    assert reviewer(tmp_path, "agent/issue-7", [push()], [(7, "claude")]) == "review-fable"
+
+
+def test_a_dispatched_rounds_comment_naming_the_model_goes_to_fable(tmp_path):
+    # A dispatched round keeps engine=pi in its run name (GitHub fixes the name when the
+    # run starts), so the lane's round comment naming the model is what marks the head
+    # Claude-built there (fleet-ops#12057).
+    outcome, called, out = run_job(tmp_path, "agent/issue-7", [push()], [(7, "pi")],
+                                   COMMENTS=json.dumps([{"body": "agent: answering review round 2 (claude-sonnet-5-5): x"}]))
+    assert outcome == "success" and called == ["litellm/review-fable"]
+    assert "Review (review-fable," in out
+
+
 def test_a_lane_head_from_a_pi_run_goes_to_claude(tmp_path):
     assert reviewer(tmp_path, "agent/issue-7", [push()], [(7, "pi"), (77, "claude")]) == "review-claude"
 
 
 @pytest.mark.parametrize("branch, pushes, runs", [
     ("lead/x", [push()], []),
-    ("agent/issue-7", [push()], [(7, "claude")]),
     ("agent/issue-7", [], [(7, "pi")]),
     ("agent/issue-7", [push(actor="nish3451")], [(7, "pi")]),
     ("agent/issue-7", [push(after="f" * 40)], [(7, "pi")]),
     ("agent/issue-7", [push()], []),
-    ("agent/issue-7", [push()], [(7, "pi"), (7, "claude")]),
-], ids=["lead", "claude-run", "no-push", "human-push", "head-moved", "no-run", "mixed-engines"])
-def test_anything_but_a_proven_pi_build_goes_to_review_any(tmp_path, branch, pushes, runs):
+], ids=["lead", "no-push", "human-push", "head-moved", "no-run"])
+def test_anything_but_a_proven_lane_build_goes_to_review_any(tmp_path, branch, pushes, runs):
     assert reviewer(tmp_path, branch, pushes, runs) == "review-any"
 
 

@@ -39,7 +39,12 @@ jobs:
       # approves only a lead reviewer's verdict (owner 2026-11-13: "AI decides but only opus 5.5").
       model: ${{ steps.ai.outputs.model || steps.grok.outputs.model }}
     steps:
-      # A senior round is reviewed by Fable 5.2 on the owner's decision (fleet-ops#11964, 2026-11-13); the run name still says engine=pi there, so the step looks for the senior comment instead.
+      # A head the lane's Claude engine built is re-reviewed by Fable 5.2, the reviewer the
+      # owner chose for Claude-built heads (fleet-ops#11964, 2026-11-13): round 3, and
+      # round 2 since fleet-ops#12057. A dispatched round keeps engine=pi in its run name
+      # (GitHub fixes the name when the run starts), so the lane's round comments, which
+      # name the model that took the round, mark those heads; a hand-started
+      # engine=claude run is marked by its run title below.
       - name: Review with an AI from another family than the builder's
         id: ai
         # A failed router call leaves the job to the Grok step below.
@@ -62,15 +67,20 @@ jobs:
           set -euo pipefail
           model=review-any
           case "$BRANCH" in agent/issue-*)
-            # The lane's senior comment marks round 3 (agent.yml): the owner sends it to
-            # review-fable, regardless of which engine pushed the head.
-            senior=$(gh pr view "$PR" -R "$REPO" --json comments --jq '[.comments[] | select(.body | startswith("agent: senior builder"))] | length')
+            # A Claude-built head goes to review-fable (fleet-ops#11964; rounds 2 and 3,
+            # fleet-ops#12057), keyed on the engine of the run that pushed it: the run
+            # titles carry a hand-started engine=claude run, and a dispatched round — its
+            # run name stays engine=pi — carries the round comment that names the model.
+            claude=$(gh pr view "$PR" -R "$REPO" --json comments --jq '[.comments[] | select((.body | startswith("agent: senior builder")) or ((.body | startswith("agent: answering")) and (.body | contains("claude-"))))] | length')
             last=$(gh api "repos/$REPO/activity?ref=refs/heads/$BRANCH&per_page=1" --jq '.[0] | "\(.actor.login) \(.after)"')
             engines=$(gh run list -R "$REPO" -w agent.yml -b main -L 1000 --json displayTitle \
               --jq "[.[].displayTitle | select(startswith(\"agent #${BRANCH#agent/issue-} engine=\"))] | unique | join(\" \")")
-            if [ "$senior" -gt 0 ]; then model=review-fable
-            else
-              [ "$last" != "nishfleet-worker[bot] $SHA" ] || [ "$engines" != "agent #${BRANCH#agent/issue-} engine=pi" ] || model=review-claude
+            if [ "$claude" -gt 0 ]; then model=review-fable
+            elif [ "$last" = "nishfleet-worker[bot] $SHA" ]; then
+              case "$engines" in
+                *"agent #${BRANCH#agent/issue-} engine=claude"*) model=review-fable ;;
+                "agent #${BRANCH#agent/issue-} engine=pi") model=review-claude ;;
+              esac
             fi ;;
           esac
           gh api -H 'Accept: application/vnd.github.raw' 'repos/Nishfleet/fleet-ops/contents/docs/review-bar.md?ref=main' > "$RUNNER_TEMP/bar.md"
