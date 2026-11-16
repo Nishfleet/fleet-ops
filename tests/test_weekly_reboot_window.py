@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 UPDATE_TIMER = ROOT / "rootfs/etc/systemd/system/fleet-update.timer"
 REBOOT_TIMER = ROOT / "rootfs/etc/systemd/system/fleet-reboot.timer"
 APT = ROOT / "rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades"
-OVERRIDE = ROOT / "rootfs/etc/systemd/system/apt-daily-upgrade.timer.d/50-fleet-weekly.conf"
+OVERRIDE = ROOT / "rootfs/etc/systemd/system/apt-daily-upgrade.timer.d"
 
 
 def _lines(path: Path) -> list[str]:
@@ -38,9 +38,9 @@ def _minutes(value: str) -> int:
 def test_the_tool_update_starts_at_0310_with_no_jitter() -> None:
     lines = _lines(UPDATE_TIMER)
     assert "OnCalendar=Sun *-*-* 03:10:00 Asia/Kolkata" in lines
-    # The stock jitter could start the run past 03:25, and a run at the
-    # 45-minute cap (fleet-update.service, TimeoutStartSec=) would then
-    # overlap the 04:00 restart.
+    # The previous 15 min jitter could start the run as late as 03:25, and a
+    # run at the 45-minute cap (fleet-update.service, TimeoutStartSec=) would
+    # then overlap the 04:00 restart.
     assert "RandomizedDelaySec=0" in lines
     assert "Persistent=true" in lines
 
@@ -74,7 +74,7 @@ def test_the_weekly_upgrade_override_is_retired() -> None:
     inside the window again, and its weekly gap is what made security patches
     wait up to a week."""
     assert not OVERRIDE.exists()
-    assert "50-fleet-weekly" not in ansible_host.text()
+    assert "Install the weekly unattended-upgrades window" not in ansible_host.text()
     assert ("/etc/systemd/system/apt-daily-upgrade.timer.d"
             in ansible_host.play()["vars"]["retired"])
 
