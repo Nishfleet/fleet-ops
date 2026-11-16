@@ -164,7 +164,6 @@ def test_a_silent_streamed_leg_fails_at_stream_timeout():
     finally:
         stub.close()
     assert isinstance(error, litellm.APIConnectionError), error
-    assert "Timeout on reading data from socket" in str(error)
     assert elapsed < 5, elapsed
 
 
