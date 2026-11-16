@@ -571,7 +571,8 @@ def main(root):
         for alertname in (title, *ERR):
             reached = route(policy, {**labels, "alertname": alertname})
             reached_any |= {rc for rc, _ in reached}
-            unknown = {rc.removesuffix("#muted") for rc, _ in reached} - contacts - LIVE_RECEIVERS
+            unknown = {rc.removesuffix("#muted") for rc, _ in reached} - contacts \
+                - (LIVE_RECEIVERS if title in URGENT else set())
             if unknown:
                 bad.append(f"{title}: unknown contact point(s) {sorted(unknown)}")
             if all(rc.endswith("#muted") for rc, _ in reached):

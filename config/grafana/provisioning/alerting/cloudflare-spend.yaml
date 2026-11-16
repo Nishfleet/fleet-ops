@@ -18,8 +18,8 @@
 # account id (fleet-ops#11689 review).
 #
 # What fires: the last hour over 10,000 neurons/h (about 2x the highest normal
-# hour since 2026-10-05, so the designed paid usage stays under it), or over
-# 3 x the 7-day hourly median when that line sits higher. ${__timeFrom} and
+# hour since 2026-10-05, so the designed paid usage stays under it) and over
+# 3 x the 7-day hourly median. ${__timeFrom} and
 # ${__timeTo} are expanded by the Infinity backend from each query's
 # relativeTimeRange, so a replay is the same rule with the two dates typed in.
 # A rule with no usage in the hour has no rows, which is Normal (noDataState
@@ -114,7 +114,7 @@ groups:
               datasource: {type: __expr__, uid: __expr__}
               type: math
               refId: E
-              expression: ($D > 10000) || ($C > 0 && $D > 3 * $C && $D > 10000)
+              expression: $D > 10000 && $D > 3 * $C
           - refId: R
             datasourceUid: __expr__
             model:
@@ -135,7 +135,7 @@ groups:
         for: 0s
         annotations:
           summary: 'Cloudflare used {{ with index $values "D" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} neurons in the last hour'
-          description: 'It fires above 10,000 neurons/h (fleet-ops#9576: about 2x the highest normal hour, so the designed paid usage of the 0509 judge stays under it) or above 3 x the 7-day hourly median when that sits higher; the median was {{ with index $values "C" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} neurons/h. Neurons cost $0.011 per 1,000, so the burn is spend. Find the product loop that burned them, stop it at the source, and write the cause in this issue. Top of the hour: {{ with $labels.resource }}{{ . }}{{ else }}an unknown model{{ end }}. Cloudflare dashboard: Workers & Pages > AI > Logs.'
+          description: 'It fires above 10,000 neurons/h (fleet-ops#9576: about 2x the highest normal hour, so the designed paid usage of the 0509 judge stays under it) and above 3 x the 7-day hourly median; the median was {{ with index $values "C" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} neurons/h. Neurons cost $0.011 per 1,000, so the burn is spend. Find the product loop that burned them, stop it at the source, and write the cause in this issue. Top of the hour: {{ with $labels.resource }}{{ . }}{{ else }}an unknown model{{ end }}. Cloudflare dashboard: Workers & Pages > AI > Logs.'
           top: '{{ with $labels.resource }}{{ . }}{{ else }}an unknown model{{ end }}'
         labels: {severity: critical, signal: cloudflare-spend, product: workers-ai}
         isPaused: false

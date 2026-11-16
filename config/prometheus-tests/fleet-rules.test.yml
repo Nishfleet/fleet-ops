@@ -28,16 +28,18 @@ tests:
         values: '1x60'
       - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
         values: '1x20 0x40'
+      - series: 'node_systemd_unit_state{name="claude-remote-control.service",state="active"}'
+        values: '1x60'
     alert_rule_test:
       - eval_time: 10m
-        alertname: HermesGatewayDown
+        alertname: OwnerLineDown
         exp_alerts: []
       # last active sample at t=9.5m; the window (t-5m, t] holds none from t=14m30s
       - eval_time: 14m
-        alertname: HermesGatewayDown
+        alertname: OwnerLineDown
         exp_alerts: []
       - eval_time: 16m
-        alertname: HermesGatewayDown
+        alertname: OwnerLineDown
         exp_alerts:
           - exp_labels:
               severity: nish
@@ -56,9 +58,11 @@ tests:
         values: '1x10 0x3 1x10'
       - series: 'up{job="node"}'
         values: '1x30'
+      - series: 'node_systemd_unit_state{name="claude-remote-control.service",state="active"}'
+        values: '1x30'
     alert_rule_test:
       - eval_time: 12m
-        alertname: HermesGatewayDown
+        alertname: OwnerLineDown
         exp_alerts: []
 
 
@@ -69,12 +73,14 @@ tests:
         values: '1x60'
       - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
         values: '1x10 _x40'
+      - series: 'node_systemd_unit_state{name="claude-remote-control.service",state="active"}'
+        values: '1x60'
     alert_rule_test:
       - eval_time: 9m
-        alertname: HermesGatewayDown
+        alertname: OwnerLineDown
         exp_alerts: []
       - eval_time: 16m
-        alertname: HermesGatewayDown
+        alertname: OwnerLineDown
         exp_alerts:
           - exp_labels:
               severity: nish
@@ -108,17 +114,19 @@ tests:
               description: "Systemd unit foo.service has been in the failed state for 5 minutes."
 
 
-  # (a) node_exporter down: the gateway series is stale and up is 0, so
-  # HermesGatewayDown stays quiet.
+  # (a) node_exporter down: both series are stale and up is 0, so OwnerLineDown
+  # stays quiet for both units.
   - interval: 30s
     input_series:
       - series: 'up{job="node"}'
         values: '1x10 0x40'
       - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
         values: '1x10 _x40'
+      - series: 'node_systemd_unit_state{name="claude-remote-control.service",state="active"}'
+        values: '1x10 _x40'
     alert_rule_test:
       - eval_time: 18m
-        alertname: HermesGatewayDown
+        alertname: OwnerLineDown
         exp_alerts: []
 
 
@@ -129,9 +137,11 @@ tests:
         values: '1x50'
       - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
         values: '1x10 _x40'
+      - series: 'node_systemd_unit_state{name="claude-remote-control.service",state="active"}'
+        values: '1x50'
     alert_rule_test:
       - eval_time: 16m
-        alertname: HermesGatewayDown
+        alertname: OwnerLineDown
         exp_alerts:
           - exp_labels:
               severity: nish
@@ -290,7 +300,7 @@ tests:
               description: "Every blackbox probe of https://new.test/ (job site-products) failed, or could not run, for 3 minutes."
 
 
-  # RemoteControlDown: one crash it heals after the 5-minute RestartSec stays
+  # Remote Control: one crash it heals after the 5-minute RestartSec stays
   # silent; a stop pages once 15 minutes hold no active sample.
   - interval: 30s
     input_series:
@@ -298,16 +308,18 @@ tests:
         values: '1x80'
       - series: 'node_systemd_unit_state{name="claude-remote-control.service",state="active"}'
         values: '1x10 0x10 1x10 0x50'
+      - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
+        values: '1x80'
     alert_rule_test:
       - eval_time: 20m
-        alertname: RemoteControlDown
+        alertname: OwnerLineDown
         exp_alerts: []
       # last active sample at t=16m; the window holds none from t=31m30s
       - eval_time: 31m
-        alertname: RemoteControlDown
+        alertname: OwnerLineDown
         exp_alerts: []
       - eval_time: 32m
-        alertname: RemoteControlDown
+        alertname: OwnerLineDown
         exp_alerts:
           - exp_labels:
               severity: nish
