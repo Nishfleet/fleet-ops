@@ -140,8 +140,18 @@ jobs:
         run: |
           set -euo pipefail
           # Before the label swap, so a trip leaves the ticket agent-ready instead of parked
-          # on agent-in-progress with no run behind it (round-2 review on #11957).
-          [ "$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:agent/issue-$ISSUE&state=open" --jq length)" = 0 ] || { echo "::error::#$ISSUE already has an open pull request on agent/issue-$ISSUE; review and red CI are answered on that pull request"; exit 1; }
+          # on agent-in-progress with no run behind it (round-2 review on #11957). An open
+          # pull request means the work is the review round on that pull request: a new
+          # worker would only race the round's branch, so the run stands down green instead
+          # of failing and parking the ticket (fleet-ops#12055: run 43840398495 failed here
+          # when the owner re-labelled #12046 while PR #12048 was open, and the retry it
+          # invited failed the same way).
+          n=$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:agent/issue-$ISSUE&state=open" --jq length)
+          if [ "$n" != 0 ]; then
+            echo "#$ISSUE already has an open pull request on agent/issue-$ISSUE; review and red CI are answered on that pull request"
+            echo skip=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           gh issue edit "$ISSUE" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
           gh issue comment "$ISSUE" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           eof="ISSUE_$(openssl rand -hex 16)"
@@ -150,14 +160,20 @@ jobs:
       # APPROVED, CHANGES_REQUESTED or DISMISSED (comment reviews do not count, the rule
       # branch protection uses), and it is open while it asks for changes. The task
       # carries every open change request, each under a "From <login>:" line. This step
-      # always runs, so `go` is always one step output; an issue run is always a go.
+      # always runs, so `go` is always one step output; an issue run is a go unless the
+      # claim stood down on an open pull request.
       # https://docs.github.com/en/rest/pulls/reviews#list-reviews-for-a-pull-request
       # https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
       - name: Read the review or the red CI
         id: round
-        env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SKIP: ${{ steps.claim.outputs.skip }}
         run: |
           set -euo pipefail
+          # The claim stood down because an open pull request uses the branch: nothing to
+          # run, and that pull request's own round answers the review (fleet-ops#12055).
+          if [ "${SKIP:-}" = true ]; then echo go=false >> "$GITHUB_OUTPUT"; exit 0; fi
           if [ -z "$PR" ]; then echo go=true >> "$GITHUB_OUTPUT"; exit 0; fi
           read -r ref sha merged < <(gh api "repos/$REPO/pulls/$PR" --jq '[.head.ref, .head.sha, .merged] | @tsv')
           # A round dispatched for a PR the merge queue already merged has nothing to

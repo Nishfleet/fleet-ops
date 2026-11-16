@@ -6,9 +6,12 @@ against a local bare repo (github.com rewritten by url.<base>.insteadOf) and a f
 Run 43378639058 then lost its push to "Repository lacks these prerequisite commits": a fix
 round whose worker merged the default branch makes the work bundle's prerequisites the
 branch's boundary commits, so the push repo needs the default branch's history too, and the
-claim bundle must hand the worker origin/<default> without network (fleet-ops#11973). The
-claim bundle step, the worker's clone and merge, the work bundle step and the push step run
-here as written, the same way.
+claim bundle must hand the worker origin/<default> without network (fleet-ops#11973). Run
+43840398495 failed the claim's open-PR guard when the owner re-labelled #12046 while PR
+#12048 was open, and the retry that guard's failure invited failed the same way
+(fleet-ops#12055): a re-label with an open pull request stands down green, because the work
+is that pull request's review round. The claim bundle step, the worker's clone and merge,
+the work bundle step and the push step run here as written, the same way.
 https://git-scm.com/docs/git-push#Documentation/git-push.txt---force-with-leaseltrefnamegt
 https://git-scm.com/docs/git-config#Documentation/git-config.txt-urlltbasegtinsteadOf
 https://git-scm.com/docs/git-bundle
@@ -121,9 +124,13 @@ PULLS = "repos/o/r/pulls?head=o:agent/issue-7&state=open"
 EDIT = ["issue", "edit", "7", "-R", "o/r", "--remove-label", "agent-ready", "--add-label", "agent-in-progress"]
 
 
-def test_the_claim_stops_before_the_label_swap_when_an_open_pr_uses_the_branch(tmp_path):
-    proc, _, calls = run_step(tmp_path, claim_step(), {PULLS: [{"number": 12}]}, ISSUE="7")
-    assert proc.returncode != 0
+def test_the_claim_stands_down_when_an_open_pr_uses_the_branch(tmp_path):
+    # fleet-ops#12055: a re-label while the pull request is open is not a new run; the
+    # pull request's round is the work, and failing here parked the ticket and invited a
+    # retry that failed the same way (run 43840398495).
+    proc, out, calls = run_step(tmp_path, claim_step(), {PULLS: [{"number": 12}]}, ISSUE="7")
+    assert proc.returncode == 0, proc.stderr
+    assert out == "skip=true\n"
     assert calls == [["api", PULLS, "--jq", "length"]]
 
 
