@@ -315,6 +315,25 @@ def test_an_issue_run_with_an_unchanged_tree_changes_nothing(stale):
     assert "nochange=true" in out.read_text()
 
 
+# A task whose "Done looks like" puts text on the pull request body (fleet-ops#12060) has
+# the packet tell the worker to author the body in pr-body.md; the bundle step carries it
+# to the push job as a multiline output, which sets the body to it.
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#example-of-a-multiline-string
+def test_the_bundle_step_carries_a_worker_authored_body(stale):
+    tmp = stale["tmp"]
+    (tmp / "pr-body.md").write_text("Closes #7\n\nThe owner's decision, quoted from the ticket.\n")
+    out = tmp / "out"
+    out.write_text("")
+    proc = subprocess.run(["bash", "-e", "-c", work_bundle_step()], cwd=str(tmp / "src"),
+                          env={"PATH": os.environ["PATH"], "RUNNER_TEMP": str(tmp), "dir": str(tmp / "src"),
+                               "GITHUB_OUTPUT": str(out), "BASE": stale["old"], "ISSUE": "7"},
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    lines = out.read_text().splitlines()
+    assert lines[lines.index("body<<FLEET_BODY_EOF") + 1:lines.index("FLEET_BODY_EOF")] == \
+        ["Closes #7", "", "The owner's decision, quoted from the ticket."]
+
+
 # fleet-ops#12004: a fix round on a branch behind its default branch starts with the default
 # branch already merged in by the Worker step itself, before any engine runs (run 43473108129:
 # the senior builder's sandbox keeps .claude/skills read-only and the packet-told `git merge`
