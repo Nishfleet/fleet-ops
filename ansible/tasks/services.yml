@@ -30,6 +30,17 @@
     daemon_reload: true
   ignore_errors: "{{ ansible_check_mode }}"
 
+# The Sunday 04:00 restart that closes the maintenance window
+# (rootfs/etc/systemd/system/fleet-reboot.timer). The boot after it re-applies
+# this play through fleet-host-config-boot.timer, which starts the runners.
+- name: Enable the Sunday restart
+  ansible.builtin.systemd_service:
+    name: fleet-reboot.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
 # Hermes' own installer writes hermes-gateway.service; --if-missing leaves the
 # unit it already wrote alone, and `hermes gateway restart --system` refreshes
 # it. The unit is not copied under rootfs/: it is installer-generated and its

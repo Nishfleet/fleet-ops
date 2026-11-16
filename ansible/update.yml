@@ -1,7 +1,9 @@
-# Daily update of the user-level tools that have no updater of their own,
-# run by fleet-update.service. Everything else updates itself:
-# - Ubuntu packages: unattended-upgrades (Ubuntu's default; a pending reboot is
-#   taken at 03:30 on Sunday, see rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades).
+# Weekly update of the user-level tools that have no updater of their own,
+# run by fleet-update.service in the Sunday maintenance window. Everything
+# else updates itself:
+# - Ubuntu packages: unattended-upgrades (the vendor's stock daily timer; a
+#   pending reboot is taken at 04:00 on Sunday, see
+#   rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades and fleet-reboot.timer).
 # - Container images: digest-pinned, bumped by Renovate PRs (.github/renovate.json).
 # - Claude Code: its own background auto-updater.
 # - Cua Spaces: pinned in host.yml, bumped by Renovate PRs, installed by the host play.

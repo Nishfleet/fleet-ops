@@ -22,7 +22,7 @@ rail are in `README.md`; the rules are in `AGENTS.md`.
 
 ## The failed-unit check and leftover ad-hoc units
 
-`ansible/update.yml` fails the daily update when `systemctl list-units
+`ansible/update.yml` fails the update run when `systemctl list-units
 --state=failed` is not empty, for system units and for nish's user units. The
 check is strict and stays strict: a failed unit fails the run, whatever it is
 and whenever it stopped. Nothing is tolerated and nothing is reset.
@@ -32,7 +32,7 @@ A leftover is cleared by hand, not by the run. `systemctl --user reset-failed
 calling `reset-failed` itself would drop the record of a unit this run has not
 read yet, and it would turn a red run green without anyone reading the name.
 So the run stays red until the named units are reset. That is what it is for:
-a red daily update is a list of names, and the names are the fix.
+a red update run is a list of names, and the names are the fix.
 
 One unit is the exception, because the play reads it by name: a unit in
 `retired_user_units` is stopped and disabled, so the play has seen its result,
@@ -62,7 +62,7 @@ and becomes a fix job. A failed user unit is not scraped: of the 212 unit
 names node_exporter exposes, not one is a user-manager unit, and
 `fleet-sync.service` and `fleet-litellm-proxy.service`
 are all absent from them. What hears about a failed user unit today is the
-daily update, and nothing else. A leftover still needs a hand `reset-failed`;
+update run, and nothing else. A leftover still needs a hand `reset-failed`;
 the difference is that somebody hears about it.
 
 To read a leftover before clearing it, `show` is the one-line form (`status`
@@ -147,7 +147,7 @@ add a loader for it to `~/.bashrc` or `~/.zshrc`. Work that needs a value from
 a file runs as a system unit as nish (`docs/detached-worker-unit.md`) with
 `EnvironmentFile=`, never as a `systemd-run` transient under the user manager,
 because a failed user unit is not scraped: node_exporter reads only the system
-bus, so a failed `--user` unit fires no alert and only the daily update sees it
+bus, so a failed `--user` unit fires no alert and only the update run sees it
 ("The failed-unit check and leftover ad-hoc units" above). Not from an
 interactive shell either, and not as a user-manager unit: the one-line
 system-unit form is `docs/detached-worker-unit.md`.
@@ -176,7 +176,7 @@ use instead.
 - Check both are on: `jq -r '.packages[]' ~/.pi/agent/settings.json | grep runner-guard`
   and `jq -r '.permissions.deny[]' ~/.claude/settings.json | grep -cE '^Bash\((sed|perl|git add)'`
   (prints 7).
-- The daily update keeps the Pi pin honest. It asks GitHub, once per
+- The update run keeps the Pi pin honest. It asks GitHub, once per
   `git:github.com/` pin, whether the pinned commit is on that repo's default
   branch, and fails the run when it is not, or when GitHub gives no answer at
   all. A pin on a pull request head is the failure this catches, because the

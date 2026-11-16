@@ -154,6 +154,12 @@
       - "{{ nish_home }}/.config/containers/systemd/aiostreams.container"
       # The 0509 runner's lock tree; nothing uses /run/lock/0509 any more (fleet-ops#11714).
       - /etc/tmpfiles.d/github-runner-0509.conf
+      # The weekly unattended-upgrades window drop-in (fleet-ops#12046): the
+      # upgrade timer is back on the vendor's stock daily schedule, so the
+      # whole drop-in directory goes. `state: absent` removes the directory
+      # with its contents, and the notified daemon-reload re-reads the timer
+      # without it, so the stock daily OnCalendar takes effect.
+      - /etc/systemd/system/apt-daily-upgrade.timer.d
       # The retired eval engine dockerd-eval.service (fleet-ops#11853): its unit,
       # the runtime-directory and data-root tmpfiles entry, the eval's nft table
       # and the config the unit read. /run/dockerd-eval was created by that
@@ -337,13 +343,6 @@
     - name: Restart ssh.socket
       ansible.builtin.systemd_service:
         name: ssh.socket
-        state: restarted
-
-    # The vendor timer is active on its daily schedule; restart it so the
-    # drop-in's Sunday OnCalendar takes effect before the next 06:00 run.
-    - name: Restart apt-daily-upgrade.timer
-      ansible.builtin.systemd_service:
-        name: apt-daily-upgrade.timer
         state: restarted
 
     # systemd_service scope=user would reload root's user manager, not nish's.
