@@ -48,36 +48,46 @@ groups:
           summary: "system unit {{ $labels.name }} failed"
           description: "Systemd unit {{ $labels.name }} has been in the failed state for 5 minutes."
 
-  - name: fleet_owner_line
+  - name: fleet_hermes
     rules:
-      # The owner's own two lines to the fleet, one rule: Hermes, his Telegram
-      # line to the fleet, and Remote Control, his coding line to the box
-      # (fleet-ops#11643). One rule rather than two so the owner's alert rule
-      # cap (fleet-ops#10935) holds with the Cloudflare spend watch in it; it
-      # pages exactly what the two separate rules paged, and the reset lists
-      # both as one symptom ("the owner's Hermes gateway or Remote Control
-      # down").
-      #
-      # Both units restart forever (Restart=always, StartLimitIntervalSec=0),
-      # so they never reach the failed state SystemUnitFailed reads; a stop was
-      # the 2026-10-09 "nothing told anyone" gap. Each keeps the window its
-      # separate rule used. max_over_time rather than `for:` so a crash loop
-      # that touches "active" for a moment between restarts does not reset the
-      # clock on a unit that is plainly not serving; absent_over_time covers
-      # the series vanishing (the unit is gone). Remote Control's window is 15
-      # minutes because RestartSec=300 keeps the unit out of "active" for 5
-      # minutes after every crash it heals itself, so only three failed
-      # restarts in a row, or a stop, page. node_exporter here has no restart
-      # counter (--collector.systemd.enable-restarts-metrics is off), so the
-      # rule reads the active state. Both branches are gated on node_exporter
-      # being up: when it is down the units are unobserved, not down.
-      - alert: OwnerLineDown
+      # Not active for 5 minutes. max_over_time rather than `for:` so a crash
+      # loop that touches "active" for a moment between restarts does not reset
+      # the clock on a gateway that is plainly not serving. absent_over_time
+      # covers the series vanishing (the unit is gone). Both branches are gated
+      # on node_exporter being up: when it is down the gateway is unobserved,
+      # not down. Kept in the reset because Hermes is the owner's Telegram line
+      # to the fleet, and the unit restarts forever, so it never reaches the
+      # failed state SystemUnitFailed reads.
+      - alert: HermesGatewayDown
         expr: |
           (
             max_over_time(node_systemd_unit_state{name="hermes-gateway.service",state="active"}[5m]) == 0
             or
             absent_over_time(node_systemd_unit_state{name="hermes-gateway.service",state="active"}[5m])
-            or
+          )
+          and on() (up{job="node"} == 1)
+        labels:
+          severity: nish
+        annotations:
+          summary: "hermes-gateway.service has not been active for 5 minutes"
+          description: "node_systemd_unit_state{name=\"hermes-gateway.service\",state=\"active\"} has no active sample in the last 5 minutes, or the series is missing."
+
+  - name: fleet_remote_control
+    rules:
+      # Nish's Remote Control server (claude-remote-control.service) has not been
+      # active for 15 minutes, or its series is gone (fleet-ops#11643). The unit
+      # restarts forever (Restart=always, StartLimitIntervalSec=0), so it never
+      # reaches the failed state SystemUnitFailed reads; a stop was the
+      # 2026-10-09 "nothing told anyone" gap. Same shape as HermesGatewayDown,
+      # but a 15 minute window: RestartSec=300 keeps the unit out of "active" for
+      # 5 minutes after every crash it heals itself, so only three failed
+      # restarts in a row, or a stop, page. node_exporter here has no restart
+      # counter (--collector.systemd.enable-restarts-metrics is off), so the
+      # rule reads the active state, as the issue allows. Paged, because a stop
+      # cuts Nish's own coding line to the box.
+      - alert: RemoteControlDown
+        expr: |
+          (
             max_over_time(node_systemd_unit_state{name="claude-remote-control.service",state="active"}[15m]) == 0
             or
             absent_over_time(node_systemd_unit_state{name="claude-remote-control.service",state="active"}[15m])
@@ -86,8 +96,8 @@ groups:
         labels:
           severity: nish
         annotations:
-          summary: '{{ if eq $labels.name "hermes-gateway.service" }}hermes-gateway.service has not been active for 5 minutes{{ else }}claude-remote-control.service has not been active for 15 minutes{{ end }}'
-          description: 'node_systemd_unit_state{name="{{ $labels.name }}",state="active"} has no active sample in the last {{ if eq $labels.name "hermes-gateway.service" }}5{{ else }}15{{ end }} minutes, or the series is missing.'
+          summary: "claude-remote-control.service has not been active for 15 minutes"
+          description: "node_systemd_unit_state{name=\"claude-remote-control.service\",state=\"active\"} has no active sample in the last 15 minutes, or the series is missing."
 
   - name: fleet_backup
     rules:
