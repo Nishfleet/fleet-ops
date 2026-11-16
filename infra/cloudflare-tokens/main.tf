@@ -63,6 +63,21 @@ locals {
       zones       = ["0509.io"]
       vps_only    = false
     }
+    # 0509's staging deploy: deploy-staging.yml's `staging` job names the
+    # `staging` environment, so it reads this secret and no other job does.
+    # Same groups as 0509-deploy, because the staging deploy runs the same
+    # steps (D1 migrations, a Worker with a custom domain and queue consumers)
+    # against the staging resources.
+    "0509-staging" = {
+      repo        = "0509"
+      environment = "staging"
+      secret_name = "CLOUDFLARE_API_TOKEN"
+      file        = null
+      account     = ["Workers Scripts Write", "D1 Write", "Queues Write", "Account Settings Read"]
+      zone        = ["Zone Read", "Workers Routes Write"]
+      zones       = ["0509.io"]
+      vps_only    = false
+    }
     # 0509's preview token: ci.yml's preview upload (`cf workers versions
     # create`) needs Workers Scripts Write, and the CLI resolves the account
     # with Account Settings Read. The preview job names the `preview`
@@ -158,11 +173,15 @@ locals {
       vps_only    = false
       r2_buckets  = [local.db_backup_bucket]
     }
-    # Already applied by hand on 2026-10-20 under this key, so the key stays: a
-    # new key would destroy the live repo secret when the old state entry goes.
+    # Applied by hand on 2026-10-20 under this key. The key stays so the token
+    # is not replaced. The secret stays at the repo level: fleet-console-worker
+    # is private and this lane has no GitHub credential, so its environments
+    # and its workflow's `environment:` declaration could not be checked
+    # (README, "Environments"); a follow-up moves the secret into the repo's
+    # `production` environment.
     "fleet_console" = {
       repo        = "fleet-console-worker"
-      environment = "production"
+      environment = null
       secret_name = "CLOUDFLARE_API_TOKEN"
       file        = null
       account     = ["Workers Scripts Write", "Account Settings Read"]
@@ -173,9 +192,10 @@ locals {
     # Preview tokens: each PR preview job uploads a Worker version or preview
     # (wrangler preview, cf previews deploy), which needs Workers Scripts Write
     # only. aiconverter-app previews are Pages branch deploys, so its preview
-    # token holds Pages Write only.
+    # token holds Pages Write only. mailbox has no preview job (checked
+    # 2026-11-16), so it gets no preview token; one is added when a preview
+    # job appears there.
     "drive-preview"                = { repo = "drive", environment = "preview", secret_name = "CLOUDFLARE_API_TOKEN", file = null, account = ["Workers Scripts Write"], zone = [], zones = [], vps_only = false }
-    "mailbox-preview"              = { repo = "mailbox", environment = "preview", secret_name = "CLOUDFLARE_API_TOKEN", file = null, account = ["Workers Scripts Write"], zone = [], zones = [], vps_only = false }
     "siterep-public-preview"       = { repo = "siterep-public", environment = "preview", secret_name = "CLOUDFLARE_API_TOKEN", file = null, account = ["Workers Scripts Write"], zone = [], zones = [], vps_only = false }
     "TinyStudio.io-public-preview" = { repo = "TinyStudio.io-public", environment = "preview", secret_name = "CLOUDFLARE_API_TOKEN", file = null, account = ["Workers Scripts Write"], zone = [], zones = [], vps_only = false }
     "inish-site-preview"           = { repo = "inish-site", environment = "preview", secret_name = "CLOUDFLARE_API_TOKEN", file = null, account = ["Workers Scripts Write"], zone = [], zones = [], vps_only = false }
@@ -207,6 +227,7 @@ locals {
 
   file_secrets = { for k, v in local.tokens : k => v if v.file != null }
   env_secrets  = { for k, v in local.tokens : k => v if v.environment != null }
+  repo_secrets = { for k, v in local.tokens : k => v if v.environment == null && v.repo != null }
 
   # The one private object store for the weekly database exports
   # (fleet-ops#11895), named here once and referenced by the bucket resource and
@@ -320,6 +341,17 @@ resource "local_sensitive_file" "token" {
   content              = "CLOUDFLARE_API_TOKEN=${cloudflare_api_token.token[each.key].value}\n"
   file_permission      = "0600"
   directory_permission = "0700"
+}
+
+# The repo-level secret is the fallback for a repo whose environment readiness
+# this lane could not check (README, "Environments"). Only fleet_console is
+# here; a follow-up moves it into its repo's `production` environment.
+resource "github_actions_secret" "repo" {
+  for_each = local.repo_secrets
+
+  repository      = each.value.repo
+  secret_name     = each.value.secret_name
+  plaintext_value = cloudflare_api_token.token[each.key].value
 }
 
 resource "github_actions_environment_secret" "env" {
