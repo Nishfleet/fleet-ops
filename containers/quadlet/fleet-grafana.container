@@ -29,7 +29,7 @@ StartLimitBurst=5
 [Container]
 # Pinned to the digest of the tagged manifest list; the tag stays as a readable label, but the
 # digest decides the image, so a repointed tag cannot change what runs.
-Image=docker.io/grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
+Image=docker.io/grafana/grafana:13.3.1@sha256:0615ec4fbd4072004b7d86b46ded63013a74b7d6eb1119273dd89e8fa25c13cf
 ContainerName=fleet-grafana
 Network=host
 # The host user maps to the image's grafana uid 472, so the nish-owned data
