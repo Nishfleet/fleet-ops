@@ -27,11 +27,11 @@
       "minimumReleaseAge": "3 days"
     },
     {
-      "description": "Safe updates merge themselves (fleet-ops#11920, owner 2026-11-12): a minor, patch or digest bump with green CI merges with no owner click; a major keeps the owner hold. The schedule is the Sunday maintenance window, 03:00-05:00 IST (unattended-upgrades 03:00, reboot 03:30, docs/daily-update.md): a merged image bump restarts its container on deploy, so it lands there. A schedule needs platformAutomerge false, because the platform auto-merge enqueues at PR creation and cannot follow a schedule (docs.renovatebot.com/configuration-options/#automergeschedule); Renovate then merges itself and still joins the merge queue when checks pass (docs.renovatebot.com/key-concepts/automerge).",
+      "description": "Safe updates merge themselves (fleet-ops#11920, owner 2026-11-12): a minor, patch or digest bump with green CI merges with no owner click; a major keeps the owner hold. The schedule is the Sunday maintenance window, 03:00-05:00 IST (unattended-upgrades 03:00, reboot 03:30, docs/daily-update.md): a merged image bump restarts its container on deploy, so it lands there. The schedule scopes PR creation to the window, and the platform auto-merge enqueues at PR creation, so the merge lands in the window too; merge-queue support goes through platform automerge, so it stays on (docs.renovatebot.com/configuration-options/#schedule; docs.renovatebot.com/key-concepts/automerge).",
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "automerge": true,
-      "automergeSchedule": ["* 3-4 * * 0"],
-      "platformAutomerge": false
+      "schedule": ["* 3-4 * * 0"],
+      "automergeSchedule": ["* 3-4 * * 0"]
     }
   ]
 }
