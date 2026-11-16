@@ -1,0 +1,141 @@
+# Cloudflare spend watch (fleet-ops#11689): one rule pages Nish's phone when
+# spend spikes. The reset (fleet-ops#10935) kept the billable-usage cost alarm
+# (cloudflare-billed-cost.yaml, warning: it files an issue the morning after a
+# charge lands) and deleted the paging meters. What can still burn money inside
+# the day is Workers AI: 0509's judge is designed paid usage, a runaway at the
+# AI Gateway rate cap (~60 calls/min) burns ~640k neurons/h, and neurons carry
+# a price ($0.011 per 1,000), so the burn is spend. This is the pre-reset
+# cf-ai-neurons rule; its replay over 2026-10-01..2026-10-10 (fleet-ops#9576)
+# fired on 2026-10-02 and 2026-10-04 and caught the leak in its first spike
+# hour (09:00Z, 30,811 neurons; the day peaked at 309,668).
+#
+# Source: Cloudflare's GraphQL analytics API through the Infinity data source
+# fleet-cloudflare (datasources/cloudflare.yaml, the vps-grafana token, Account
+# Analytics Read). The query names no account tag: the token is account-scoped,
+# so the account filter resolves to the one account it can read
+# (https://developers.cloudflare.com/analytics/graphql-api/features/filtering/).
+# The data source already carries the account, and the repo stays free of the
+# account id (fleet-ops#11689 review).
+#
+# What fires: the last hour over 10,000 neurons/h (about 2x the highest normal
+# hour since 2026-10-05, so the designed paid usage stays under it), or over
+# 3 x the 7-day hourly median when that line sits higher. ${__timeFrom} and
+# ${__timeTo} are expanded by the Infinity backend from each query's
+# relativeTimeRange, so a replay is the same rule with the two dates typed in.
+# A rule with no usage in the hour has no rows, which is Normal (noDataState
+# OK); an evaluation error fails loud into DatasourceError and files an issue
+# through the catch-all policy in cloudflare-spend-contact.yaml.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: cloudflare-spend
+    folder: fleet
+    interval: 1h
+    rules:
+      - uid: cf-spend
+        title: Cloudflare spend
+        condition: F
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model: &cf-spend-hour
+              refId: A
+              datasource: {type: yesoreyeram-infinity-datasource, uid: fleet-cloudflare}
+              type: graphql
+              source: url
+              url: https://api.cloudflare.com/client/v4/graphql
+              parser: backend
+              format: table
+              root_selector: data.viewer.accounts[0].aiInferenceAdaptiveGroups
+              columns: [{selector: sum.totalNeurons, text: value, type: number}]
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {}) {
+                    aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { sum { totalNeurons } }
+                  } } }
+          - refId: B
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-spend-hour
+              refId: B
+              columns:
+                - {selector: dimensions.datetimeHour, text: time, type: timestamp}
+                - {selector: sum.totalNeurons, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {}) {
+                    aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { datetimeHour } sum { totalNeurons } }
+                  } } }
+          - refId: T
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-spend-hour
+              refId: T
+              columns:
+                - {selector: dimensions.modelId, text: resource, type: string}
+                - {selector: sum.totalNeurons, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {}) {
+                    aiInferenceAdaptiveGroups(limit: 1, orderBy: [sum_totalNeurons_DESC], filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { modelId } sum { totalNeurons } }
+                  } } }
+          - refId: C
+            datasourceUid: __expr__
+            model: &cf-spend-median
+              datasource: {type: __expr__, uid: __expr__}
+              type: reduce
+              refId: C
+              expression: B
+              reducer: median
+              settings: {mode: dropNN}
+          - refId: D
+            datasourceUid: __expr__
+            model:
+              <<: *cf-spend-median
+              refId: D
+              expression: A
+              reducer: last
+          - refId: E
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: math
+              refId: E
+              expression: ($D > 10000) || ($C > 0 && $D > 3 * $C && $D > 10000)
+          - refId: R
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: math
+              refId: R
+              expression: $T * 0 + $E
+          - refId: F
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: F
+              expression: R
+              conditions: [{evaluator: {params: [0.5], type: gt}, operator: {type: and}, query: {params: [F]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Cloudflare used {{ with index $values "D" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} neurons in the last hour'
+          description: 'It fires above 10,000 neurons/h (fleet-ops#9576: about 2x the highest normal hour, so the designed paid usage of the 0509 judge stays under it) or above 3 x the 7-day hourly median when that sits higher; the median was {{ with index $values "C" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} neurons/h. Neurons cost $0.011 per 1,000, so the burn is spend. Find the product loop that burned them, stop it at the source, and write the cause in this issue. Top of the hour: {{ with $labels.resource }}{{ . }}{{ else }}an unknown model{{ end }}. Cloudflare dashboard: Workers & Pages > AI > Logs.'
+          top: '{{ with $labels.resource }}{{ . }}{{ else }}an unknown model{{ end }}'
+        labels: {severity: critical, signal: cloudflare-spend, product: workers-ai}
+        isPaused: false

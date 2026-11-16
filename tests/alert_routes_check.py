@@ -51,7 +51,13 @@ from urllib.parse import urlsplit
 
 import yaml
 
-URGENT = {}
+URGENT = {"Cloudflare spend": "a spend spike is a money problem, Nish's contract (fleet-ops#11689)"}
+# Receivers the reset left live in Grafana that no provisioning file defines:
+# file provisioning never deletes a contact point that leaves the files, so the
+# spend route references hermes-urgent by name and the repo names none of its
+# credentials (fleet-ops#11689 review). Any other receiver a rule reaches must
+# still be provisioned under the alerting dir.
+LIVE_RECEIVERS = {"hermes-urgent"}
 PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")
 CRITICAL_REPEAT = 3600
@@ -565,7 +571,7 @@ def main(root):
         for alertname in (title, *ERR):
             reached = route(policy, {**labels, "alertname": alertname})
             reached_any |= {rc for rc, _ in reached}
-            unknown = {rc.removesuffix("#muted") for rc, _ in reached} - contacts
+            unknown = {rc.removesuffix("#muted") for rc, _ in reached} - contacts - LIVE_RECEIVERS
             if unknown:
                 bad.append(f"{title}: unknown contact point(s) {sorted(unknown)}")
             if all(rc.endswith("#muted") for rc, _ in reached):
