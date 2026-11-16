@@ -1,0 +1,9 @@
+# The restart itself, started by fleet-reboot.timer. The boot runs the host
+# play again through fleet-host-config-boot.timer, which starts the runners
+# (docs/daily-update.md).
+[Unit]
+Description=Weekly restart of the fleet box
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl reboot

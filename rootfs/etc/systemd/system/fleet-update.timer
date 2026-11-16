@@ -1,10 +1,18 @@
-# Named reason for a schedule: upstream releases have no event on this box.
+# The weekly tool update of the Sunday maintenance window (fleet-ops#12046).
+# Ubuntu packages upgrade daily on the stock apt-daily-upgrade.timer; this
+# window's update is the tools (ansible/update.yml), and a kernel installed on
+# any day takes effect at the Sunday restart (fleet-reboot.timer).
+# RandomizedDelaySec=0 is deliberate: the previous 15 min jitter could start
+# the run as late as 03:25, and a run at the 45-minute cap
+# (fleet-update.service, TimeoutStartSec=) would overlap the 04:00 restart
+# (systemd.timer(5)).
+
 [Unit]
-Description=Daily safe full update of the fleet box
+Description=Weekly tool update of the fleet box
 
 [Timer]
-OnCalendar=*-*-* 03:30:00 Asia/Kolkata
-RandomizedDelaySec=15min
+OnCalendar=Sun *-*-* 03:10:00 Asia/Kolkata
+RandomizedDelaySec=0
 Persistent=true
 
 [Install]

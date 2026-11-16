@@ -1,0 +1,21 @@
+# The Sunday 04:00 restart that closes the weekly maintenance window
+# (fleet-ops#12046). The vendor's unattended-upgrades no longer takes the
+# reboot: its Automatic-Reboot-Time is a time of day and cannot name a weekday
+# (shutdown(8)), so Automatic-Reboot is "false"
+# (rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades) and the restart is
+# this timer's job. It runs 50 minutes after the tool update starts
+# (fleet-update.timer, 03:10): a run at that unit's 45-minute cap
+# (TimeoutStartSec=) is done by 03:55. A kernel installed on any day
+# (unattended-upgrades upgrades daily on the stock apt-daily-upgrade.timer)
+# takes effect at this restart. Persistent=true takes a missed Sunday at the
+# next boot.
+
+[Unit]
+Description=Weekly restart of the fleet box
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00 Asia/Kolkata
+Persistent=true
+
+[Install]
+WantedBy=timers.target

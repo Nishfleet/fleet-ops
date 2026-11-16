@@ -155,8 +155,8 @@
   loop:
     - {src: "{{ repo_root }}/config/pi-models.json", dest: models.json}
     # pi's own agent-level retry (pi docs/settings.md, "Network and retries"). The stock
-    # budget of 3 attempts rides 2s+4s+8s ≈ 14 s, but the box's Sunday 03:30 IST reboot
-    # (fleet-ops#11922) starts the runner pool at once while the router's containers are
+    # budget of 3 attempts rides 2s+4s+8s ≈ 14 s, but the box's Sunday 04:00 IST restart
+    # (fleet-ops#12046) starts the runner pool at once while the router's containers are
     # still booting, so the first run each boot read HAProxy's 503 "No server is available"
     # until that budget died and the run failed (agent run 43645875368, 2026-11-14 22:07,
     # four attempts in 15 s). 6 attempts hold out 2+4+8+16+32+64 ≈ 126 s, past the router's
