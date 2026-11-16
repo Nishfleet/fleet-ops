@@ -11,13 +11,10 @@
     <string>--no-ask-retry</string>
     <string>--no-self-update</string>
   </array>
-  <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>4</integer>
-    <key>Minute</key>
-    <integer>30</integer>
-  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>86400</integer>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
