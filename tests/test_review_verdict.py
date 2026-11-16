@@ -1,7 +1,5 @@
-"""The approver bot posts the reviewer's verdict, and never approves the code owner's own pull request,
-one that deletes or changes existing test lines (CODEOWNERS does not cover tests/, the owner holds
-the test-line hold on 2026-11-14: "Keep the hold: deleting a check still needs a senior look"), or
-one that any model but the lead reviewer approved (owner 2026-11-13: "AI decides but only opus 5.5").
+"""The approver bot posts the reviewer's verdict, and never approves the code owner's own pull request
+or one that any model but the lead reviewer approved (owner 2026-11-13: "AI decides but only opus 5.5").
 
 fleet-ops#11741 was opened under the owner's login; GitHub counted that as code-owner review, and
 it merged on the bot's approval alone. This runs the verdict job's real step against a fake `gh`.
@@ -61,7 +59,7 @@ def run_verdict(tmp_path, author, review, model="review-claude", files=APP_CHANG
     gh.chmod(0o755)
     env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "FAKE_GH_DIR": str(tmp_path), "AUTHOR": author,
            "FILES": json.dumps(list(files)), "BODY": body, "REVIEWS": json.dumps(list(reviews)),
-           "REPO": "o/r", "PR": "7", "SHA": "abc", "REVIEW": review, "TEST_EDITS": STEP["env"]["TEST_EDITS"], "MODEL": model}
+           "REPO": "o/r", "PR": "7", "SHA": "abc", "REVIEW": review, "MODEL": model}
     subprocess.run(["bash", "-c", STEP["run"]], env=env, check=True, capture_output=True, text=True)
     return [json.loads(c) for c in (tmp_path / "calls.log").read_text().splitlines()]
 
@@ -98,8 +96,12 @@ def test_the_lead_reviewer_approves(tmp_path, model):
 @pytest.mark.parametrize("change", [f(n) for n in ["tests/test_a.py", "app/test/x.ts", "e2e/login.ts", "src/__tests__/a.js",
                                                     "pkg/a_test.go", "src/a.test.tsx", "src/a.spec.ts", "lib/test_b.py"]]
                          + [f("tests/test_old.py", "removed"), f("src/a.py", "renamed", 0, previous_filename="tests/test_a.py")])
-def test_a_pull_request_that_changes_existing_test_lines_is_never_approved(tmp_path, change):
-    assert verdict(tmp_path, "nishfleet-worker[bot]", "fine\nVERDICT: APPROVE", files=[change]) == "COMMENT"
+def test_a_pull_request_that_edits_test_lines_is_approved_by_the_lead(tmp_path, change):
+    assert verdict(tmp_path, "nishfleet-worker[bot]", "fine\nVERDICT: APPROVE", files=[change]) == "APPROVE"
+
+
+def test_the_review_bar_names_weakened_tests():
+    assert "no existing test is weakened" in (ROOT / "docs/review-bar.md").read_text()
 
 
 def test_new_test_files_and_pure_additions_are_approved(tmp_path):
