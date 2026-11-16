@@ -43,7 +43,9 @@ def test_vps_token_writes_the_file_and_key_ansible_reads():
     assert f'src: "{path.replace("~", "{{ nish_home }}")}"' in secret
     assert f"key: {key}" in secret
     assert 'file_permission      = "0600"' in main
-    assert "if v.environment == null && v.repo != null" in main, "a file token must not be written to a repo secret"
+    assert re.search(r"environment\s+= null", entry), "a file token must not be written to a GitHub secret"
+    assert "if v.environment != null }" in main, "only environment tokens become GitHub secrets"
+    assert 'resource "github_actions_secret" "repo"' not in main, "deploy tokens must not be repo-level secrets"
 
 
 def test_the_weekly_apply_supplies_the_addresses_the_vps_token_needs():

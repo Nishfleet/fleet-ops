@@ -50,3 +50,9 @@ variable "github_app_pem" {
   type        = string
   sensitive   = true
 }
+
+variable "state_passphrase" {
+  description = "Passphrase for OpenTofu state encryption (versions.tf), at least 16 characters. Set as TF_VAR_state_passphrase from the private env file the apply unit loads; never in a file in the repo."
+  type        = string
+  sensitive   = true
+}
