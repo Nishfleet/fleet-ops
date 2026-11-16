@@ -1,10 +1,10 @@
-# Daily safe full update: ansible-pull of ansible/update.yml as root, from its
+# Weekly safe full update: ansible-pull of ansible/update.yml as root, from its
 # own clone (same trust model as fleet-host-config.service). See the playbook
 # header for the steps. Run now: sudo systemctl start --no-block fleet-update.service
 # --verify-commit needs GitHub's keys in root's keyring, which fleet-host-config.service
 # puts there (ansible/host.yml); on a rebuilt box run that unit first.
 [Unit]
-Description=Daily safe full update of the fleet box (ansible-pull of ansible/update.yml)
+Description=Weekly safe full update of the fleet box (ansible-pull of ansible/update.yml)
 Wants=network-online.target
 After=network-online.target
 # A failed run retries itself (Restart=on-failure, allowed for Type=oneshot:
@@ -43,6 +43,7 @@ ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git
 # makes curl fail and the - prefix ignores it; an unreachable healthchecks.io does not fail the update, a stale check is
 # the alert.
 ExecStartPost=-/usr/bin/curl -fsS -m 10 --retry 3 -o /dev/null --config /etc/fleet-ops/update-hc.curl
-# The play runs two tool updaters, each capped at 900 s (ansible/update.yml), plus
-# the clone. A hung run fails at 45 min instead of hiding for hours.
+# The play runs six tool updaters, each capped at 900 s (ansible/update.yml),
+# plus the clone. 45 min covers a normal run with room to spare; a hung one fails
+# there instead of hiding for hours, and the 04:00 restart ends the window.
 TimeoutStartSec=45min

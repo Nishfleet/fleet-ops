@@ -1,10 +1,12 @@
-## Daily update
+## Weekly update
 
-`fleet-update.timer` starts `fleet-update.service` every day at 03:30 IST.
+`fleet-update.timer` starts `fleet-update.service` every Sunday at 03:10 IST.
 It runs `ansible/update.yml` as root through `ansible-pull`:
 
-1. `npm update --global`, then `uv tool upgrade --all`, each capped at 900 s.
-2. Ubuntu packages update through `unattended-upgrades` (Sunday 03:00, see
+1. `npm update --global`, `uv tool upgrade --all`, `rustup update`,
+   `bun upgrade`, `rclone selfupdate` and `gh extension upgrade --all`, each
+   capped at 900 s.
+2. Ubuntu packages update through `unattended-upgrades` at Sunday 03:00 (see
    below), and Claude Code through its own auto-updater, so this run does not
    touch them.
 
@@ -12,22 +14,17 @@ A failed run retries after 30 min, at most 3 starts in 4 h, and then stays
 `failed`, which `SystemUnitFailed` reads. A run that hangs fails at 45 min
 (`TimeoutStartSec=`).
 
-`fleet-update.service` never reboots. A pending reboot is taken by the
-vendor's `unattended-upgrades` in the Sunday 03:30 quiet window:
-`Unattended-Upgrade::Automatic-Reboot "true"` and
-`Automatic-Reboot-Time "03:30"` in
-`rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades`. Its own
-`apt-daily-upgrade.timer` runs the upgrade at 03:00 that day
-(`rootfs/etc/systemd/system/apt-daily-upgrade.timer.d/50-fleet-weekly.conf`),
-because `Automatic-Reboot-Time` is a time of day, not a weekday. Both are the
-host's local time: the timer's `OnCalendar` names no timezone and `shutdown(8)`
-reads the reboot time in the same clock, so the two cannot drift apart. The
-box comes back in about a minute; `fleet-host-config-boot.timer` reapplies the
-host play three minutes after boot, which starts the runners, and GitHub's
-queue sends the pending jobs to them. The weekly security updates
-(`unattended-upgrades`) stay on; `rootfs/etc/needrestart/conf.d/50-fleet.conf`
-makes them only list services on old libraries, so they never restart a
-service mid-job.
+`fleet-update.service` never reboots. The window's restart is
+`fleet-reboot.timer`: a stock oneshot at Sunday 04:00 that runs
+`systemctl reboot`. It fires every week, not only in a week with a kernel
+update, and it lands after both the 03:00 Ubuntu upgrade and the 03:10 tool
+run. `Unattended-Upgrade::Automatic-Reboot` is `false`, because the vendor's
+reboot would be a second owner of the same instant. The box comes back in
+about a minute; `fleet-host-config-boot.timer` reapplies the host play three
+minutes after boot, which starts the runners, and GitHub's queue sends the
+pending jobs to them. The weekly security updates stay on;
+`rootfs/etc/needrestart/conf.d/50-fleet.conf` makes them only list services on
+old libraries, so they never restart a service mid-job.
 `hermes-gateway.service` and `hermes-serve.service` are not restarted by it
 either, so they run on old system libraries until the next reboot.
 `hermes-gateway.service` is the unit Hermes' own installer writes; `sudo hermes
@@ -59,9 +56,10 @@ no fleet pruning: Claude Code deletes transcripts after 30 days (`cleanupPeriodD
 
 - Run it now: `sudo systemctl start --no-block fleet-update.service`, then
   `journalctl -u fleet-update -f`.
-- Switch it off: a PR that drops "Enable the daily update" in
-  `ansible/host.yml` and adds a task with `state: stopped, enabled: false`.
+- Switch it off: a PR that drops "Enable the weekly update" in
+  `ansible/tasks/services.yml` and adds a task with `state: stopped, enabled: false`.
   In an emergency: `sudo systemctl disable --now fleet-update.timer`.
-- Delete it: remove `ansible/update.yml`, the two `fleet-update` units and
-  `50-fleet.conf`, and add their `/etc` paths to `retired` in `ansible/host.yml`.
+- Delete it: remove `ansible/update.yml`, the `fleet-update` and `fleet-reboot`
+  units and `50-fleet.conf`, and add their `/etc` paths to `retired` in
+  `ansible/host.yml`.
 

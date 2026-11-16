@@ -1,0 +1,10 @@
+# One restart a week, at the end of the Sunday maintenance window: Ubuntu
+# upgrades start 03:00, the tool update 03:10, and this lands at 04:00 so both
+# are done. It is the window's only reboot owner (Unattended-Upgrade::Automatic-Reboot
+# is off), so a week with no kernel update still restarts.
+[Unit]
+Description=Weekly restart at the end of the Sunday maintenance window
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --no-block reboot

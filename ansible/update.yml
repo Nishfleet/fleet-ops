@@ -1,11 +1,12 @@
-# Daily update of the user-level tools that have no updater of their own,
-# run by fleet-update.service. Everything else updates itself:
-# - Ubuntu packages: unattended-upgrades (Ubuntu's default; a pending reboot is
-#   taken at 03:30 on Sunday, see rootfs/etc/apt/apt.conf.d/52fleet-unattended-upgrades).
+# Weekly update of the user-level tools that have no updater of their own,
+# run by fleet-update.service in the Sunday maintenance window. Everything else:
+# - Ubuntu packages: unattended-upgrades (Ubuntu's default) at Sunday 03:00;
+#   the window's restart is fleet-reboot.timer at 04:00, see
+#   rootfs/etc/systemd/system/fleet-reboot.timer.
 # - Container images: digest-pinned, bumped by Renovate PRs (.github/renovate.json).
 # - Claude Code: its own background auto-updater.
 # - Cua Spaces: pinned in host.yml, bumped by Renovate PRs, installed by the host play.
-- name: Update npm and uv tools
+- name: Update the user-level tools
   hosts: localhost
   connection: local
   gather_facts: false
@@ -15,10 +16,14 @@
       become_user: nish
       environment:
         HOME: /home/nish
-        PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+        PATH: /home/nish/.local/bin:/home/nish/.cargo/bin:/usr/local/bin:/usr/bin:/bin
       ansible.builtin.command:
         argv: "{{ item }}"
       loop:
         - [npm, update, --global]
         - [uv, tool, upgrade, --all]
+        - [rustup, update]
+        - [bun, upgrade]
+        - [rclone, selfupdate]
+        - [gh, extension, upgrade, --all]
       timeout: 900

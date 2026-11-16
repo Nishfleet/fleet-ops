@@ -1,0 +1,12 @@
+# The Sunday window's restart. Persistent=false: a missed Sunday does not fire
+# at the next boot, outside the window.
+[Unit]
+Description=Weekly restart at the end of the Sunday maintenance window
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00 Asia/Kolkata
+RandomizedDelaySec=0
+Persistent=false
+
+[Install]
+WantedBy=timers.target

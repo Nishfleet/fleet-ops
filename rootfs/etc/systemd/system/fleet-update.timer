@@ -1,11 +1,14 @@
 # Named reason for a schedule: upstream releases have no event on this box.
+# Weekly, inside the Sunday window: 03:00 Ubuntu upgrade, 03:10 this run,
+# 04:00 restart (fleet-reboot.timer). Persistent=false keeps a missed Sunday
+# from firing at the next boot, outside the window.
 [Unit]
-Description=Daily safe full update of the fleet box
+Description=Weekly safe full update of the fleet box
 
 [Timer]
-OnCalendar=*-*-* 03:30:00 Asia/Kolkata
-RandomizedDelaySec=15min
-Persistent=true
+OnCalendar=Sun *-*-* 03:10:00 Asia/Kolkata
+RandomizedDelaySec=5min
+Persistent=false
 
 [Install]
 WantedBy=timers.target

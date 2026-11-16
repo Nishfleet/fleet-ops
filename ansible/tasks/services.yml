@@ -22,9 +22,18 @@
   ignore_errors: "{{ ansible_check_mode }}"
 
 # Starting the timer only schedules ansible/update.yml; it never runs it now.
-- name: Enable the daily update
+- name: Enable the weekly update
   ansible.builtin.systemd_service:
     name: fleet-update.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# The window's restart, at 04:00. Enabling only schedules it.
+- name: Enable the weekly restart
+  ansible.builtin.systemd_service:
+    name: fleet-reboot.timer
     enabled: true
     state: started
     daemon_reload: true
