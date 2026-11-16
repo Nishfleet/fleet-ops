@@ -4,7 +4,7 @@
 [misc]
 assume_yes = true
 no_retry = true
-notify_end = "never"
+notify_end = "on_failure"
 no_self_update = true
 disable = [
   "brew_formula", "brew_cask", "mas", "system", "gem", "ruby_gems",
@@ -14,6 +14,11 @@ disable = [
   "node",                  # PATH npm is .hermes' own node; explicit prefixes below instead
   "skills", "github_cli_skills", "claude_code_plugins",
 ]
+
+# gup retries every binary it owns, and xurl's chat-xdk cgo lib ships an LTO bitcode
+# section that Go 1.27 rejects. The installed xurl still works; skip the rebuild.
+[go]
+gup_exclude = ["xurl"]
 
 # One vendor command each. Custom commands run through the shell.
 [commands]
