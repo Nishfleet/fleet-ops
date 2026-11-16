@@ -12,7 +12,12 @@ CAP_KEYS = {"Service": {"MemoryMax"}}
 
 
 def quadlets() -> list[Path]:
-    return sorted(ROOT.glob("containers/quadlet/*.container"))
+    # The tether quadlet (fleet-ops#12062) is rendered from a template, because
+    # its uid is looked up; it obeys the same hardening rules as the static ones.
+    return sorted(
+        [*ROOT.glob("containers/quadlet/*.container"),
+         ROOT / "ansible/templates/fleet-tether.container.j2"]
+    )
 
 
 def parse(path: Path) -> dict[str, list[tuple[str, str]]]:

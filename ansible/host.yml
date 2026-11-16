@@ -111,6 +111,11 @@
       # one below was retired: the images are digest-pinned and move only by
       # Renovate PR, so podman-auto-update(1) has nothing to pull.
       - podman-auto-update.timer
+      # tether's old plain unit (fleet-ops#12062): replaced by the fleet-tether
+      # Podman quadlet, which tasks/tether.yml renders and enables before this
+      # stop lands, so tether does not sit down for long. Its hand-enabled
+      # wants symlink dies with the disable; its unit file is in `retired` below.
+      - tether-agent.service
     retired_user_units:
       # Every image is digest-pinned and moves only by Renovate PR, so podman's
       # auto-update timer has nothing to pull (podman-auto-update(1)).
@@ -168,6 +173,10 @@
       # collector the 2026-11-01 reset removed; the file left rootfs/ in
       # fleet-ops#11613, and the copy on /etc was removed by hand 2026-11-10.
       - /etc/claude-code/managed-settings.d/70-beacon-otlp.json
+      # tether's old plain unit (fleet-ops#12062): the fleet-tether quadlet
+      # replaced it. Stopped and disabled by retired_units above, then the
+      # file goes.
+      - /etc/systemd/system/tether-agent.service
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"
@@ -415,12 +424,13 @@
 
     # A moved `current` link is invisible to the running agent: one release landed
     # on 23 Oct and the unit kept running the previous one until a hand restart. This
-    # fires only when the hand-enabled wants symlink exists, and never while
+    # fires only when the fleet-tether.service wants symlink exists (so never on the
+    # run that first enables the quadlet: it starts fresh there), and never while
     # the off marker exists (the marker run notifies nothing and keeps the
     # unit stopped).
-    - name: Restart tether-agent after its release changed
+    - name: Restart the tether quadlet after its release changed
       ansible.builtin.systemd_service:
-        name: tether-agent.service
+        name: fleet-tether.service
         state: restarted
       when:
         - tether_agent_enabled.stat.islnk | default(false)
