@@ -43,7 +43,27 @@ def test_vps_token_writes_the_file_and_key_ansible_reads():
     assert f'src: "{path.replace("~", "{{ nish_home }}")}"' in secret
     assert f"key: {key}" in secret
     assert 'file_permission      = "0600"' in main
+    assert re.search(r"environment\s+= null", entry), "a file token must not be written to a GitHub secret"
+    assert "if v.environment != null }" in main, "only environment tokens become GitHub secrets"
     assert "if v.environment == null && v.repo != null" in main, "a file token must not be written to a repo secret"
+    assert 'resource "github_actions_secret" "repo"' in main, "the repo the lane could not check keeps a repo-level secret"
+
+
+def test_only_the_unchecked_repo_lacks_an_environment():
+    """fleet-console-worker is private, so this lane could not check its
+    environments or its workflow's `environment:` declaration (README,
+    "Environments"); its token stays a repo-level secret until a follow-up
+    moves it. Every other repo token names an environment."""
+    tokens = MAIN.read_text()
+    tokens = tokens[tokens.index("tokens = {") :]
+    for key, body in re.findall(r'"([^"]+)" = \{(.*?)\n    \}', tokens, re.DOTALL):
+        environment = re.search(r"environment\s+= (\S+)", body).group(1)
+        if environment != "null":
+            continue
+        repo = re.search(r'repo\s+= "?([^\s"#]+)', body)
+        assert repo is None or repo.group(1) in ("null", "fleet-console-worker"), (
+            f"{key}: a repo-level secret is only for the repo this lane could not check"
+        )
 
 
 def test_the_weekly_apply_supplies_the_addresses_the_vps_token_needs():
