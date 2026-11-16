@@ -24,10 +24,15 @@ d = os.environ["FAKE_GH_DIR"]
 args = sys.argv[1:]
 open(os.path.join(d, "calls.log"), "a").write(json.dumps(args) + "\n")
 jq = args[args.index("--jq") + 1] if "--jq" in args else None
-data = {"view": {"headRefOid": "abc", "author": {"login": os.environ["AUTHOR"]}, "body": os.environ["BODY"]},
+# REST names a bot `renovate[bot]`; `gh pr view` names it `app/renovate`.
+view_author = "app/" + os.environ["AUTHOR"][:-5] if os.environ["AUTHOR"].endswith("[bot]") else os.environ["AUTHOR"]
+data = {"view": {"headRefOid": "abc", "author": {"login": view_author}, "body": os.environ["BODY"]},
+        "pull": {"user": {"login": os.environ["AUTHOR"]}},
         "files": json.loads(os.environ["FILES"]), "reviews": json.loads(os.environ["REVIEWS"])}
 if args[:2] == ["pr", "view"]:
     data = data["view"]
+elif args[0] == "api" and args[1].endswith("/pulls/7"):
+    data = data["pull"]
 elif any(a.endswith("/files") for a in args):
     data = data["files"]
 elif args[1] == "user":
@@ -93,6 +98,20 @@ def test_a_pull_request_without_a_run_proof_line_is_never_approved(tmp_path, bod
 @pytest.mark.parametrize("model", ["review-claude", "review-fable"])
 def test_the_lead_reviewer_approves(tmp_path, model):
     assert verdict(tmp_path, "nishfleet-worker[bot]", "fine\nVERDICT: APPROVE", model=model) == "APPROVE"
+
+
+@pytest.mark.parametrize("author", ["renovate[bot]", "dependabot[bot]"], ids=["renovate", "dependabot"])
+def test_a_bot_bump_is_approved_without_a_run_proof_line(tmp_path, author):
+    """fleet-ops#12049: a bot cannot edit its body, so review-bar.md judges its diff alone and
+    the proof-line hold never applies to it."""
+    assert verdict(tmp_path, author, "fine\nVERDICT: APPROVE", body="chore(deps): update pin") == "APPROVE"
+
+
+def test_a_bot_bump_from_a_non_lead_model_is_still_held(tmp_path):
+    calls = run_verdict(tmp_path, "renovate[bot]", "fine\nVERDICT: APPROVE", model="review-any", body="chore(deps): update pin")
+    post = next(c for c in reversed(calls) if any(a.startswith("event=") for a in c))
+    assert next(a for a in post if a.startswith("event=")).split("=", 1)[1] == "COMMENT"
+    assert "Held for the owner: only the lead reviewer approves." in next(a for a in post if a.startswith("body="))
 
 
 @pytest.mark.parametrize("change", [f(n) for n in ["tests/test_a.py", "app/test/x.ts", "e2e/login.ts", "src/__tests__/a.js",
