@@ -45,7 +45,7 @@ elif any("/issues/" in a for a in args):
 elif os.environ.get("GH_FAIL") and any("github.diff" in a for a in args):
     sys.exit(1)
 elif args[:2] == ["pr", "view"]:
-    data = {"title": "t", "body": "b", "author": {"login": "a"}, "reviews": [],
+    data = {"title": "t", "body": "b", "author": {"login": os.environ.get("AUTHOR", "a")}, "reviews": [],
             "comments": json.loads(os.environ.get("COMMENTS", "[]"))}
 else:
     print("diff or bar"); sys.exit(0)
@@ -84,8 +84,8 @@ def run_job(tmp_path, branch, pushes=(), runs=(), **fail):
     return outcome, called, (tmp_path / "out").read_text()
 
 
-def reviewer(tmp_path, branch, pushes=(), runs=()):
-    outcome, called, out = run_job(tmp_path, branch, pushes, runs)
+def reviewer(tmp_path, branch, pushes=(), runs=(), **env):
+    outcome, called, out = run_job(tmp_path, branch, pushes, runs, **env)
     assert outcome == "success" and "VERDICT: APPROVE" in out
     return called[0].removeprefix("litellm/")
 
@@ -122,6 +122,18 @@ def test_a_failed_ticket_read_leaves_a_marker_and_the_review_goes_on(tmp_path, b
 def test_no_ticket_section_when_the_branch_has_no_ticket(tmp_path):
     run_job(tmp_path, "lead/x")
     assert "# The ticket this pull request closes" not in (tmp_path / "prompt.md").read_text()
+
+
+@pytest.mark.parametrize("author", ["renovate[bot]", "dependabot[bot]"], ids=["renovate", "dependabot"])
+def test_a_bot_bump_goes_to_the_lead_reviewer(tmp_path, author):
+    """fleet-ops#12049: a bump PR goes to the lead reviewer, whose approval counts, so a green
+    patch, minor or digest merges with no owner click."""
+    assert reviewer(tmp_path, "lead/x", AUTHOR=author) == "review-fable"
+
+
+def test_a_bump_branch_by_anyone_else_still_goes_to_review_any(tmp_path):
+    """The lead routing keys on the bot author, not the branch name."""
+    assert reviewer(tmp_path, "renovate/quadlet-postgres-1.x", AUTHOR="nish3451") == "review-any"
 
 
 def test_the_senior_round_goes_to_fable(tmp_path):

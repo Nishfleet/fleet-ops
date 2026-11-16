@@ -1,6 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "enabledManagers": ["quadlet", "custom.regex"],
+  "timezone": "Asia/Kolkata",
   "customManagers": [
     {
       "description": "Cua Spaces has no apt repository: its release is pinned in the host play.",
@@ -24,6 +25,13 @@
       "description": "A Cua Spaces release is taken only once it is 3 days old, as the old daily update did.",
       "matchDepNames": ["cua-spaces"],
       "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Safe updates merge themselves (fleet-ops#11920, owner 2026-11-12): a minor, patch or digest bump with green CI merges with no owner click; a major keeps the owner hold. The schedule is the Sunday maintenance window, 03:00-05:00 IST (unattended-upgrades 03:00, reboot 03:30, docs/daily-update.md): a merged image bump restarts its container on deploy, so it lands there. A schedule needs platformAutomerge false, because the platform auto-merge enqueues at PR creation and cannot follow a schedule (docs.renovatebot.com/configuration-options/#automergeschedule); Renovate then merges itself and still joins the merge queue when checks pass (docs.renovatebot.com/key-concepts/automerge).",
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": true,
+      "automergeSchedule": ["* 3-4 * * 0"],
+      "platformAutomerge": false
     }
   ]
 }

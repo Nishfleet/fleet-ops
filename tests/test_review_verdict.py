@@ -95,6 +95,20 @@ def test_the_lead_reviewer_approves(tmp_path, model):
     assert verdict(tmp_path, "nishfleet-worker[bot]", "fine\nVERDICT: APPROVE", model=model) == "APPROVE"
 
 
+@pytest.mark.parametrize("author", ["renovate[bot]", "dependabot[bot]"], ids=["renovate", "dependabot"])
+def test_a_bot_bump_is_approved_without_a_run_proof_line(tmp_path, author):
+    """fleet-ops#12049: a bot cannot edit its body, so review-bar.md judges its diff alone and
+    the proof-line hold never applies to it."""
+    assert verdict(tmp_path, author, "fine\nVERDICT: APPROVE", body="chore(deps): update pin") == "APPROVE"
+
+
+def test_a_bot_bump_from_a_non_lead_model_is_still_held(tmp_path):
+    calls = run_verdict(tmp_path, "renovate[bot]", "fine\nVERDICT: APPROVE", model="review-any", body="chore(deps): update pin")
+    post = next(c for c in reversed(calls) if any(a.startswith("event=") for a in c))
+    assert next(a for a in post if a.startswith("event=")).split("=", 1)[1] == "COMMENT"
+    assert "Held for the owner: only the lead reviewer approves." in next(a for a in post if a.startswith("body="))
+
+
 @pytest.mark.parametrize("change", [f(n) for n in ["tests/test_a.py", "app/test/x.ts", "e2e/login.ts", "src/__tests__/a.js",
                                                     "pkg/a_test.go", "src/a.test.tsx", "src/a.spec.ts", "lib/test_b.py"]]
                          + [f("tests/test_old.py", "removed"), f("src/a.py", "renamed", 0, previous_filename="tests/test_a.py")])

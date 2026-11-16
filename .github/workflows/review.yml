@@ -26,8 +26,7 @@ jobs:
     if: >-
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
-      github.event.workflow_run.actor.login != 'dependabot[bot]'
+      github.event.workflow_run.head_repository.full_name == github.repository
     # Runner group `reviewer` only this workflow on main may use, so the worker lane cannot
     # change the pi that writes the verdict. https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access
     runs-on: {group: reviewer, labels: [self-hosted, reviewer]}
@@ -61,6 +60,11 @@ jobs:
         run: |
           set -euo pipefail
           model=review-any
+          # A bump PR (renovate[bot] or dependabot[bot]) goes to the lead reviewer, whose approval
+          # counts as the code-owner review: a green patch, minor or digest bump then merges with
+          # no owner click, and a major is held (fleet-ops#12049, docs/review-bar.md).
+          author=$(gh pr view "$PR" -R "$REPO" --json author --jq .author.login)
+          case "$author" in 'renovate[bot]'|'dependabot[bot]') model=review-fable ;; esac
           case "$BRANCH" in agent/issue-*)
             # The lane's senior comment marks round 3 (agent.yml): the owner sends it to
             # review-fable, regardless of which engine pushed the head.
@@ -150,7 +154,10 @@ jobs:
           # approval alone merged fleet-ops#11741. The bot never approves the owner's pull request.
           [ "$event" != APPROVE ] || [ "$author" != nish3451 ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: the owner opened this pull request.'; owner_hold=1; }
           # agent.yml tells the worker the bot will not approve without a run-proof line; this holds it.
-          [ "$event" != APPROVE ] || [ "$proof" = true ] || { event=COMMENT; REVIEW+=$'\n\nNot approved: the body has no run-proof line.'; }
+          # A bump PR keeps its own body: review-bar.md judges a renovate[bot]/dependabot[bot]
+          # pull request on its diff alone, so the proof line is a worker-lane rule only.
+          [ "$event" != APPROVE ] || [ "$author" = 'renovate[bot]' ] || [ "$author" = 'dependabot[bot]' ] \
+            || [ "$proof" = true ] || { event=COMMENT; REVIEW+=$'\n\nNot approved: the body has no run-proof line.'; }
           # An assignment, so a failed call stops the job instead of approving.
           edits=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq "$TEST_EDITS")
           [ "$event" != APPROVE ] || [ -z "$edits" ] || { event=COMMENT; REVIEW+=$'\n\nHeld for the owner: this PR deletes or changes existing test lines.'; owner_hold=1; }
