@@ -56,7 +56,7 @@ def test_only_the_unchecked_repo_lacks_an_environment():
     moves it. Every other repo token names an environment."""
     tokens = MAIN.read_text()
     tokens = tokens[tokens.index("tokens = {") :]
-    for key, body in re.findall(r'"([^"]+)" = \{(.*?)\n    \}', tokens, re.S):
+    for key, body in re.findall(r'"([^"]+)" = \{(.*?)\n    \}', tokens, re.DOTALL):
         environment = re.search(r"environment\s+= (\S+)", body).group(1)
         if environment != "null":
             continue
