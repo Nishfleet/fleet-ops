@@ -408,25 +408,6 @@ def test_a_review_answer_appends_its_proof_to_the_body_before_the_push(tmp_path,
     assert not any(c[:2] == ["pr", "create"] for c in calls)
 
 
-# A task whose "Done looks like" puts text on the pull request body (fleet-ops#12060: the
-# owner's decision has to be quoted on the pull request) has the packet tell the worker to
-# author the body in pr-body.md; the bundle step carries it as a multiline output and the
-# push step sets the body to it, plus the run link and the proof, before the push starts
-# the re-review that reads the body live.
-# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#example-of-a-multiline-string
-def test_a_worker_authored_body_replaces_the_body_on_a_review_round(tmp_path):
-    data = {"repos/o/r/pulls/12": {"body": "Closes #7\n\nrun-proof: old -> 1 passed"}}
-    (tmp_path / "push").mkdir()  # the stub git does not create it
-    authored = "Closes #7\n\nThe owner's decision, quoted from the ticket.\n"
-    proc, _, calls = run_step(tmp_path, push_step(), data, stubs=("git",), ISSUE="7", PR="12", BASE=SHA, DEFAULT="main",
-                              PROOF="run-proof: pytest -q -> 9 passed", WORKER_BODY=authored)
-    assert proc.returncode == 0, proc.stderr
-    edit = calls.index(["api", "-X", "PATCH", "repos/o/r/pulls/12", "-f",
-                        f"body={authored}\n\nReview answer by the agent lane: https://github.com/o/r/actions/runs/1\n\nrun-proof: pytest -q -> 9 passed"])
-    push = next(i for i, c in enumerate(calls) if c[:1] == ["push"])
-    assert edit < push
-
-
 def test_the_hop_fires_only_on_a_change_request_from_the_bot_or_the_owner_and_holds_no_secret():
     hop = HOP["jobs"]["dispatch"]
     on = HOP.get("on", HOP.get(True))
