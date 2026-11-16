@@ -278,23 +278,6 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: {name: repo, path: "${{ runner.temp }}"}
       - name: Worker
-        # A stuck run fails here with GitHub's own step deadline instead of burning the
-        # job's 90-minute limit silently (fleet-ops#12065: runs 43824107505 cancelled at
-        # 77 min on a whole-disk grep, 43829700947 failed at 78 min, 43824061004 timed out
-        # at 91 min and the 2026-11-12 #11923 runs at ~45 min, all ending in "Terminate
-        # orphan process: pid (pi)"). No vendor setting bounds a stuck worker sooner: pi's
-        # bash tool takes no default timeout (its `timeout` is a per-call argument the
-        # model supplies), pi's own provider request timeout never reaches a streamed body
-        # (the openai SDK clears it when headers arrive and skips stream bodies), and the
-        # router's legs are idle-deadlines (httpx read) that a keep-alive or reasoning-ping
-        # stream resets forever — measured on the pinned litellm: a silent stream dies at
-        # router_settings.timeout, a trickling one outlives timeout and stream_timeout
-        # alike. One model call can also legally eat 2 x 1800 s (TimeoutErrorRetries: 1)
-        # and pi's own retry budget re-enters the same loop, so the only stock total
-        # deadline over the worker is this one. The step fails with the deadline in the
-        # job log and park labels the issue agent-blocked with the run link.
-        # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobstimeminutes
-        timeout-minutes: 60
         env:
           ISSUE_TEXT: ${{ needs.claim.outputs.issue }}
           DEFAULT_BRANCH: ${{ needs.claim.outputs.default }}
