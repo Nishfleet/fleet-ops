@@ -216,3 +216,28 @@ fleet-ops#11876, owner decision 2026-11-10 (the audit, decision 14; details off 
 ## Note 21
 
 fleet-ops#11950: the `max_parallel_requests: 1` note 20 put on the two kept z.ai rows is removed (the #10694/#10762 treatment is back). The one-slot cap 429s the caller before any provider call (LiteLLM docs, Router: max parallel requests, https://docs.litellm.ai/docs/routing: `MaxParallelRequestsLimit.acquire` runs in `_acompletion`'s pre-call checks), the session pin (`deployment_affinity_check`, pre-call) then narrows every granted retry to the row that just answered 429, the row never cools because no provider call failed, and pi's own retry budget runs out with the whole run: on 2026-11-12 all five pi `agent.yml` runs died this way ("Deployment has all max_parallel_requests slots in use", `model_group=worker-capable`), the `AgentRunFailureShare` alert's cause. Note 12's stream slot-leak (a stream opened and dropped unread never releases its slot on this pinned v1.105.0) re-adds the jam risk on any slot count, measured live on 2026-10-28 and fixed only by a router restart. Decision 14's row cut stands; the plan's own concurrency 429s — which the #11146 treatment parks on the first one — and the router's cooldown hold the key's throughput as the plan limits it. Rows that keep a cap elsewhere in this config do so on their own owner decision (#9374 judge, #11417's parked MiniMax rows carry none).
+
+## Note 22
+
+fleet-ops#12083: the CommandCode rows carry no deployment budget. The plan's `10 USD / 1d`
+`max_budget` + `budget_duration` (fleet-ops#9744, "a money cap, not a park") benched the plan
+twice, and the second time it was not an outage: on 2026-11-16 from 16:20 UTC the router stopped
+picking both `worker-capable` rows at once (state active, deployments healthy, no failures, the
+`PaidPlanIdle` branches all quiet) and the alert fired at 16:19 UTC the next day, ~24h later,
+to the minute of a 1d window. The cap's own branch is the cause: `RouterBudgetLimiting`
+registers a row carrying both keys with the deployment-budget filter
+(litellm/router_strategy/budget_limiter.py on the pinned v1.105.0, https://docs.litellm.ai/docs/routing),
+which drops it from every pick once the window's spend crosses `max_budget`; the window resets
+only on a success event for that same row (spend keys TTL'd to the window, plus the in-memory
+cache's 600s staleness), so a crossed row is bened for the rest of `budget_duration` and a
+fully used plan reads as idle until it expires. Traffic resumed on its own at 16:31 UTC on
+2026-11-17 (successes 7→29 within minutes; the alert cleared by 16:38 UTC) and the group's
+other rows carried the whole window meanwhile. The fix removes the cap from the two rows: the
+plan's ceiling is the prepaid wallet, a dry wallet answers 429, and the 429 wall already has a
+machine-readable branch in `PaidPlanIdle` and takes the first-429 park — the #11417 shape.
+config/litellm-proxy.schema.json now refuses a deployment budget on any `worker-` row
+(`worker-row-budget-cap.yaml` is the reject case), `test_no_worker_row_carries_a_deployment_budget`
+pins the live config, and the gate keeps the tether and review rows' own budgets, which Nish set
+knowingly on single-row groups after #11417 was on record. The cap was not a spend-control loss
+measured in money lost; the bench it bought (a whole plan out of the pick for a day, twice
+recorded) was.
