@@ -230,6 +230,16 @@ groups:
       # day-long wall was observed live), and 17 hours is inside the window.
       # A plan in the blind gap — no successes since the restart and no refusal recorded
       # yet — still fires, which is how this wall surfaced at all.
+      # fleet-ops#10327 (seen live 2026-11-17): on the quiet fleet (a few pinned sessions
+      # a day — simple-shuffle deals each session's whole traffic to its first pick, which
+      # the session pins then hold) a healthy plan can go a whole day unpicked. z.ai went
+      # 24h02m with its rows healthy and this alert fired at the 24-hour mark exactly, then
+      # resolved by itself at the plan's next burst (55 calls in 10 minutes). That is the
+      # rule working as specified, not a fault: the 24-hour window is the standing rules'
+      # own number (fleet-ops#11845) and the owner's call, so it stays 24 — the MiniMax
+      # 72 hours (fleet-ops#10431) is a per-plan exception, not a fleet-wide one. Widening
+      # the window here would also delay every real idle page three days and grow the
+      # restart blind gap above from 24 to 72 hours.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)

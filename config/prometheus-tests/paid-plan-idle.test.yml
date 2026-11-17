@@ -218,3 +218,38 @@ tests:
       - eval_time: 26h
         alertname: PaidPlanIdle
         exp_alerts: []
+
+  # fleet-ops#10327 (seen live 2026-11-17): z.ai's last call landed at 15:31 UTC
+  # 2026-11-16 and its next at 15:33 UTC 2026-11-17, where a burst answered 55
+  # calls in 10 minutes — the rows were healthy the whole day, the fleet just
+  # drew them nothing. The alert fired at the 24-hour mark exactly and resolved
+  # by itself at that burst: the rule working as specified. The window stays 24
+  # hours (the standing rules' number, fleet-ops#11845), so a plan unpicked for
+  # 24 hours fires and stays firing until calls land. No refusals: the plan was
+  # not walled, just undrawn.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.z.ai/api/coding/paas/v4",model_id="zai-glm53flashi-worker-capable"}'
+        values: '0+1x40 40x80'
+    alert_rule_test:
+      # 24 hours after the last call (t=40h): the window has emptied and the
+      # plan fires — exactly the page #10327 got.
+      - eval_time: 64h
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://api.z.ai/api/coding/paas/v4
+            exp_annotations:
+              summary: "paid plan https://api.z.ai/api/coding/paas/v4 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.z.ai/api/coding/paas/v4 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+      # Still no calls 72 hours on: the plan keeps firing until traffic lands.
+      - eval_time: 112h
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://api.z.ai/api/coding/paas/v4
+            exp_annotations:
+              summary: "paid plan https://api.z.ai/api/coding/paas/v4 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.z.ai/api/coding/paas/v4 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
