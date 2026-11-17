@@ -7,7 +7,11 @@
 # wall) is used, not idle: while the router holds a 429 refusal for the plan
 # inside the window it stays quiet, a refusal older than the window is stale and
 # does not silence it, and the silence after a restart with neither successes
-# nor refusals recorded still fires (fleet-ops#11985).
+# nor refusals recorded still fires (fleet-ops#11985). A plan whose deployment
+# budget is spent (fleet-ops#12083) is at its cap, not idle: a successful call
+# inside the last 25h — the cap's own 1d window plus an hour of slack — keeps
+# it quiet, and the cushion is bounded, so a plan idle past it fires an hour
+# later than the 24-hour term alone would.
 # https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
 rule_files:
   - ../../rootfs/etc/prometheus/fleet_rules.yml
@@ -17,7 +21,9 @@ evaluation_interval: 1h
 tests:
   # opencode.ai takes calls the whole time and stays quiet; anthropic has been
   # idle longer than the window and fires; commandcode stops at t=4h, so its
-  # 24-hour window empties and it fires too, while nothing else does.
+  # 24-hour window empties — but its last successful call is still inside the
+  # 25h spent-cap branch, which holds one more hour, so it fires at 29h, not
+  # 28h (fleet-ops#12083) — while nothing else does.
   - interval: 1h
     input_series:
       - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://opencode.ai/zen/go/v1"}'
@@ -37,6 +43,15 @@ tests:
               summary: "paid plan https://api.anthropic.com has had no successful router response for 24 hours"
               description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
       - eval_time: 28h
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://api.anthropic.com
+            exp_annotations:
+              summary: "paid plan https://api.anthropic.com has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+      - eval_time: 29h
         alertname: PaidPlanIdle
         exp_alerts:
           - exp_labels:
@@ -75,6 +90,18 @@ tests:
             exp_annotations:
               summary: "paid plan https://api.minimax.io/anthropic has had no successful router response for 24 hours"
               description: "The router answered no successful response for paid-plan endpoint https://api.minimax.io/anthropic in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+
+  # fleet-ops#12083 (seen live 2026-11-16 16:20 UTC to 2026-11-17 16:31 UTC):
+  # CommandCode's 10 USD/1d row cap (fleet-ops#9744, "a money cap, not a park")
+  # spent in a burst at the window's start benches both its rows until the 1d
+  # window expires: no successes, no 429 refusals, deployments healthy — the
+  # spent cap reads exactly like idle, and the alert fired to the minute of the
+  # window. The spent cap's machine-readable trace is the successful calls that
+  # spent it: the budget window starts at the plan's first successful call and
+  # the bench ends when that window expires, so a plan under a spent cap is
+  # never more than 1d past its last success. The branch holds until 25h after
+  # that success — the replayed bench below is quiet at every evaluation across
+  # the crossed window, including the tick where the 24-hour term empties.
 
   # fleet-ops#11985 (seen live 2026-11-13): OpenCode Go tripped its monthly usage
   # wall, the endpoint answered 429 to every call and callers fell back, so the
@@ -218,3 +245,55 @@ tests:
       - eval_time: 26h
         alertname: PaidPlanIdle
         exp_alerts: []
+
+  # The replayed bench (fleet-ops#12083): CommandCode spends its 10 USD/1d cap in
+  # a burst at the window's start (the window opens at its first successful
+  # call, here t=15h), so both rows sit out the rest of the window — no
+  # successes, no 429 refusals, deployments healthy — and the window expires at
+  # t=39h, with traffic resuming an hour past it (the live one resumed 11
+  # minutes past, inside the cache's 600s staleness). Quiet at every evaluation
+  # across the crossed window, including t=39h, where the 24-hour term empties
+  # and the spent-cap branch is the only thing holding the alert back.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.commandcode.ai/provider/v1"}'
+        values: '0+5x15 75x24 80x5'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: PaidPlanIdle
+        exp_alerts: []
+      - eval_time: 38h
+        alertname: PaidPlanIdle
+        exp_alerts: []
+      - eval_time: 39h
+        alertname: PaidPlanIdle
+        exp_alerts: []
+      - eval_time: 41h
+        alertname: PaidPlanIdle
+        exp_alerts: []
+
+  # The cushion is bounded, not a park: a plan whose rows die right after their
+  # last successful call (t=15h) and never answer again stays quiet while the
+  # spent-cap branch holds (39h) and fires an hour later (40h) — one hour past
+  # the point the 24-hour term alone would have fired it (39h without the
+  # branch, seen in the replay above at the 38h/39h pair's shape).
+  - interval: 1h
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.commandcode.ai/provider/v1"}'
+        values: '0+5x15 75x30'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: PaidPlanIdle
+        exp_alerts: []
+      - eval_time: 39h
+        alertname: PaidPlanIdle
+        exp_alerts: []
+      - eval_time: 40h
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://api.commandcode.ai/provider/v1
+            exp_annotations:
+              summary: "paid plan https://api.commandcode.ai/provider/v1 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.commandcode.ai/provider/v1 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."

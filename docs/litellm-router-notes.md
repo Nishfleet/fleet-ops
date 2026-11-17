@@ -219,25 +219,30 @@ fleet-ops#11950: the `max_parallel_requests: 1` note 20 put on the two kept z.ai
 
 ## Note 22
 
-fleet-ops#12083: the CommandCode rows carry no deployment budget. The plan's `10 USD / 1d`
-`max_budget` + `budget_duration` (fleet-ops#9744, "a money cap, not a park") benched the plan
-twice, and the second time it was not an outage: on 2026-11-16 from 16:20 UTC the router stopped
-picking both `worker-capable` rows at once (state active, deployments healthy, no failures, the
-`PaidPlanIdle` branches all quiet) and the alert fired at 16:19 UTC the next day, ~24h later,
-to the minute of a 1d window. The cap's own branch is the cause: `RouterBudgetLimiting`
-registers a row carrying both keys with the deployment-budget filter
+fleet-ops#12083: the CommandCode rows keep their `10 USD / 1d`
+`max_budget` + `budget_duration` (fleet-ops#9744, "a money cap, not a park"), and the cap
+benched the plan twice — the second time it was not an outage: on 2026-11-16 from 16:20 UTC
+the router stopped picking both `worker-capable` rows at once (state active, deployments
+healthy, no failures, the `PaidPlanIdle` branches all quiet) and the alert fired at 16:19 UTC
+the next day, ~24h later, to the minute of a 1d window. The cap's own branch is the cause:
+`RouterBudgetLimiting` registers a row carrying both keys with the deployment-budget filter
 (litellm/router_strategy/budget_limiter.py on the pinned v1.105.0, https://docs.litellm.ai/docs/routing),
-which drops it from every pick once the window's spend crosses `max_budget`; the window resets
-only on a success event for that same row (spend keys TTL'd to the window, plus the in-memory
-cache's 600s staleness), so a crossed row is bened for the rest of `budget_duration` and a
-fully used plan reads as idle until it expires. Traffic resumed on its own at 16:31 UTC on
-2026-11-17 (successes 7→29 within minutes; the alert cleared by 16:38 UTC) and the group's
-other rows carried the whole window meanwhile. The fix removes the cap from the two rows: the
-plan's ceiling is the prepaid wallet, a dry wallet answers 429, and the 429 wall already has a
-machine-readable branch in `PaidPlanIdle` and takes the first-429 park — the #11417 shape.
-config/litellm-proxy.schema.json now refuses a deployment budget on any `worker-` row
-(`worker-row-budget-cap.yaml` is the reject case), `test_no_worker_row_carries_a_deployment_budget`
-pins the live config, and the gate keeps the tether and review rows' own budgets, which Nish set
-knowingly on single-row groups after #11417 was on record. The cap was not a spend-control loss
-measured in money lost; the bench it bought (a whole plan out of the pick for a day, twice
-recorded) was.
+which drops it from every pick once the window's spend crosses `max_budget`; the spend keys are
+TTL'd to the window (plus the in-memory cache's 600s staleness), so a crossed row is benched
+for the rest of `budget_duration` and a fully used plan reads as idle until the window expires.
+Traffic resumed on its own at 16:31 UTC on 2026-11-17 (successes 7→29 within minutes; the alert
+cleared by 16:38 UTC) and the group's other rows carried the whole window meanwhile. The cap
+stays: lifting a recorded money decision (#9744) needs the owner, and the bench it bought is
+the cap doing what it was set to do — the alert's reading was wrong, not the cap. The fix is
+on the alert side: `PaidPlanIdle` now keeps a plan quiet while one of its successful calls sits
+inside the last 25h — the 1d budget window plus an hour of slack for the cache's 600s
+staleness, the 60s scrape and the 30s evaluation — the same shape as its 429 wall branch: a
+spent cap is intended state, as a 429 refusal is. The deployment-budget filter exports no
+metric of its own, so the successful calls that spent the cap are the machine-readable trace,
+and they all sit inside the cap's own window: the window starts at the plan's first successful
+call and the bench ends when it expires, so a plan under a spent cap is never more than 1d past
+its last success. The bound is pinned by promtool rule unit tests (the vendor's rule-testing
+extension point, config/prometheus-tests/paid-plan-idle.test.yml): the replayed bench stays
+quiet across the whole crossed window, and a plan that goes silent for good still fires, one
+hour later than before. The tether and review rows' own budgets, which Nish set knowingly on
+single-row groups after #11417 was on record, read the same way.

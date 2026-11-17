@@ -128,39 +128,3 @@ def test_every_thinking_budget_row_drops_caller_reasoning_effort():
     bad = [r["model_info"]["id"] for r in rows if "reasoning_effort" not in r["litellm_params"].get("additional_drop_params", [])]
     assert not bad, f"rows with thinking_budget that keep a caller's reasoning_effort: {bad}"
 
-
-def test_no_worker_row_carries_a_deployment_budget():
-    """fleet-ops#12083, the PaidPlanIdle cause: a litellm_params max_budget with budget_duration
-    registers a row with the deployment-budget filter (litellm/router_strategy/budget_limiter.py,
-    https://docs.litellm.ai/docs/routing), which drops it from every pick once the window's spend
-    crosses max_budget; the window resets only on a success event for that same row, so the crossed
-    row is benched for the rest of budget_duration. Command Code's 10 USD/1d cap benched both its
-    worker-capable rows from 2026-11-16 16:20 UTC until 2026-11-17 16:31 UTC (PaidPlanIdle fired at
-    16:19 UTC) while the group's other rows kept serving. A worker row's ceiling is its plan's own
-    wallet: a dry wallet answers 429, which parks the row and reads in PaidPlanIdle's wall branch.
-    """
-    capped = [
-        row["model_info"]["id"]
-        for row in _model_list()
-        if row["model_name"].startswith("worker-")
-        and ("max_budget" in row["litellm_params"] or "budget_duration" in row["litellm_params"])
-    ]
-    assert not capped, f"worker rows carrying a deployment budget (the PaidPlanIdle bench, fleet-ops#12083): {capped}"
-
-
-def test_schema_rejects_a_worker_row_budget():
-    """The schema holds the same rule (fleet-ops#12083): the live config passes, the reject fixture
-    (config/litellm-proxy.schema.rejects/worker-row-budget-cap.yaml) fails on it, and the cap
-    re-added to a live worker row fails too.
-    """
-    import jsonschema
-
-    validator = jsonschema.Draft202012Validator(json.loads((ROOT / "config/litellm-proxy.schema.json").read_text()))
-    config = json.loads(json.dumps({"model_list": _model_list(), "router_settings": json.loads(subprocess.run([YQ, "-o=json", ".router_settings", str(ROOT / "config/litellm-proxy.yaml")], capture_output=True, text=True, check=True).stdout)}))
-    assert [e.message for e in validator.iter_errors(config)] == []
-    fixture = yaml.safe_load((ROOT / "config/litellm-proxy.schema.rejects/worker-row-budget-cap.yaml").read_text())
-    errors = list(validator.iter_errors(fixture))
-    assert errors, "the reject fixture passes"
-    assert any("max_budget" in e.message or "budget_duration" in e.message for e in errors), [e.message for e in errors]
-    config["model_list"][0]["litellm_params"].update(max_budget=10.0, budget_duration="1d")
-    assert list(validator.iter_errors(config)), "a re-added worker row cap passes"
