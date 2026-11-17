@@ -230,6 +230,13 @@ groups:
       # day-long wall was observed live), and 17 hours is inside the window.
       # A plan in the blind gap — no successes since the restart and no refusal recorded
       # yet — still fires, which is how this wall surfaced at all.
+      # A firing at the plan's own 24-hour mark that clears on the next real call is
+      # this alert working as designed, not a defect (seen live 2026-11-17,
+      # fleet-ops#12084): the lane was quiet from the 16:25 UTC merge the day before,
+      # so CommandCode (16:19 UTC) and the Anthropic plan (16:25 UTC) tripped minutes
+      # after their last successful call crossed the 24-hour mark, and both resolved
+      # in under 20 minutes when worker runs and the review seat took calls again —
+      # no row was dead, no wall was held and no unit was failed.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
