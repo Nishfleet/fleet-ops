@@ -186,29 +186,8 @@ groups:
 
       # PaidPlanIdle (fleet-ops#11845, the standing rules' "a paid plan with no calls
       # for 24 hours"): a paid plan in config/paid-plans.json that the router has not
-      # answered successfully for 72 hours. The standing rules' number is 24 hours and
-      # the window was 24 hours (fleet-ops#11845); the quiet fleet broke it. Job traffic
-      # fell from thousands of calls per 6 hours (2026-11-12) to a few hundred a day
-      # (2026-11-15 on), and simple-shuffle deals a session's whole traffic to one row —
-      # its first pick, which the session-affinity and prompt-caching pins then hold for
-      # the session — so the day's few sessions land on one plan each and the others get
-      # nothing. z.ai went 24h02m between real calls with its rows healthy (its next
-      # burst answered 55 calls in 10 minutes, 2026-11-17 15:40 UTC) and this alert
-      # fired at the 24-hour mark exactly (fleet-ops#10327, seen live 2026-11-17);
-      # CommandCode and the tether-only Anthropic plan measured the same 22+ hour
-      # stretches the same day, and MiniMax already carried 72 hours for this shape
-      # (fleet-ops#10431, "the idle window is what a quiet but healthy plan has to stay
-      # under"). Every plan needs that window now, so one 72-hour window replaces the
-      # flat 24. The window is the alert's own measure, so there is no extra `for:`.
-      # The wider window also widens the restart blind gap threefold: a plan whose
-      # successes stopped before a router restart stays silent until the window holds
-      # only the dead stretch, so the fleet-ops#11985 wall, which surfaced 24 hours
-      # after its restart on the old window, would surface at 72 — the vendor resets
-      # its own walls and the fallbacks carry the traffic meanwhile, which is the
-      # price of not paging a healthy plan every quiet day.
-      # Dead rows still page on the first evaluation whatever the window: a row the
-      # success counter has never seen has no counter series, so it fires off
-      # litellm_deployment_state. Endpoints are the router's own exports,
+      # answered successfully for 24 hours. The 24-hour window is the alert's own
+      # measure, so there is no extra `for:`. Endpoints are the router's own exports,
       # label names checked live 2026-11-10: litellm_deployment_success_responses_total
       # carries api_base, the endpoint a router row calls, but only exists from a
       # row's first successful call since the router restarted, so a deployment
@@ -242,15 +221,25 @@ groups:
       # the router holds a 429 refusal for — used to the max, not idle, which the deleted
       # Grafana rule's annotation already carried. The refusal export is the router's
       # per-process counter, born at the plan's first refusal, so it is read over the same
-      # 72-hour window as the success term: increase() cannot see a counter that was born
+      # 24-hour window as the success term: increase() cannot see a counter that was born
       # at 1 and stayed flat (the way the live one was seen), so a second term keeps the
-      # plan quiet while its refusal series is less than 72 hours old — one
-      # present_over_time() does not find 72 hours earlier. A refusal older than the
+      # plan quiet while its refusal series is less than 24 hours old — one
+      # present_over_time() does not find 24 hours earlier. A refusal older than the
       # window is a stale one from any cause and the plan is being paid for nothing, so
       # the alert fires again. A parked row is probed rarely (no 429 for 17 hours of a
       # day-long wall was observed live), and 17 hours is inside the window.
       # A plan in the blind gap — no successes since the restart and no refusal recorded
       # yet — still fires, which is how this wall surfaced at all.
+      # fleet-ops#10327 (seen live 2026-11-17): on the quiet fleet (a few pinned sessions
+      # a day — simple-shuffle deals each session's whole traffic to its first pick, which
+      # the session pins then hold) a healthy plan can go a whole day unpicked. z.ai went
+      # 24h02m with its rows healthy and this alert fired at the 24-hour mark exactly, then
+      # resolved by itself at the plan's next burst (55 calls in 10 minutes). That is the
+      # rule working as specified, not a fault: the 24-hour window is the standing rules'
+      # own number (fleet-ops#11845) and the owner's call, so it stays 24 — the MiniMax
+      # 72 hours (fleet-ops#10431) is a per-plan exception, not a fleet-wide one. Widening
+      # the window here would also delay every real idle page three days and grow the
+      # restart blind gap above from 24 to 72 hours.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
@@ -258,24 +247,24 @@ groups:
         expr: |
           (
             (
-              sum by (api_base) (label_replace(label_replace(increase(litellm_deployment_success_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}[72h]), "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses")) == 0
+              sum by (api_base) (label_replace(label_replace(increase(litellm_deployment_success_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}[24h]), "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses")) == 0
               or
               sum by (api_base) (label_replace(label_replace(litellm_deployment_state{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}, "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses"))
               unless on (api_base)
-              sum by (api_base) (label_replace(label_replace(increase(litellm_deployment_success_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}[72h]), "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses"))
+              sum by (api_base) (label_replace(label_replace(increase(litellm_deployment_success_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*"}[24h]), "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses"))
             )
             unless on (api_base)
             (
-              sum by (api_base) (label_replace(label_replace(increase(litellm_deployment_failure_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*",exception_status="429"}[72h]), "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses")) > 0
+              sum by (api_base) (label_replace(label_replace(increase(litellm_deployment_failure_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*",exception_status="429"}[24h]), "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses")) > 0
               or
-              sum by (api_base) ((label_replace(label_replace(litellm_deployment_failure_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*",exception_status="429"}, "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses")) unless (label_replace(label_replace(present_over_time(litellm_deployment_failure_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*",exception_status="429"}[72h] offset 72h), "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses"))) > 0
+              sum by (api_base) ((label_replace(label_replace(litellm_deployment_failure_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*",exception_status="429"}, "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses")) unless (label_replace(label_replace(present_over_time(litellm_deployment_failure_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*",exception_status="429"}[24h] offset 24h), "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses"))) > 0
             )
           )
         labels:
           severity: warning
         annotations:
-          summary: "paid plan {{ $labels.api_base }} has had no successful router response for 72 hours"
-          description: "The router answered no successful response for paid-plan endpoint {{ $labels.api_base }} in the last 72 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing. A quiet fleet pins each session to one router row, so a healthy plan can go a whole day unpicked (fleet-ops#10327, seen live 2026-11-17)."
+          summary: "paid plan {{ $labels.api_base }} has had no successful router response for 24 hours"
+          description: "The router answered no successful response for paid-plan endpoint {{ $labels.api_base }} in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
 
   - name: fleet_agent_runs
     rules:

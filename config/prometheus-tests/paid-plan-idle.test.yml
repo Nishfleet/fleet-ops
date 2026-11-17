@@ -1,17 +1,13 @@
 # promtool test rules config/prometheus-tests/paid-plan-idle.test.yml (CI runs it).
 # PaidPlanIdle (fleet-ops#11845): a paid endpoint that keeps taking calls never
-# alerts, one idle for 72 hours does, and a row the success counter has never
+# alerts, one idle for 24 hours does, and a row the success counter has never
 # seen (no successful call since the last router restart) fires off
 # litellm_deployment_state, while an endpoint outside config/paid-plans.json
-# stays quiet. The window is 72 hours, not the standing rules' 24: on the quiet
-# fleet (a few pinned sessions a day, fleet-ops#10327, seen live 2026-11-17) a
-# healthy plan routinely goes a whole day unpicked — the same shape that widened
-# MiniMax to 72 hours in the Grafana rule (fleet-ops#10431). A plan the provider
-# itself is refusing for quota (a 429 usage wall) is used, not idle: while the
-# router holds a 429 refusal for the plan inside the window it stays quiet, a
-# refusal older than the window is stale and does not silence it, and the
-# silence after a restart with neither successes nor refusals recorded still
-# fires (fleet-ops#11985).
+# stays quiet. A plan the provider itself is refusing for quota (a 429 usage
+# wall) is used, not idle: while the router holds a 429 refusal for the plan
+# inside the window it stays quiet, a refusal older than the window is stale and
+# does not silence it, and the silence after a restart with neither successes
+# nor refusals recorded still fires (fleet-ops#11985).
 # https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
 rule_files:
   - ../../rootfs/etc/prometheus/fleet_rules.yml
@@ -21,15 +17,15 @@ evaluation_interval: 1h
 tests:
   # opencode.ai takes calls the whole time and stays quiet; anthropic has been
   # idle longer than the window and fires; commandcode stops at t=4h, so its
-  # 72-hour window empties at t=76h and it fires too, while nothing else does.
+  # 24-hour window empties and it fires too, while nothing else does.
   - interval: 1h
     input_series:
       - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://opencode.ai/zen/go/v1"}'
         values: '0+10x30'
       - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4002",api_base="https://api.anthropic.com/v1/messages"}'
-        values: '42x80'
+        values: '42x30'
       - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.commandcode.ai/provider/v1"}'
-        values: '10+5x4 30x72'
+        values: '10+5x4 30x25'
     alert_rule_test:
       - eval_time: 26h
         alertname: PaidPlanIdle
@@ -38,8 +34,8 @@ tests:
               severity: warning
               api_base: https://api.anthropic.com
             exp_annotations:
-              summary: "paid plan https://api.anthropic.com has had no successful router response for 72 hours"
-              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com in the last 72 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing. A quiet fleet pins each session to one router row, so a healthy plan can go a whole day unpicked (fleet-ops#10327, seen live 2026-11-17)."
+              summary: "paid plan https://api.anthropic.com has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
       - eval_time: 28h
         alertname: PaidPlanIdle
         exp_alerts:
@@ -47,25 +43,14 @@ tests:
               severity: warning
               api_base: https://api.anthropic.com
             exp_annotations:
-              summary: "paid plan https://api.anthropic.com has had no successful router response for 72 hours"
-              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com in the last 72 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing. A quiet fleet pins each session to one router row, so a healthy plan can go a whole day unpicked (fleet-ops#10327, seen live 2026-11-17)."
-      # commandcode's window holds its t=0..4h rise until t=76h; only then does
-      # its idle window empty and its alert fire alongside anthropic's.
-      - eval_time: 76h
-        alertname: PaidPlanIdle
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-              api_base: https://api.anthropic.com
-            exp_annotations:
-              summary: "paid plan https://api.anthropic.com has had no successful router response for 72 hours"
-              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com in the last 72 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing. A quiet fleet pins each session to one router row, so a healthy plan can go a whole day unpicked (fleet-ops#10327, seen live 2026-11-17)."
+              summary: "paid plan https://api.anthropic.com has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
           - exp_labels:
               severity: warning
               api_base: https://api.commandcode.ai/provider/v1
             exp_annotations:
-              summary: "paid plan https://api.commandcode.ai/provider/v1 has had no successful router response for 72 hours"
-              description: "The router answered no successful response for paid-plan endpoint https://api.commandcode.ai/provider/v1 in the last 72 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing. A quiet fleet pins each session to one router row, so a healthy plan can go a whole day unpicked (fleet-ops#10327, seen live 2026-11-17)."
+              summary: "paid plan https://api.commandcode.ai/provider/v1 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.commandcode.ai/provider/v1 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
 
   # A row that has never succeeded since the router started has no success
   # counter, only litellm_deployment_state: it fires, labelled by the plan's own
@@ -88,8 +73,8 @@ tests:
               severity: warning
               api_base: https://api.minimax.io/anthropic
             exp_annotations:
-              summary: "paid plan https://api.minimax.io/anthropic has had no successful router response for 72 hours"
-              description: "The router answered no successful response for paid-plan endpoint https://api.minimax.io/anthropic in the last 72 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing. A quiet fleet pins each session to one router row, so a healthy plan can go a whole day unpicked (fleet-ops#10327, seen live 2026-11-17)."
+              summary: "paid plan https://api.minimax.io/anthropic has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.minimax.io/anthropic in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
 
   # fleet-ops#11985 (seen live 2026-11-13): OpenCode Go tripped its monthly usage
   # wall, the endpoint answered 429 to every call and callers fell back, so the
@@ -123,32 +108,35 @@ tests:
   - interval: 1h
     input_series:
       - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://opencode.ai/zen/go/v1"}'
-        values: '30x100'
+        values: '30x41'
       - series: 'litellm_deployment_failure_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://opencode.ai/zen/go/v1",exception_status="429",exception_class="Openai.RateLimitError"}'
-        values: '1+0x100'
+        values: '1+0x41'
     alert_rule_test:
       # The refusal is 3 hours old: inside the window, the plan is walled.
       - eval_time: 3h
         alertname: PaidPlanIdle
         exp_alerts: []
-      # The refusal is 26 hours old: inside the 72-hour window, still walled. (The
-      # old 24-hour window stopped silencing here, which was the rule that paged
-      # z.ai on its healthy 24-hour unpicked day, fleet-ops#10327.)
+      # The refusal is 26 hours old: past the window, the plan is idle again.
       - eval_time: 26h
-        alertname: PaidPlanIdle
-        exp_alerts: []
-      # The refusal is 72 hours old: past the window. The counter lives until a
-      # router restart wipes it, and a stale one must not silence the plan for
-      # good: the plan is idle again.
-      - eval_time: 72h
         alertname: PaidPlanIdle
         exp_alerts:
           - exp_labels:
               severity: warning
               api_base: https://opencode.ai/zen/go/v1
             exp_annotations:
-              summary: "paid plan https://opencode.ai/zen/go/v1 has had no successful router response for 72 hours"
-              description: "The router answered no successful response for paid-plan endpoint https://opencode.ai/zen/go/v1 in the last 72 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing. A quiet fleet pins each session to one router row, so a healthy plan can go a whole day unpicked (fleet-ops#10327, seen live 2026-11-17)."
+              summary: "paid plan https://opencode.ai/zen/go/v1 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://opencode.ai/zen/go/v1 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+      # The counter lives until a router restart wipes it; a stale one must not
+      # silence the plan for good.
+      - eval_time: 32h
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://opencode.ai/zen/go/v1
+            exp_annotations:
+              summary: "paid plan https://opencode.ai/zen/go/v1 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://opencode.ai/zen/go/v1 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
 
   # A refusal first seen inside the window (the counter series is born at the
   # plan's first 429, so it starts at 4 hours here) suppresses the alert while
@@ -156,28 +144,24 @@ tests:
   - interval: 1h
     input_series:
       - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://opencode.ai/zen/go/v1"}'
-        values: '30x100'
+        values: '30x41'
       - series: 'litellm_deployment_failure_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://opencode.ai/zen/go/v1",exception_status="429",exception_class="Openai.RateLimitError"}'
-        values: '_x4 1x100'
+        values: '_x4 1x40'
     alert_rule_test:
       # The refusal is 22 hours old: inside the window, the plan is walled.
       - eval_time: 26h
         alertname: PaidPlanIdle
         exp_alerts: []
-      # The refusal is 71 hours old: one hour short of the window, still walled.
-      - eval_time: 75h
-        alertname: PaidPlanIdle
-        exp_alerts: []
-      # The refusal is 72 hours old: past the window, the plan is idle again.
-      - eval_time: 76h
+      # The refusal is 28 hours old: past the window, the plan is idle again.
+      - eval_time: 32h
         alertname: PaidPlanIdle
         exp_alerts:
           - exp_labels:
               severity: warning
               api_base: https://opencode.ai/zen/go/v1
             exp_annotations:
-              summary: "paid plan https://opencode.ai/zen/go/v1 has had no successful router response for 72 hours"
-              description: "The router answered no successful response for paid-plan endpoint https://opencode.ai/zen/go/v1 in the last 72 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing. A quiet fleet pins each session to one router row, so a healthy plan can go a whole day unpicked (fleet-ops#10327, seen live 2026-11-17)."
+              summary: "paid plan https://opencode.ai/zen/go/v1 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://opencode.ai/zen/go/v1 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
 
   # Same plan seen live 2026-11-13 at 10:59 UTC: the router restarted mid-wall,
   # parked rows drew no probes for hours, so no refusal was recorded and the
@@ -195,8 +179,8 @@ tests:
               severity: warning
               api_base: https://opencode.ai/zen/go/v1
             exp_annotations:
-              summary: "paid plan https://opencode.ai/zen/go/v1 has had no successful router response for 72 hours"
-              description: "The router answered no successful response for paid-plan endpoint https://opencode.ai/zen/go/v1 in the last 72 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing. A quiet fleet pins each session to one router row, so a healthy plan can go a whole day unpicked (fleet-ops#10327, seen live 2026-11-17)."
+              summary: "paid plan https://opencode.ai/zen/go/v1 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://opencode.ai/zen/go/v1 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
 
   # fleet-ops#11884 (seen live 2026-11-10): the router exports a deployment's
   # state under its configured api_base, while the counter only carries the
@@ -238,21 +222,28 @@ tests:
   # fleet-ops#10327 (seen live 2026-11-17): z.ai's last call landed at 15:31 UTC
   # 2026-11-16 and its next at 15:33 UTC 2026-11-17, where a burst answered 55
   # calls in 10 minutes — the rows were healthy the whole day, the fleet just
-  # drew them nothing. The alert fired at the 24-hour mark exactly. The window
-  # is 72 hours now, so a healthy plan that went unpicked for a whole day stays
-  # quiet (at 24h intervals this shape paged), and a plan with no call for 72
-  # hours still fires. No refusals: the plan was not walled, just undrawn.
+  # drew them nothing. The alert fired at the 24-hour mark exactly and resolved
+  # by itself at that burst: the rule working as specified. The window stays 24
+  # hours (the standing rules' number, fleet-ops#11845), so a plan unpicked for
+  # 24 hours fires and stays firing until calls land. No refusals: the plan was
+  # not walled, just undrawn.
   - interval: 1h
     input_series:
       - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.z.ai/api/coding/paas/v4",model_id="zai-glm53flashi-worker-capable"}'
         values: '0+1x40 40x80'
     alert_rule_test:
-      # 24 hours after the last call (t=40h): the old 24-hour window fired here.
-      # Inside the 72-hour window the plan is idle-but-within-its-window: quiet.
+      # 24 hours after the last call (t=40h): the window has emptied and the
+      # plan fires — exactly the page #10327 got.
       - eval_time: 64h
         alertname: PaidPlanIdle
-        exp_alerts: []
-      # 72 hours after the last call: the window has emptied and the plan fires.
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://api.z.ai/api/coding/paas/v4
+            exp_annotations:
+              summary: "paid plan https://api.z.ai/api/coding/paas/v4 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.z.ai/api/coding/paas/v4 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+      # Still no calls 72 hours on: the plan keeps firing until traffic lands.
       - eval_time: 112h
         alertname: PaidPlanIdle
         exp_alerts:
@@ -260,5 +251,5 @@ tests:
               severity: warning
               api_base: https://api.z.ai/api/coding/paas/v4
             exp_annotations:
-              summary: "paid plan https://api.z.ai/api/coding/paas/v4 has had no successful router response for 72 hours"
-              description: "The router answered no successful response for paid-plan endpoint https://api.z.ai/api/coding/paas/v4 in the last 72 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing. A quiet fleet pins each session to one router row, so a healthy plan can go a whole day unpicked (fleet-ops#10327, seen live 2026-11-17)."
+              summary: "paid plan https://api.z.ai/api/coding/paas/v4 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.z.ai/api/coding/paas/v4 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
