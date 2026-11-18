@@ -240,6 +240,15 @@ groups:
       # 72 hours (fleet-ops#10431) is a per-plan exception, not a fleet-wide one. Widening
       # the window here would also delay every real idle page three days and grow the
       # restart blind gap above from 24 to 72 hours.
+      # fleet-ops#12091 (seen live 2026-11-18): the same page came back the next day. z.ai
+      # fired at the 24-hour mark exactly (16:46 UTC) with both rows healthy (state 0, no
+      # refusals) and resolved minutes later when real traffic landed — the investigating
+      # worker's own run draws worker-capable calls, and simple-shuffle dealt some to the
+      # plan's rows. The alert name then flapped to the next plan (anthropic, whose
+      # review-lane rows idle between PR reviews): with the lanes drawing bursts, any
+      # 24-hour mark can catch a plan momentarily undrawn, and each page resolves when
+      # that plan's next burst lands. This is #10327's mechanism recurring: the rule
+      # working as specified, and the window stays 24 hours.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
