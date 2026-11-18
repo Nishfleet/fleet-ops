@@ -1,4 +1,4 @@
-"""The Mac's daily topgrade job runs from mac/, one run a day, unchanged, with no home path."""
+"""The Mac's topgrade job runs from mac/ at login and every 24 hours, with no home path."""
 import plistlib
 import tomllib
 from collections.abc import Iterator
@@ -51,6 +51,23 @@ def test_config_has_no_absolute_home_path():
 
 def test_config_expands_tilde_only_where_topgrade_expands_it():
     data = config()
-    assert set(data) == {"misc", "commands"}
+    assert set(data) == {"misc", "go", "commands"}
     for key, value in data["misc"].items():
         assert "~" not in str(value), f"misc.{key} holds `~`, which topgrade does not expand there"
+
+
+def test_plist_runs_at_login_and_every_day():
+    """A calendar hour is skipped when the Mac is off; an interval is replayed on wake."""
+    data = plist()
+    assert data.get("RunAtLoad") is True
+    assert data.get("StartInterval") == 24 * 60 * 60
+    assert "StartCalendarInterval" not in data
+
+
+def test_config_reports_failed_runs():
+    assert config()["misc"]["notify_end"] == "on_failure"
+
+
+def test_config_skips_the_xurl_rebuild():
+    """xurl's chat-xdk cgo lib carries LTO bitcode Go 1.27 rejects, so gup would fail daily."""
+    assert config()["go"]["gup_exclude"] == ["xurl"]

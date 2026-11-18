@@ -1,15 +1,22 @@
 ## Mac daily update
 
 `mac/` is the Mac counterpart of [Daily update](daily-update.md), owned by Nish.
-A launchd agent runs `topgrade` once a day at 04:30 local time, at low priority
-and with no prompts, and reads the config installed with it. Homebrew formulae
-and casks are left to `brew autoupdate`, so the steps the job does run are the
-`disable` and `commands` lists in `mac/topgrade.toml`. Neither file carries an
-absolute home path: launchd does not expand `~`, so the plist names only system
-paths, and `~` appears only in the custom commands, which topgrade runs through
-a shell. `tests/test_mac_topgrade.py` pins the schedule, the arguments, the
-steps and that rule; it reads the repo copy, so the diffs under "Check" below
-are what tie the Mac to it.
+A launchd agent runs `topgrade` at login and again every 24 hours, at low
+priority and with no prompts, and reads the config installed with it. The
+schedule is an interval, not a calendar hour: launchd replays a missed
+`StartInterval` when the Mac wakes, while the old 04:30 `StartCalendarInterval`
+was skipped on every night the Mac was shut down. Homebrew formulae and casks
+are left to `brew autoupdate`, so the steps the job does run are the `disable`,
+`go` and `commands` tables in `mac/topgrade.toml`. `gup_exclude = ["xurl"]`
+keeps gup green: xurl's chat-xdk cgo library ships an LTO bitcode section Go
+1.27 rejects, so the rebuild fails while the installed binary keeps working.
+`notify_end = "on_failure"` makes any other failed step visible instead of
+silent. Neither file carries an absolute home path: launchd does not expand
+`~`, so the plist names only system paths, and `~` appears only in the custom
+commands, which topgrade runs through a shell. `tests/test_mac_topgrade.py`
+pins the schedule, the failure notification, the xurl exclusion and that rule;
+it reads the repo copy, so the diffs under "Check" below are what tie the Mac
+to it.
 
 It keeps the label the hand-written job used, so step 4's bootout is what
 removes that job.
