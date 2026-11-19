@@ -278,3 +278,36 @@ tests:
       - eval_time: 64h
         alertname: PaidPlanIdle
         exp_alerts: []
+
+  # fleet-ops#12097 (seen live 2026-11-19): two plans at once. z.ai and CommandCode
+  # fired together at their 24-hour marks, both rows healthy and nothing attempted in
+  # the window (the quiet fleet, not a dead row). Both fire as two instances of one
+  # alert, and traffic on each plan's rows clears its own instance — the fix for a
+  # firing page is traffic, not a rule change, now proven for the pair seen live.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.z.ai/api/coding/paas/v4",model_id="zai-glm53flashi-worker-capable"}'
+        values: '0x26 0+2x10 20x14'
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4003",api_base="https://api.commandcode.ai/provider/v1",model_id="commandcode-glm53flash-worker-capable"}'
+        values: '0x26 0+2x10 20x14'
+    alert_rule_test:
+      # Nothing attempted in 24 hours: both fire, one alert, two instances.
+      - eval_time: 25h
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://api.z.ai/api/coding/paas/v4
+            exp_annotations:
+              summary: "paid plan https://api.z.ai/api/coding/paas/v4 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.z.ai/api/coding/paas/v4 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+          - exp_labels:
+              severity: warning
+              api_base: https://api.commandcode.ai/provider/v1
+            exp_annotations:
+              summary: "paid plan https://api.commandcode.ai/provider/v1 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.commandcode.ai/provider/v1 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+      # The bursts at t=26..35h sit inside the 24-hour window at t=50h: both resolved.
+      - eval_time: 50h
+        alertname: PaidPlanIdle
+        exp_alerts: []

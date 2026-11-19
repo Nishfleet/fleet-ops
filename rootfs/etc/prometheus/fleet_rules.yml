@@ -249,6 +249,14 @@ groups:
       # 24-hour mark can catch a plan momentarily undrawn, and each page resolves when
       # that plan's next burst lands. This is #10327's mechanism recurring: the rule
       # working as specified, and the window stays 24 hours.
+      # fleet-ops#12097 (seen live 2026-11-19): two plans at once. z.ai and CommandCode
+      # fired together at their 24-hour marks, both with healthy rows (state 0) and zero
+      # attempts in the window — the quiet fleet again, not a dead row. Health-check
+      # calls the investigating worker drew on each plan's rows cleared both, and the
+      # alert name flapped to anthropic (review-claude, review-fable and tether hold one
+      # row each on it and those groups idle between bursts), which cleared the same way;
+      # the same-day live check shows no PaidPlanIdle firing. Same mechanism, window
+      # stays 24 hours.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
