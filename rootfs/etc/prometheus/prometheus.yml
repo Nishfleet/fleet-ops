@@ -103,23 +103,32 @@ scrape_configs:
   # module definitions these jobs used were removed from config/blackbox.yml
   # in the same change.
 
-  # The site-0509 homepage job is deleted 2026-11-20 (fleet-ops#12104), same
-  # shape as the 2026-10-01 block above: deleted, not repointed. Measured from
-  # outside that day: https://0509.io/ answers a 302 to the Cloudflare Access
-  # login on nish345.cloudflareaccess.com, and that login route itself answers
-  # 404 in ~20s (storagebun's login on the same Access team answers 200 in
-  # 0.3s), so the wall blocks every outside visitor — SiteDown (fleet_rules.yml)
-  # fired for it at 18:05Z and would never turn green while the wall is up. The
-  # http_2xx probe cannot reach 0509's own page while it is private, and the
-  # wall's login page is not the site. 0509 stays covered by the Sentry cron
-  # monitors in org 0509-gg (liveness-ping, own-site-check, nightly); put the
-  # job back here when 0509 is public again.
+  # 0509 homepage up/down for the fleet view (fleet-grafana, Nish 2026-10-03).
+  # The stock http_2xx module, via the blackbox exporter already running on
+  # :9115. SiteDown (fleet_rules.yml) pages on any site-* job down for 3m.
+  # SiteDown fired here 2026-11-20 18:05Z (fleet-ops#12104): the Cloudflare
+  # Access login answered 404 in ~20s, so the site was down to every outside
+  # visitor. The Access application recovered the same evening and the probe
+  # went green again; the job stays, because this probe is the detector for
+  # exactly that. Deleting it would only have silenced the symptom.
+  - job_name: site-0509
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: [https://0509.io/]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
 
   # The other public product homepages, one GET each per minute, same
   # module and exporter. Redirects are followed, so a www or apex redirect
   # counts as up when it lands on a 2xx. storagebun.com is left out until it
-  # is public: it answers with the Access login while it is private. Both
-  # 0509 hostnames are in the same state (see the site-0509 note above).
+  # is public: it answers with the Access login while it is private.
   - job_name: site-products
     # Once a minute is enough for SiteDown's 3-minute `for:` and halves the
     # requests each site's free-plan quota and analytics see.
@@ -129,9 +138,7 @@ scrape_configs:
       module: [http_2xx]
     static_configs:
       - targets:
-          # api.0509.io left out 2026-11-20 (fleet-ops#12104): it sits behind
-          # the same Cloudflare Access wall as the homepage (302 to an Access
-          # login that 404s), so the probe cannot reach it while it is private.
+          - https://api.0509.io/
           - https://seofixkit.com/
           - https://siterep.net/
           # TinyStudio is offline on purpose while it is rebuilt (Nish, 2026-10-25):
