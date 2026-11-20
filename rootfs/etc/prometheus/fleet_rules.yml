@@ -249,13 +249,7 @@ groups:
       # 24-hour mark can catch a plan momentarily undrawn, and each page resolves when
       # that plan's next burst lands. This is #10327's mechanism recurring: the rule
       # working as specified, and the window stays 24 hours.
-      # fleet-ops#12102 (seen live 2026-11-20): the anthropic page. Its only callers are
-      # the review lanes (review-claude, review-fable), and no lane PR's CI completed in
-      # the 24 hours before 17:48 UTC — the last success sample is 17:45 UTC the day
-      # before — so both healthy rows (state 0, no refusals) went unpicked past the
-      # window and fired at the 24-hour mark exactly. #12091's flap, landing on the plan
-      # it named: the rule working as specified, the page resolves at the plan's next
-      # review (this issue's own PR draws it), and the window stays 24 hours.
+      # fleet-ops#12102 (seen live 2026-11-20): same mechanism, the anthropic plan.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
