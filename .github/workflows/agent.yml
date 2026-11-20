@@ -419,16 +419,21 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
           permission-workflows: write
-      # A gardener pass that changes nothing closes its issue, so gardener.yml files the next one.
-      - name: Close a gardener issue that needed no change
+      # A gardener pass that changes nothing closes its issue, so gardener.yml files the
+      # next one. An alert issue that changes nothing is the same success: its fix lives
+      # on the box (fleet-ops#12108: both 2026-11-19 and 2026-11-20 failed runs died here,
+      # a PaidPlanIdle and a SiteDown whose workers had resolved the alert with no repo
+      # file to change), so alert closes like gardener and only a non-gardener, non-alert
+      # issue with no change is the defect this step is for.
+      - name: Close a gardener or alert issue that needed no change
         id: nochange
         if: needs.work.outputs.nochange == 'true'
         env: {GH_TOKEN: "${{ steps.app-token.outputs.token }}"}
         run: |
           set -euo pipefail
-          if [ -n "$PR" ] || ! gh issue view "$ISSUE" -R "$REPO" --json labels --jq 'any(.labels[]; .name == "gardener")' | grep -qx true; then echo "::error::the worker changed nothing"; exit 1; fi
+          if [ -n "$PR" ] || ! gh issue view "$ISSUE" -R "$REPO" --json labels --jq 'any(.labels[]; .name == "gardener" or .name == "alert")' | grep -qx true; then echo "::error::the worker changed nothing"; exit 1; fi
           gh issue edit "$ISSUE" -R "$REPO" --remove-label agent-in-progress
-          gh issue close "$ISSUE" -R "$REPO" --reason completed --comment "gardener: nothing to change this week, see $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh issue close "$ISSUE" -R "$REPO" --reason completed --comment "agent: nothing to change, see $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
       # The work job can be skipped (a round the lane closed: a merged PR's round,
       # fleet-ops#12024, or a run the cap sent to the owner), and a skipped job's outputs
       # read empty, which would send the download after an artifact that does not exist
