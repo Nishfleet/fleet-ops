@@ -249,6 +249,7 @@ groups:
       # 24-hour mark can catch a plan momentarily undrawn, and each page resolves when
       # that plan's next burst lands. This is #10327's mechanism recurring: the rule
       # working as specified, and the window stays 24 hours.
+      # fleet-ops#12102 (seen live 2026-11-20): same mechanism, the anthropic plan.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
