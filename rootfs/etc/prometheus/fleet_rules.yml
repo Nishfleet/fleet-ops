@@ -250,6 +250,12 @@ groups:
       # that plan's next burst lands. This is #10327's mechanism recurring: the rule
       # working as specified, and the window stays 24 hours.
       # fleet-ops#12102 (seen live 2026-11-20): same mechanism, the anthropic plan.
+      # fleet-ops#12111 (seen live 2026-11-21): z.ai and the anthropic plan fired minutes apart
+      # (19:10 and 19:12 UTC), both 24 hours after the bursts that answered #12103's page
+      # (18:15–19:15 UTC: the investigating worker's run on the worker-capable rows, the
+      # reviewer App's review of that PR on the review rows) — so the two plans' 24-hour
+      # marks came due together and one page covered both. Rows healthy all day (state 0,
+      # no refusals). Same mechanism, same resolve-on-traffic path.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
