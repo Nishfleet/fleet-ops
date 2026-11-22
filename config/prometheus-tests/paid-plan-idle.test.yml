@@ -278,3 +278,39 @@ tests:
       - eval_time: 64h
         alertname: PaidPlanIdle
         exp_alerts: []
+
+  # fleet-ops#12115 (seen live 2026-11-21): the same page a third time, and this one
+  # outlived a restart. z.ai fired at the 24-hour mark after its last success
+  # (19:12 UTC) and the router restarted at 23:11 UTC before any traffic landed: the
+  # pre-restart counter sat flat at its last burst, so increase() over the window
+  # kept returning 0 — a sample, not silence — and the page had no restart blind gap
+  # to drop out of. It cleared 20 hours later when the investigating worker's probe
+  # draws landed on both z.ai rows (200s, no 429s, the plan's wall off): the fix is
+  # still traffic, not a rule change. Locks both sides: the page survives the
+  # restart with no post-restart call, and the next burst still clears it.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.z.ai/api/coding/paas/v4",model_id="zai-glm53flash-worker-capable"}'
+        # Last success at t=0, flat to the restart at t=8, no call for 21 hours,
+        # then the first post-restart burst at t=29..32h.
+        values: '282x8 _x20 1+2x4'
+      - series: 'litellm_deployment_state{job="litellm",instance="127.0.0.1:4001",api_base="https://api.z.ai/api/coding/paas/v4",model_id="zai-glm53flash-worker-capable",litellm_model_name="glm-5.3-flash"}'
+        values: '0x8'
+    alert_rule_test:
+      # t=24h is 24 hours after the last pre-restart success and 16 hours past the
+      # restart: the flat pre-restart samples are still inside the window, so the
+      # page fires and stays up.
+      - eval_time: 24h
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://api.z.ai/api/coding/paas/v4
+            exp_annotations:
+              summary: "paid plan https://api.z.ai/api/coding/paas/v4 has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.z.ai/api/coding/paas/v4 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+      # The post-restart burst at t=29..32h sits inside the 24-hour window at t=32h:
+      # resolved.
+      - eval_time: 32h
+        alertname: PaidPlanIdle
+        exp_alerts: []
