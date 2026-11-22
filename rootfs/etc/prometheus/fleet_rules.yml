@@ -258,6 +258,16 @@ groups:
       # out of. It cleared 20 hours later when the investigating worker's probe
       # draws landed on both z.ai rows (200s, no 429s, the plan's wall off): the fix
       # is still traffic, not a rule change, and the window stays 24 hours.
+      # fleet-ops#12118 (seen live 2026-11-22): the anthropic page, and a single
+      # success is not traffic enough to clear it. The review lane's last draws
+      # landed 2026-11-21 ~19:50 UTC, the router restarted at 22:30 UTC, and the
+      # page fired at the 24-hour mark (22:00:09 UTC) — after one post-restart
+      # call had already landed (the reviewer's, 19:38 UTC). It was the new
+      # counter's only sample, flat at 1, and increase() counts rises: one call
+      # is a sample, not an increase, so the page fired anyway. It resolves the
+      # same way as before, on the next success raising the counter (1->2) — the
+      # reviewer's draw on the very PR that carries this note — so the fix is
+      # still traffic, not a rule change, and the window stays 24 hours.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
