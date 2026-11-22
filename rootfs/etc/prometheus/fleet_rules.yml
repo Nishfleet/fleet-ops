@@ -250,6 +250,14 @@ groups:
       # that plan's next burst lands. This is #10327's mechanism recurring: the rule
       # working as specified, and the window stays 24 hours.
       # fleet-ops#12102 (seen live 2026-11-20): same mechanism, the anthropic plan.
+      # fleet-ops#12115 (seen live 2026-11-21): z.ai again, and the page outlived a
+      # restart. It fired at the 24-hour mark after the plan's last success (19:12
+      # UTC) and the router restarted at 23:11 UTC before traffic landed: the
+      # pre-restart counter sat flat at its last burst, so increase() kept returning
+      # 0 — a sample, not silence — and the page had no restart blind gap to drop
+      # out of. It cleared 20 hours later when the investigating worker's probe
+      # draws landed on both z.ai rows (200s, no 429s, the plan's wall off): the fix
+      # is still traffic, not a rule change, and the window stays 24 hours.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
