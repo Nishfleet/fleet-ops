@@ -314,3 +314,52 @@ tests:
       - eval_time: 32h
         alertname: PaidPlanIdle
         exp_alerts: []
+
+  # fleet-ops#12118 (seen live 2026-11-22): the anthropic page, and a single success
+  # is not traffic enough to clear it. The review lane's last draws landed
+  # 2026-11-21 ~19:50 UTC, the router restarted at 22:30 UTC, and the page fired at
+  # the 24-hour mark (22:00:09 UTC) — after one post-restart call had already landed
+  # (the reviewer's, 19:38 UTC): it was the new counter's only sample, flat at 1,
+  # and increase() counts rises, so one call is a sample, not an increase, and the
+  # page fired anyway. Locks the wrinkle and the resolve path: the page stays up
+  # over a lone success, and the next success (the counter 1->2) clears it — the
+  # fix is still traffic, not a rule change.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4002",api_base="https://api.anthropic.com/v1/messages",model_id="anthropic-opus55-review"}'
+        # Last pre-restart burst ends at t=9, restart gap, then one post-restart
+        # success at t=24 — the new counter's only sample, flat for 21 hours —
+        # then the next success at t=45.
+        values: '8x9 _x14 1x20 2x4'
+      - series: 'litellm_deployment_state{job="litellm",instance="127.0.0.1:4002",api_base="https://api.anthropic.com/v1/messages",model_id="anthropic-opus55-review",litellm_model_name="claude-opus-5-5"}'
+        # The state export is per-process too: born at the restart (t=24).
+        values: '_x24 0x20'
+    alert_rule_test:
+      # t=34h is past the 24-hour mark after the last pre-restart success (t=9),
+      # with the lone post-restart success (t=24) inside the window and flat: the
+      # page fires anyway — one call is not an increase.
+      - eval_time: 34h
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://api.anthropic.com
+            exp_annotations:
+              summary: "paid plan https://api.anthropic.com has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+      # Ten hours later the lone success is still the counter's only rise-less
+      # sample: still firing.
+      - eval_time: 40h
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://api.anthropic.com
+            exp_annotations:
+              summary: "paid plan https://api.anthropic.com has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+      # The next success at t=45 raises the counter 1->2 inside the 24-hour
+      # window at t=48h: resolved.
+      - eval_time: 48h
+        alertname: PaidPlanIdle
+        exp_alerts: []
