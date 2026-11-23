@@ -258,6 +258,21 @@ groups:
       # out of. It cleared 20 hours later when the investigating worker's probe
       # draws landed on both z.ai rows (200s, no 429s, the plan's wall off): the fix
       # is still traffic, not a rule change, and the window stays 24 hours.
+      # fleet-ops#12130 (seen live 2026-11-23): the anthropic plan again. It fired at
+      # the 24-hour mark exactly (22:21 UTC, 24h01m after its last success at 22:20
+      # UTC the day before) with both review-claude rows healthy (state 0, no 429
+      # refusal series since the restart), and cleared at 22:35:49 UTC when the
+      # lanes' next review burst landed: at 22:36:53 UTC
+      # increase(litellm_deployment_success_responses_total{api_base=~"https://api.anthropic.com.*"}[24h])
+      # read 2 and ALERTS{alertname="PaidPlanIdle"} was empty. Fifteen minutes of
+      # dip is not a plan paid for nothing, yet it was the fifth page on this rule in
+      # five days (anthropic 5, z.ai 4, commandcode 2; ten of the thirteen cleared
+      # inside 28 minutes), and each one opened an issue and spent a worker turn.
+      # So the condition has to hold now: `for: 1h` drops every dip seen so far and
+      # still pages a plan that stays idle, which is the case the rule exists for
+      # (the #10327 case below, still firing 112 hours on). The 24-hour window is
+      # untouched — it is the standing rules' number (fleet-ops#11845). `for:` is
+      # stock Prometheus, not a wrapper, and it is the field's own purpose.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
@@ -278,6 +293,7 @@ groups:
               sum by (api_base) ((label_replace(label_replace(litellm_deployment_failure_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*",exception_status="429"}, "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses")) unless (label_replace(label_replace(present_over_time(litellm_deployment_failure_responses_total{job="litellm",api_base=~"https://api\\.commandcode\\.ai/provider/v1.*|https://api\\.minimax\\.io/anthropic.*|https://api\\.z\\.ai/api/coding/paas/v4.*|https://opencode\\.ai/zen/go/v1.*|https://token-plan\\.ap-southeast-1\\.maas\\.aliyuncs\\.com/compatible-mode/v1.*|https://api\\.anthropic\\.com.*",exception_status="429"}[24h] offset 24h), "api_base", "$1", "api_base", "(.*)/v1/messages"), "api_base", "$1", "api_base", "(.*/v1)/responses"))) > 0
             )
           )
+        for: 1h
         labels:
           severity: warning
         annotations:
