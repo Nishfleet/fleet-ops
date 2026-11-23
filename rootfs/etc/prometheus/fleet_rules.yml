@@ -258,6 +258,12 @@ groups:
       # out of. It cleared 20 hours later when the investigating worker's probe
       # draws landed on both z.ai rows (200s, no 429s, the plan's wall off): the fix
       # is still traffic, not a rule change, and the window stays 24 hours.
+      # fleet-ops#12130 (seen live 2026-11-23): the anthropic plan again. It fired at
+      # the 24-hour mark exactly (22:21 UTC, 24h01m after its last success at 22:20
+      # UTC the day before) with both review-claude rows healthy (state 0, no 429
+      # refusal series since the restart): #10327's mechanism recurring, and it
+      # resolves when the lanes' next review burst lands on the rows. The fix is
+      # still traffic, not a rule change, and the window stays 24 hours.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
