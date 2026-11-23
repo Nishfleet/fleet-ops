@@ -7,7 +7,10 @@
 # wall) is used, not idle: while the router holds a 429 refusal for the plan
 # inside the window it stays quiet, a refusal older than the window is stale and
 # does not silence it, and the silence after a restart with neither successes
-# nor refusals recorded still fires (fleet-ops#11985).
+# nor refusals recorded still fires (fleet-ops#11985). The condition also has to
+# hold for an hour (`for: 1h`, fleet-ops#12130): the 24-hour mark landing in a gap
+# between the lanes' bursts is a dip that clears itself, not a plan paid for
+# nothing, and a plan that stays idle still pages an hour past the mark.
 # https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
 rule_files:
   - ../../rootfs/etc/prometheus/fleet_rules.yml
@@ -17,7 +20,8 @@ evaluation_interval: 1h
 tests:
   # opencode.ai takes calls the whole time and stays quiet; anthropic has been
   # idle longer than the window and fires; commandcode stops at t=4h, so its
-  # 24-hour window empties and it fires too, while nothing else does.
+  # 24-hour window empties at t=28h and `for: 1h` fires it at t=29h (checked at
+  # 30h), while nothing else does.
   - interval: 1h
     input_series:
       - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://opencode.ai/zen/go/v1"}'
@@ -36,7 +40,7 @@ tests:
             exp_annotations:
               summary: "paid plan https://api.anthropic.com has had no successful router response for 24 hours"
               description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
-      - eval_time: 28h
+      - eval_time: 30h
         alertname: PaidPlanIdle
         exp_alerts:
           - exp_labels:
@@ -232,9 +236,9 @@ tests:
       - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.z.ai/api/coding/paas/v4",model_id="zai-glm53flashi-worker-capable"}'
         values: '0+1x40 40x80'
     alert_rule_test:
-      # 24 hours after the last call (t=40h): the window has emptied and the
-      # plan fires — exactly the page #10327 got.
-      - eval_time: 64h
+      # 24 hours after the last call (t=40h) the window has emptied; `for: 1h`
+      # holds the page until t=65h, so it fires — exactly the page #10327 got.
+      - eval_time: 66h
         alertname: PaidPlanIdle
         exp_alerts:
           - exp_labels:
@@ -311,6 +315,57 @@ tests:
               description: "The router answered no successful response for paid-plan endpoint https://api.z.ai/api/coding/paas/v4 in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
       # The post-restart burst at t=29..32h sits inside the 24-hour window at t=32h:
       # resolved.
+      - eval_time: 32h
+        alertname: PaidPlanIdle
+        exp_alerts: []
+
+  # fleet-ops#12130 (seen live 2026-11-23): the anthropic plan's review-lane rows
+  # idle between PR reviews, so the 24-hour mark can land in a gap. It fired at
+  # 22:21 UTC and cleared at 22:35:49 UTC when the next review burst landed — a
+  # 15-minute dip that opened an issue and spent a worker turn on a plan whose
+  # rows were healthy the whole time. The condition now has to hold an hour: the
+  # dip never pages.
+  - interval: 15m
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.anthropic.com/v1/messages",model_id="anthropic-opus55-review"}'
+        # Busy until t=4h, then no success for 24h15m, then the next burst.
+        values: '0+1x16 16x96 16+1x4'
+    alert_rule_test:
+      # The window empties at t=28h and the burst lands at t=28h15m: the page was
+      # pending inside the `for: 1h` hold and is dropped without ever firing.
+      - eval_time: 28h45m
+        alertname: PaidPlanIdle
+        exp_alerts: []
+      - eval_time: 29h
+        alertname: PaidPlanIdle
+        exp_alerts: []
+      - eval_time: 30h
+        alertname: PaidPlanIdle
+        exp_alerts: []
+
+  # The same dip, still open an hour past the mark: `for: 1h` has elapsed and the
+  # page fires, then clears when the burst lands. An idle plan is not hidden.
+  - interval: 15m
+    input_series:
+      - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.anthropic.com/v1/messages",model_id="anthropic-opus55-review"}'
+        # Busy until t=4h, then no success until the burst at t=31h15m.
+        values: '0+1x16 16x108 16+1x4'
+    alert_rule_test:
+      # Pending at t=28h45m, one evaluation short of the hold: quiet.
+      - eval_time: 28h45m
+        alertname: PaidPlanIdle
+        exp_alerts: []
+      # The hold elapses at t=29h: firing.
+      - eval_time: 29h15m
+        alertname: PaidPlanIdle
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              api_base: https://api.anthropic.com
+            exp_annotations:
+              summary: "paid plan https://api.anthropic.com has had no successful router response for 24 hours"
+              description: "The router answered no successful response for paid-plan endpoint https://api.anthropic.com in the last 24 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
+      # The burst at t=31h15m sits inside the window again: resolved.
       - eval_time: 32h
         alertname: PaidPlanIdle
         exp_alerts: []
