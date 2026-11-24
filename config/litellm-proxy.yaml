@@ -4,13 +4,18 @@
 # OpenCode and Command Code keep paid plans, served as router rows below.
 model_list:
 # Paid plans (owner roster, fleet-ops#10935, 2026-11-01): Command Code, OpenCode Go, z.ai, MiniMax, Alibaba.
-# Plain rows: no order, weight, row cooldown or 429 park. A failed call is retried, then falls back (router_settings).
+# Plain rows: no order, row cooldown or 429 park (the worker-capable weights below are only a share). A failed call is retried, then falls back (router_settings).
+# Every worker-capable row carries an integer weight because simple-shuffle reads a missing weight
+# as 0 and would silently bench that row. Command Code takes 2 (4/9 = 44% of new sessions, was 2/7)
+# and the other five take 1: the plan kept paging PaidPlanIdle while both its rows were healthy and
+# unpicked for a whole quiet day (fleet-ops#12135). worker-cheap and the other groups stay unweighted.
 # Command Code carries z-ai/glm-5.3-flash only, 10 USD/day per row (fleet-ops#9744): a money cap, not a park.
 - model_name: worker-capable
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
     api_base: https://api.commandcode.ai/provider/v1
     api_key: os.environ/COMMANDCODE_API_KEY
+    weight: 2
     tags:
     - prepaid
     - commandcode
@@ -29,6 +34,7 @@ model_list:
     model: openai/z-ai/glm-5.3-flash
     api_base: https://api.commandcode.ai/provider/v1
     api_key: os.environ/COMMANDCODE_API_KEY
+    weight: 2
     tags:
     - prepaid
     - commandcode
@@ -47,6 +53,7 @@ model_list:
     model: openai/deepseek-v4.1-flash
     api_base: https://opencode.ai/zen/go/v1
     api_key: os.environ/OPENCODE_API_KEY
+    weight: 1
     reasoning_effort: max
     extra_headers:
       x-opencode-session: fleet-worker-capable
@@ -82,6 +89,7 @@ model_list:
     model: openai/glm-5.3-flash
     api_base: https://api.z.ai/api/coding/paas/v4
     api_key: os.environ/ZAI_API_KEY
+    weight: 1
     tags:
     - prepaid
     - zai
@@ -95,6 +103,7 @@ model_list:
     model: openai/glm-5.3-flash
     api_base: https://api.z.ai/api/coding/paas/v4
     api_key: os.environ/ZAI_API_KEY
+    weight: 1
     tags:
     - prepaid
     - zai
@@ -109,6 +118,7 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
+    weight: 1
     input_cost_per_token: 3e-07
     output_cost_per_token: 1.2e-06
     cache_read_input_token_cost: 6e-08
@@ -126,6 +136,7 @@ model_list:
     model: anthropic/MiniMax-M3.1-Flash-Preview
     api_base: https://api.minimax.io/anthropic
     api_key: os.environ/MINIMAX_API_KEY
+    weight: 1
     input_cost_per_token: 3e-07
     output_cost_per_token: 1.2e-06
     cache_read_input_token_cost: 6e-08

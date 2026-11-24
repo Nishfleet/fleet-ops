@@ -259,7 +259,15 @@ groups:
       # draws landed on both z.ai rows (200s, no 429s, the plan's wall off): the fix
       # is still traffic, not a rule change, and the window stays 24 hours.
       # fleet-ops#12128 (seen live 2026-11-23): z.ai undrawn on a plainly busy day (529 worker-capable calls, all on the MiniMax rows); cleared on traffic, the rule and the 24-hour window unchanged — detail in the issue.
-      # fleet-ops#12135 (seen live 2026-11-24): CommandCode undrawn again 24 hours after the #12132 probe drew it; both rows healthy (state 0), no 429s; cleared on a probe call, the rule and the 24-hour window unchanged — detail in the issue.
+      # fleet-ops#12135 (seen live 2026-11-24): CommandCode undrawn again 24 hours after
+      # the #12132 probe drew it; both rows healthy (state 0), no 429s. The lane itself
+      # drew the plan on its next run (115 calls at 23:08 UTC, user_agent pi/1.4.0, no
+      # probe), which cleared the page — and showed the draw, not the plan, was the
+      # defect: 2 of 7 healthy worker rows left a whole quiet day unpicked. The two
+      # CommandCode rows now carry weight 2 against weight 1 on the other five, so the
+      # plan takes 4/9 of new worker-capable sessions (config/litellm-proxy.yaml,
+      # tests/test_router_commandcode_share.py). The rule and its 24-hour window are
+      # unchanged.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
