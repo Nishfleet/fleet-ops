@@ -259,6 +259,7 @@ groups:
       # draws landed on both z.ai rows (200s, no 429s, the plan's wall off): the fix
       # is still traffic, not a rule change, and the window stays 24 hours.
       # fleet-ops#12128 (seen live 2026-11-23): z.ai undrawn on a plainly busy day (529 worker-capable calls, all on the MiniMax rows); cleared on traffic, the rule and the 24-hour window unchanged — detail in the issue.
+      # fleet-ops#12138 (seen live 2026-11-24): anthropic again, the review lane idling between PRs. The plan's last successes were the 23:05 UTC 11-23 review-claude draws, both rows healthy (state 0) with no refusals, and the alert fired at the 24-hour mark exactly; it resolves when the lane's next review call lands, the rule and the 24-hour window unchanged.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
