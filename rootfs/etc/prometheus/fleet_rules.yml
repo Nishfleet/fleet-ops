@@ -259,6 +259,7 @@ groups:
       # draws landed on both z.ai rows (200s, no 429s, the plan's wall off): the fix
       # is still traffic, not a rule change, and the window stays 24 hours.
       # fleet-ops#12128 (seen live 2026-11-23): z.ai undrawn on a plainly busy day (529 worker-capable calls, all on the MiniMax rows); cleared on traffic, the rule and the 24-hour window unchanged — detail in the issue.
+      # fleet-ops#12136 (seen live 2026-11-24): the probe anniversary — the only calls on either GLM-5.3-Flash plan in the window were #12132's probes (23:01 UTC on 11-23), so CommandCode (22:52 UTC) and z.ai (22:57 UTC) re-fired minutes apart as those probes fell out of the 24-hour window, and both cleared on the investigating worker's own session draws and one-sentence probes; a probe only resets the clock, the rule and the window stay 24 hours.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
