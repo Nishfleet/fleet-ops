@@ -357,6 +357,10 @@ router_settings:
   # a same-group retry re-hits the same wall; fallbacks fire on the first failure (fleet-ops#5792).
   num_retries: 0
   timeout: 1800
+  # A streamed call's per-attempt deadline is stream_timeout, not timeout: 180 s without a chunk fails
+  # that attempt, under pi's own 300 s client idle, so the router's row is the error the run sees
+  # (fleet-ops#12065, note 22).
+  stream_timeout: 180
   enable_tag_filtering: false
   # worker-capable has no fallback, so a 429 retries once per other row (7 rows: 6, the
   # 2026-11-10 rows cut) and walks past every parked row (fleet-ops#11723).
