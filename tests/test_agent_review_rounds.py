@@ -13,7 +13,9 @@ APPROVED, CHANGES_REQUESTED or DISMISSED, the rule branch protection uses; a com
 is not a verdict — and it is open while it asks for changes. A round is a distinct change
 request head, so the bot and the owner asking on one head count once (fleet-ops#11987).
 The steps run here as written in agent.yml, under bash, with a fake `gh` that answers from
-canned REST data and logs every call.
+canned REST data and logs every call. A re-labelled issue whose branch already has an open
+pull request stands down green in the claim, and the round reads that stand-down so nothing
+runs (fleet-ops#12055).
 https://docs.github.com/en/rest/pulls/reviews#list-reviews-for-a-pull-request
 """
 import json
@@ -385,6 +387,18 @@ def test_an_issue_run_is_a_go_from_the_always_run_round_step(tmp_path):
     proc, out, calls = run_step(tmp_path, step("claim", "round"), {}, ISSUE="7", PR="")
     assert proc.returncode == 0, proc.stderr
     assert out == "go=true\n" and calls == []
+
+
+def test_a_round_stands_down_when_the_claim_found_an_open_pr(tmp_path):
+    # fleet-ops#12055: the claim stands down green on an open pull request, and the round
+    # step must read that stand-down instead of turning the empty issue task into a worker
+    # run on the pull request's branch.
+    claim = WF["jobs"]["claim"]
+    round_step = next(s for s in claim["steps"] if s.get("id") == "round")
+    assert round_step["env"]["SKIP"] == "${{ steps.claim.outputs.skip }}"
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), {}, ISSUE="7", PR="", SKIP="true")
+    assert proc.returncode == 0, proc.stderr
+    assert out == "go=false\n" and calls == []
 
 
 def push_step():
