@@ -1,0 +1,190 @@
+# Cloudflare spend alarm (owner, 2026-11-03: "setup a hard block or something?").
+# Cloudflare has no spend cap: budget alerts "do not pause or cap usage" and send
+# email only (https://developers.cloudflare.com/billing/manage/budget-alerts/).
+# These rules ask the Cloudflare GraphQL analytics API (data source
+# fleet-cloudflare, datasources/cloudflare.yaml) every 10 minutes and page the
+# owner's phone through the Telegram contact point below. The route is in
+# cloudflare-spend-contact.yaml (signal=cloudflare-spend). Every firing alert also
+# files a fleet-ops issue through the catch-all route.
+#
+# Lines (normal usage, GraphQL 2026-10-04..11-03: a normal day writes under 30k D1
+# rows, the busiest day 227k; Workers AI 351k neurons in 30 days; R2 19.7 GB now):
+#   D1 rows written: over 500,000 in the last 60 minutes, or 2,000,000 in 24 hours.
+#   Workers AI: over 100,000 neurons in 24 hours.
+#   R2 storage (all classes, all buckets): over 60 GB.
+# Grafana docs: https://grafana.com/docs/grafana/latest/alerting/set-up/provision-alerting-resources/file-provisioning/
+# The query model is not interpolated by provisioning, so ${__timeFrom} and
+# ${__timeTo} reach the Infinity backend, which expands them from each query's
+# relativeTimeRange. No usage in a window means no rows, which is Normal.
+# To switch a rule off: isPaused: true. To delete it: move its uid to
+# deleted-rules.yaml.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: hermes-urgent
+    receivers:
+      - uid: hermes-urgent-tg
+        type: telegram
+        disableResolveMessage: true
+        settings:
+          bottoken: $__file{/run/secrets/grafana-telegram-bot-token}
+          chatid: $__file{/run/secrets/grafana-telegram-home-channel}
+          message: |
+            {{ range .Alerts.Firing }}
+            {{ .Annotations.summary }} {{ .Annotations.description }}
+            {{ end }}
+
+groups:
+  - orgId: 1
+    name: cloudflare-spend
+    folder: fleet
+    interval: 10m
+    rules:
+      - uid: cf-d1-rows-written-hour
+        title: Cloudflare D1 rows written in 60 minutes
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model: &cf-total
+              refId: A
+              datasource: {type: yesoreyeram-infinity-datasource, uid: fleet-cloudflare}
+              type: graphql
+              source: url
+              url: https://api.cloudflare.com/client/v4/graphql
+              parser: backend
+              format: table
+              root_selector: data.viewer.accounts[0].d1AnalyticsAdaptiveGroups
+              columns: [{selector: sum.rowsWritten, text: value, type: number}]
+              url_options: &cf-d1-written
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { sum { rowsWritten } }
+                  } } }
+          - refId: B
+            datasourceUid: __expr__
+            model: &cf-last
+              datasource: {type: __expr__, uid: __expr__}
+              type: reduce
+              refId: B
+              expression: A
+              reducer: last
+              settings: {mode: dropNN}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: C
+              expression: B
+              conditions: [{evaluator: {params: [500000], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Cloudflare D1 wrote {{ with index $values "B" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} rows in the last 60 minutes (line: 500,000).'
+          description: 'A normal day writes under 30,000 rows. Find the job writing to D1 and stop it.'
+        labels: {severity: critical, signal: cloudflare-spend, product: d1-rows-written}
+        isPaused: false
+
+      - uid: cf-d1-rows-written-day
+        title: Cloudflare D1 rows written in 24 hours
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 86400, to: 0}
+            datasourceUid: fleet-cloudflare
+            model: *cf-total
+          - {refId: B, datasourceUid: __expr__, model: *cf-last}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: C
+              expression: B
+              conditions: [{evaluator: {params: [2000000], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Cloudflare D1 wrote {{ with index $values "B" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} rows in the last 24 hours (line: 2,000,000).'
+          description: 'A normal day writes under 30,000 rows. Find the job writing to D1 and stop it.'
+        labels: {severity: critical, signal: cloudflare-spend, product: d1-rows-written}
+        isPaused: false
+
+      - uid: cf-ai-neurons-day
+        title: Cloudflare Workers AI neurons in 24 hours
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 86400, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-total
+              root_selector: data.viewer.accounts[0].aiInferenceAdaptiveGroups
+              columns: [{selector: sum.totalNeurons, text: value, type: number}]
+              url_options:
+                <<: *cf-d1-written
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    aiInferenceAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { sum { totalNeurons } }
+                  } } }
+          - {refId: B, datasourceUid: __expr__, model: *cf-last}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: C
+              expression: B
+              conditions: [{evaluator: {params: [100000], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Cloudflare Workers AI used {{ with index $values "B" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} neurons in the last 24 hours (line: 100,000).'
+          description: 'Normal use is about 12,000 neurons a day; 10,000 a day are free. Find the caller and stop it.'
+        labels: {severity: critical, signal: cloudflare-spend, product: workers-ai}
+        isPaused: false
+
+      - uid: cf-r2-storage
+        title: Cloudflare R2 storage total
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-total
+              # One row per bucket and storage class; the sum is the account total.
+              root_selector: '$map([data.viewer.accounts[0]], function($a){{"total": $sum($a.r2StorageAdaptiveGroups.max.payloadSize)}})'
+              columns: [{selector: total, text: value, type: number}]
+              url_options:
+                <<: *cf-d1-written
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    r2StorageAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { bucketName storageClass } max { payloadSize } }
+                  } } }
+          - {refId: B, datasourceUid: __expr__, model: *cf-last}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: C
+              expression: B
+              conditions: [{evaluator: {params: [60000000000], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Cloudflare R2 holds {{ with index $values "B" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}B (line: 60 GB).'
+          description: 'Normal is about 20 GB. Find the bucket that grew and the job that writes to it.'
+        labels: {severity: critical, signal: cloudflare-spend, product: r2-storage}
+        isPaused: false

@@ -51,7 +51,13 @@ from urllib.parse import urlsplit
 
 import yaml
 
-URGENT = {}
+URGENT = {
+    # Money: Cloudflare has no spend cap (owner, 2026-11-03).
+    "Cloudflare D1 rows written in 60 minutes": "D1 runaway writes",
+    "Cloudflare D1 rows written in 24 hours": "D1 runaway writes",
+    "Cloudflare Workers AI neurons in 24 hours": "Workers AI runaway",
+    "Cloudflare R2 storage total": "R2 storage growth",
+}
 PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")
 CRITICAL_REPEAT = 3600
