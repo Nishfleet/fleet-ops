@@ -4,7 +4,14 @@
 # OpenCode and Command Code keep paid plans, served as router rows below.
 model_list:
 # Paid plans (owner roster, fleet-ops#10935, 2026-11-01): Command Code, OpenCode Go, z.ai, MiniMax, Alibaba.
-# Plain rows: no order, weight, row cooldown or 429 park. A failed call is retried, then falls back (router_settings).
+# Plain rows: no order, row cooldown or 429 park. A failed call is retried, then falls back (router_settings).
+# One exception (fleet-ops#12143): the worker-capable weights. simple-shuffle on 1.105.0 weights the pick as soon
+# as any healthy row of the group carries a weight and reads a weightless row beside one as 0, never picking it
+# (litellm/router_strategy/simple_shuffle.py), so every worker-capable row carries weight 1 and the two z.ai rows
+# carry 3. Share = k*w/(k*w+n-k) for k rows at w among n (the selection-share arithmetic in
+# docs/litellm-router-notes.md): z.ai k=2, w=3, n=7 draws 6/11 = 54.5% of new-session picks, so ordinary traffic
+# keeps the paid plan drawn instead of PaidPlanIdle paging on the next quiet day. A parked row leaves the draw,
+# so the healthy rows' shares rise while it is out.
 # Command Code carries z-ai/glm-5.3-flash only, 10 USD/day per row (fleet-ops#9744): a money cap, not a park.
 - model_name: worker-capable
   litellm_params:
@@ -14,6 +21,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -32,6 +40,7 @@ model_list:
     tags:
     - prepaid
     - commandcode
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -53,6 +62,7 @@ model_list:
     tags:
     - prepaid
     - opencode-go
+    weight: 1
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -85,6 +95,7 @@ model_list:
     tags:
     - prepaid
     - zai
+    weight: 3
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -98,6 +109,7 @@ model_list:
     tags:
     - prepaid
     - zai
+    weight: 3
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -116,6 +128,7 @@ model_list:
     tags:
     - prepaid
     - minimax
+    weight: 1
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -133,6 +146,7 @@ model_list:
     tags:
     - prepaid
     - minimax
+    weight: 1
   model_info:
     mode: chat
     supports_prompt_caching: true
