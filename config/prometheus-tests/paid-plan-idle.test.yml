@@ -278,7 +278,7 @@ tests:
             exp_annotations:
               summary: "paid plan https://api.z.ai/api/coding/paas/v4 has had no successful router response for 72 hours"
               description: "The router answered no successful response for paid-plan endpoint https://api.z.ai/api/coding/paas/v4 in the last 72 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
-      # The burst at t=40..49h sits inside the 72-hour window at t=64h: resolved.
+      # The burst at t=41..51h sits inside the 72-hour window at t=64h: resolved.
       - eval_time: 64h
         alertname: PaidPlanIdle
         exp_alerts: []
@@ -296,7 +296,7 @@ tests:
     input_series:
       - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.z.ai/api/coding/paas/v4",model_id="zai-glm53flash-worker-capable"}'
         # Last success at t=0, flat to the restart at t=8, no call for 21 hours,
-        # then the first post-restart burst at t=28..31h.
+        # then the first post-restart burst at t=29..33h.
         values: '282x8 _x20 1+2x4'
       - series: 'litellm_deployment_state{job="litellm",instance="127.0.0.1:4001",api_base="https://api.z.ai/api/coding/paas/v4",model_id="zai-glm53flash-worker-capable",litellm_model_name="glm-5.3-flash"}'
         values: '0x8'
@@ -312,7 +312,7 @@ tests:
             exp_annotations:
               summary: "paid plan https://api.z.ai/api/coding/paas/v4 has had no successful router response for 72 hours"
               description: "The router answered no successful response for paid-plan endpoint https://api.z.ai/api/coding/paas/v4 in the last 72 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
-      # The post-restart burst at t=28..31h sits inside the window at t=32h:
+      # The post-restart burst at t=29..33h sits inside the window at t=32h:
       # resolved.
       - eval_time: 32h
         alertname: PaidPlanIdle
@@ -328,7 +328,7 @@ tests:
   - interval: 1h
     input_series:
       - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.z.ai/api/coding/paas/v4",model_id="zai-glm53flashi-worker-capable"}'
-        # The pinned session's burst ends at t=33h; no z.ai call until t=112h.
+        # The pinned session's last z.ai call is at t=35h; the next lands at t=116h.
         values: '0+1x2 2x31 3x1 3x78 8x6'
       - series: 'litellm_deployment_state{job="litellm",instance="127.0.0.1:4001",api_base="https://api.z.ai/api/coding/paas/v4",model_id="zai-glm53flashi-worker-capable",litellm_model_name="glm-5.3-flash"}'
         # Through the eval times, so the resolve case below is cleared by the
@@ -337,12 +337,12 @@ tests:
       - series: 'litellm_deployment_success_responses_total{job="litellm",instance="127.0.0.1:4001",api_base="https://api.minimax.io/anthropic/v1/messages",model_id="minimax-m31-worker-capable"}'
         values: '0+20x120'
     alert_rule_test:
-      # A day and a half after z.ai's last call, with thousands of calls on the
+      # 45 hours after z.ai's last call, with thousands of calls on the
       # other plan: inside the window, quiet.
       - eval_time: 80h
         alertname: PaidPlanIdle
         exp_alerts: []
-      # 77 hours after z.ai's last call: the undrawn plan fires and the busy one
+      # 75 hours after z.ai's last call: the undrawn plan fires and the busy one
       # stays quiet.
       - eval_time: 110h
         alertname: PaidPlanIdle
@@ -353,7 +353,7 @@ tests:
             exp_annotations:
               summary: "paid plan https://api.z.ai/api/coding/paas/v4 has had no successful router response for 72 hours"
               description: "The router answered no successful response for paid-plan endpoint https://api.z.ai/api/coding/paas/v4 in the last 72 hours (plans: config/paid-plans.json). Callers moved on, or its rows in config/litellm-proxy.yaml are dead and the plan is being paid for nothing."
-      # The z.ai call at t=112h sits inside the window at t=116h (the busy
+      # The z.ai call at t=116h sits inside the window at t=116h (the busy
       # MiniMax series is still present): resolved.
       - eval_time: 116h
         alertname: PaidPlanIdle
