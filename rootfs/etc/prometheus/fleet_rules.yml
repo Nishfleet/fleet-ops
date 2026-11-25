@@ -259,6 +259,7 @@ groups:
       # draws landed on both z.ai rows (200s, no 429s, the plan's wall off): the fix
       # is still traffic, not a rule change, and the window stays 24 hours.
       # fleet-ops#12128 (seen live 2026-11-23): z.ai undrawn on a plainly busy day (529 worker-capable calls, all on the MiniMax rows); cleared on traffic, the rule and the 24-hour window unchanged — detail in the issue.
+      # fleet-ops#12143 (seen live 2026-11-25): z.ai again, both rows healthy and no refusal, the counter flat through the whole window while every other plan drew traffic; ten fresh-session probe draws landed 200s on both rows and cleared it, the rule and the 24-hour window unchanged.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)
