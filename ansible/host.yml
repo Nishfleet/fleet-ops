@@ -111,6 +111,11 @@
       # one below was retired: the images are digest-pinned and move only by
       # Renovate PR, so podman-auto-update(1) has nothing to pull.
       - podman-auto-update.timer
+      # The hand-installed second Sunday reboot (fleet-ops#12117), see `retired`
+      # below. The timer goes first: it is stopped and disabled before the
+      # service's files go, so it cannot trigger a reboot in between.
+      - fleet-reboot.timer
+      - fleet-reboot.service
     retired_user_units:
       # Every image is digest-pinned and moves only by Renovate PR, so podman's
       # auto-update timer has nothing to pull (podman-auto-update(1)).
@@ -168,6 +173,19 @@
       # collector the 2026-11-01 reset removed; the file left rootfs/ in
       # fleet-ops#11613, and the copy on /etc was removed by hand 2026-11-10.
       - /etc/claude-code/managed-settings.d/70-beacon-otlp.json
+      # A hand-installed second Sunday reboot at 04:00 IST (fleet-ops#12117):
+      # on the box only since 2026-11-16, never in this play, and its comment
+      # claims Unattended-Upgrade::Automatic-Reboot is off, but the repo's
+      # 52fleet-unattended-upgrades sets it true -- unattended-upgrades(8)
+      # reboots the box itself at the documented 03:30 IST Sunday window
+      # (docs/daily-update.md), so nothing here may add another one.
+      # wtmp shows both reboots fired 2026-11-22; the doubled maintenance
+      # window is what kills in-flight agent.yml runs mid-run (runner 6's job
+      # failed in the 03:30 one) and feeds the AgentRunFailureShare alert.
+      # Drop these two lines and the two unit lines in `retired_units` above
+      # once a deploy shows the files gone.
+      - /etc/systemd/system/fleet-reboot.timer
+      - /etc/systemd/system/fleet-reboot.service
     nish_home: "{{ '~nish' | expanduser }}"
     nish_env:
       HOME: "{{ nish_home }}"

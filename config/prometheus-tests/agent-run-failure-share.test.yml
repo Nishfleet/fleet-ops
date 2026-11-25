@@ -89,6 +89,51 @@ tests:
         alertname: AgentRunFailureShare
         exp_alerts: []
 
+  # The 2026-11-19 to 11-22 week that fired the alert (fleet-ops#12117): four
+  # failure increments over four days -- two one-off hosted-lane dispatch
+  # failures, one pi process death, and the 03:30 IST Sunday reboot that
+  # failed runner 6's job mid-run -- with the all-time counts flat after it
+  # (the fix retires the hand-installed second Sunday reboot that doubled the
+  # kill window). This replays the real scrape grid, t=0 being 2026-11-19
+  # 00:00 UTC and each step starting at the first 15-minute scrape that
+  # carried the new all-time count: 64 at 18h15m (Nov 19), 65 at 42h30m
+  # (Nov 20), 66 at 69h (Nov 21 21:00, the pi death), 67 at 70h15m (Nov 21
+  # 22:15, the reboot kill), 270th success at 91h45m (Nov 22 19:45), and
+  # nothing after. Firing at 93h30m (Nov 22 21:30 UTC, the live alert fired
+  # 21:29; one failure of two finished runs -- the 270th success landed in the
+  # same bracket) and quiet again at 94h30m (22:30 UTC), once the 67th failure
+  # has left the last 24-hour window -- proving the alert resolves on its own
+  # when no new failures land.
+  - interval: 15m
+    input_series:
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="success"}'
+        values: '265x72 266x103 267x93 268 269x94 270x277'
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="failure"}'
+        values: '63x72 64x97 65x104 66x4 67x364'
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="timed_out"}'
+        values: '0x640'
+      - series: 'github_workflow_runs{job="agent-runs",conclusion="startup_failure"}'
+        values: '0x640'
+    alert_rule_test:
+      - eval_time: 93h30m
+        alertname: AgentRunFailureShare
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "more than 2% of finished agent runs failed two days running"
+              description: "50% of finished agent.yml runs failed in the last 24 hours, and over 2% the 24 hours before. Find what fails most, fix it, and prove the share fell. Runs: https://github.com/Nishfleet/fleet-ops/actions/workflows/agent.yml"
+      # The 67th failure has left the last window (its carrier was Nov 21
+      # 22:15, inside the last bracket only until 94h15m): 0 of 1 finished run
+      # today, so the alert is quiet, while the day before is still 100%.
+      - eval_time: 94h30m
+        alertname: AgentRunFailureShare
+        exp_alerts: []
+      # It stays quiet: the counts are flat, so no window can turn over 2%.
+      - eval_time: 119h
+        alertname: AgentRunFailureShare
+        exp_alerts: []
+
   # No run finished for two days (dispatch paused): 0 of 0 is no share, so quiet.
   - interval: 15m
     input_series:
