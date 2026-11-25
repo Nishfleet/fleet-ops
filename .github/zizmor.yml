@@ -5,3 +5,9 @@ rules:
     config:
       policies:
         "*": hash-pin
+        # The lane's ticket check (fleet-ops#11949) calls review.yml by ref, not by hash:
+        # the callee job exists only after the change merges, so a hash pin could never be
+        # bumped ahead of the merge. Scoped to this repo, and the reviewer runner group
+        # already accepts only review.yml on main.
+        # https://docs.zizmor.sh/audits/#unpinned-uses
+        "Nishfleet/fleet-ops/*": ref-pin
