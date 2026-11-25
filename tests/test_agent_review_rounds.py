@@ -1,9 +1,11 @@
 """The lane answers the reviewer bot or the repository owner on its own PRs, at most 3 rounds
-answered (rounds 1 and 2 by the regular builder, round 3 by the senior builder, engine=claude,
-fleet-ops#11964; a fourth labels the PR needs-owner), and obeys the pause.
+answered (round 1 by the pi builder, round 2 by claude-sonnet-5-5 and round 3 by
+claude-opus-5-5 on engine=claude; the senior round began it, fleet-ops#11964, rounds 2 and 3
+name their model, fleet-ops#12057; a fourth labels the PR needs-owner), and obeys the pause.
 
-fleet-ops#11964: the senior round's work job reads engine=claude and lands on the Claude pool's
-`senior` runner, and review.yml reads the PR's "agent: senior builder" comment to pick review-fable.
+fleet-ops#11964: a Claude round's work job reads engine=claude and lands on the Claude pool's
+`senior` runner, and review.yml reads the round comments naming the model to pick review-fable
+(a dispatched round keeps engine=pi in its run name, so its comments are what mark it).
 
 global-standing-rules.md: the builder answers each finding, the same reviewer signs off, a
 finding it keeps open goes to the owner, hard cap 3 review rounds per PR. While
@@ -156,9 +158,15 @@ def test_the_bots_latest_verdict_runs_on_that_verdict_only(tmp_path):
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert "go=true" in out and "ref=agent/issue-7" in out
-    task = out.split("\n", 1)[1]
+    # Round 2 is the Claude engine on Sonnet 5.5, named in the step output and in the
+    # round comment (fleet-ops#12057).
+    lines = out.split("\n")
+    assert lines[:2] == ["engine=claude", "model=claude-sonnet-5-5"]
+    task = "\n".join(lines[2:]).split("\n", 1)[1]
     assert task.startswith("Answer review round 2 on #12\n\nFrom nishfleet-approver:\nfix the gate\n")
     assert "old finding" not in out and "stranger" not in out
+    assert ["api", "repos/o/r/issues/12/comments", "-f",
+            "body=agent: answering review round 2 (claude-sonnet-5-5): https://github.com/o/r/actions/runs/1"] in calls
     assert labelled(calls) == []
 
 
@@ -190,7 +198,9 @@ def test_the_owners_request_on_an_older_head_runs_next_to_the_bots_on_this_head(
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert "go=true" in out and "ref=agent/issue-7" in out
-    task = out.split("\n", 1)[1]
+    lines = out.split("\n")
+    assert lines[:2] == ["engine=claude", "model=claude-sonnet-5-5"]
+    task = "\n".join(lines[2:]).split("\n", 1)[1]
     # Two heads, two rounds: the owner's request on the old head is still open next to the
     # bot's on this one, because each reviewer's latest verdict is what counts.
     assert task.startswith("Answer review round 2 on #12\n\nFrom nish3451:\nold finding\n\n"
@@ -208,10 +218,11 @@ def test_three_change_request_heads_go_to_the_senior_builder(tmp_path, last, log
     reviews = [review("CHANGES_REQUESTED", OLDER, "first"), review("CHANGES_REQUESTED", OLD, "second"), last]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
-    # engine=claude rides GITHUB_OUTPUT ahead of the task block.
+    # engine=claude and the round's model ride GITHUB_OUTPUT ahead of the task block;
+    # round 3 is Opus 5.5 (fleet-ops#12057).
     lines = out.split("\n")
-    assert lines[0] == "engine=claude" and "go=true" in out and "ref=agent/issue-7" in out
-    task = "\n".join(lines[1:]).split("\n", 1)[1]
+    assert lines[:2] == ["engine=claude", "model=claude-opus-5-5"] and "go=true" in out and "ref=agent/issue-7" in out
+    task = "\n".join(lines[2:]).split("\n", 1)[1]
     assert task.startswith(f"{SENIOR_TASK}\n\nAnswer review round 3 on #12\n\nFrom {login}:\n")
     assert senior_comment(calls)
     assert labelled(calls) == []
@@ -229,6 +240,15 @@ def test_four_change_request_heads_go_to_the_owner_instead_of_running(tmp_path):
     assert not senior_comment(calls)
 
 
+def test_round_1_stays_on_the_pi_builder_and_names_no_model(tmp_path):
+    # fleet-ops#12057: round 1 keeps the pi builder — no engine and no model in the step
+    # output, and no round comment names a Claude model.
+    proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data([review("CHANGES_REQUESTED")]), ISSUE="7", PR="12")
+    assert proc.returncode == 0, proc.stderr
+    assert out.startswith("task<<") and "engine=" not in out and "model=" not in out
+    assert not any(c[:2] == ["api", "repos/o/r/issues/12/comments"] and "claude-" in c[-1] for c in calls)
+
+
 def test_change_requests_from_both_on_two_heads_leave_a_third_round_of_room(tmp_path):
     # The bot and the owner on one head count once, so four change-request reviews are
     # still only two rounds (fleet-ops#11987).
@@ -237,6 +257,7 @@ def test_change_requests_from_both_on_two_heads_leave_a_third_round_of_room(tmp_
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert "go=true" in out and "Answer review round 2 on #12" in out
+    assert "model=claude-sonnet-5-5" in out
     assert labelled(calls) == []
 
 
@@ -269,16 +290,21 @@ RED_COMMENT = ["api", "repos/o/r/issues/12/comments", "-f",
 
 
 def test_a_red_head_with_a_stale_change_request_still_runs_the_worker(tmp_path):
+    # One earlier change-request head plus this red head are round 2: the Claude engine
+    # on Sonnet 5.5 answers it (fleet-ops#12057).
     reviews = [review("CHANGES_REQUESTED", OLD)]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews, failing=("ci",)), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     assert "go=true" in out and "ref=agent/issue-7" in out
-    task = out.split("\n", 1)[1]
+    lines = out.split("\n")
+    assert lines[:2] == ["engine=claude", "model=claude-sonnet-5-5"]
+    task = "\n".join(lines[2:]).split("\n", 1)[1]
     assert task.startswith(f"The CI on #12 is red on {SHA}; the failed jobs are: ci")
     assert "run-proof" in task
     # The open change request rides along with the red CI: the worker answers both.
     assert "From nishfleet-approver:\nfinding" in task
-    assert RED_COMMENT in calls
+    assert ["api", "repos/o/r/issues/12/comments", "-f",
+            f"body=agent: answering red CI on {SHA} (ci, claude-sonnet-5-5): https://github.com/o/r/actions/runs/1"] in calls
     assert labelled(calls) == []
 
 
@@ -290,15 +316,16 @@ def test_a_red_head_on_a_fresh_pr_runs_too(tmp_path):
 
 def test_a_red_head_after_two_change_request_heads_runs_the_senior_builder(tmp_path):
     # Two change-request heads plus this red head are three answered rounds: the senior
-    # builder answers them (engine=claude, fleet-ops#11964).
+    # builder answers them (engine=claude on Opus 5.5, fleet-ops#11964 and #12057).
     reviews = [review("CHANGES_REQUESTED", OLDER, "first"), review("CHANGES_REQUESTED", OLD, "second")]
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data(reviews, failing=("ci",)), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
     lines = out.split("\n")
-    assert lines[0] == "engine=claude" and "go=true" in out and "ref=agent/issue-7" in out
-    task = "\n".join(lines[1:]).split("\n", 1)[1]
+    assert lines[:2] == ["engine=claude", "model=claude-opus-5-5"] and "go=true" in out and "ref=agent/issue-7" in out
+    task = "\n".join(lines[2:]).split("\n", 1)[1]
     assert task.startswith(f"{SENIOR_TASK}\n\nThe CI on #12 is red on {SHA}; the failed jobs are: ci")
-    assert RED_COMMENT in calls
+    assert ["api", "repos/o/r/issues/12/comments", "-f",
+            f"body=agent: answering red CI on {SHA} (ci, claude-opus-5-5): https://github.com/o/r/actions/runs/1"] in calls
     assert senior_comment(calls)
     assert labelled(calls) == []
 
@@ -312,11 +339,14 @@ def test_a_fourth_red_head_in_a_row_goes_to_the_owner(tmp_path):
 
 def test_a_third_red_head_in_a_row_runs_the_senior_builder(tmp_path):
     # Two earlier "answering red CI" rounds plus this red head are three answered rounds:
-    # the senior builder answers them (engine=claude, fleet-ops#11964).
+    # the senior builder answers them (engine=claude on Opus 5.5, fleet-ops#11964 and #12057).
     proc, out, calls = run_step(tmp_path, step("claim", "round"), round_data([], failing=("ci",), red_answers=2), ISSUE="7", PR="12")
     assert proc.returncode == 0, proc.stderr
-    assert "go=true" in out and "engine=claude" in out
-    assert RED_COMMENT in calls and senior_comment(calls)
+    lines = out.split("\n")
+    assert lines[:2] == ["engine=claude", "model=claude-opus-5-5"] and "go=true" in out
+    assert ["api", "repos/o/r/issues/12/comments", "-f",
+            f"body=agent: answering red CI on {SHA} (ci, claude-opus-5-5): https://github.com/o/r/actions/runs/1"] in calls
+    assert senior_comment(calls)
     assert labelled(calls) == []
 
 
@@ -375,6 +405,19 @@ def test_a_senior_round_runs_the_claude_engine_on_the_senior_runner():
     assert WF["jobs"]["claim"]["outputs"]["engine"] == "${{ steps.round.outputs.engine }}"
     assert work["env"]["ENGINE"] == "${{ needs.claim.outputs.engine || inputs.engine || 'pi' }}"
     assert work["runs-on"] == ["self-hosted", "${{ (needs.claim.outputs.engine || inputs.engine) == 'claude' && 'senior' || 'agent' }}"]
+
+
+# fleet-ops#12057: the round names its model (round 2 claude-sonnet-5-5, round 3
+# claude-opus-5-5), the claim job carries it to the work job, and drive() passes it to
+# claude -p; a hand-started engine=claude dispatch sets no model, so the work job's env
+# names the default, and the account default is never picked up.
+# https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/pass-job-outputs
+# https://code.claude.com/docs/en/cli-reference
+def test_a_claude_rounds_model_rides_from_the_round_to_the_claude_call():
+    assert WF["jobs"]["claim"]["outputs"]["model"] == "${{ steps.round.outputs.model }}"
+    assert WF["jobs"]["work"]["env"]["MODEL"] == "${{ needs.claim.outputs.model || 'claude-sonnet-5-5' }}"
+    worker = next(s for s in WF["jobs"]["work"]["steps"] if s.get("name") == "Worker")["run"]
+    assert 'claude -p --model "$MODEL"' in worker
 
 
 # upstream: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability

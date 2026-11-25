@@ -64,7 +64,7 @@ def work(tmp_path):
     return tmp_path
 
 
-def run_worker(work, engine, verdict=None, run_id=1000, stubs=None):
+def run_worker(work, engine, verdict=None, run_id=1000, stubs=None, model="claude-sonnet-5-5"):
     for name in ("claude", "pi"):
         stub = work / "bin" / name
         if stubs and name in stubs:
@@ -84,7 +84,10 @@ def run_worker(work, engine, verdict=None, run_id=1000, stubs=None):
            "DEFAULT_BRANCH": "main",
            # The claude arm reads its seat from fleet-claude's own home and picks the seat
            # by run id parity.
-           "HOME": str(work / "home"), "GITHUB_RUN_ID": str(run_id)}
+           "HOME": str(work / "home"), "GITHUB_RUN_ID": str(run_id),
+           # The work job's job-level env (agent.yml, fleet-ops#12057): the model the
+           # round named, which drive() passes to claude -p.
+           "MODEL": model}
     # Actions runs a `run:` step that sets no `shell:` key as `bash -e {0}`; match it:
     # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepsshell
     return subprocess.run(["bash", "-e", "-c", worker_step()], env=env, capture_output=True, text=True, check=False)
@@ -95,6 +98,19 @@ def test_an_engine_that_prints_nothing_fails_the_step(work, engine):
     proc = run_worker(work, engine)
     assert proc.returncode != 0
     assert f"::error::the {engine} engine printed nothing" in proc.stdout
+
+
+def test_the_claude_engine_is_called_with_the_rounds_model(work):
+    # fleet-ops#12057: drive() names the model on the claude call, so the account default
+    # is never picked up; the round's model rides the work job's MODEL env (round 2 names
+    # claude-sonnet-5-5, round 3 claude-opus-5-5).
+    # https://code.claude.com/docs/en/cli-reference
+    seen = 'cat > /dev/null\nprintf \'%s\n\' "$@" > "$RUNNER_TEMP/argv"\necho verdict'
+    proc = run_worker(work, "claude", stubs={"claude": seen}, model="claude-opus-5-5")
+    assert proc.returncode == 0, proc.stderr
+    argv = (work / "argv").read_text().splitlines()
+    assert argv[argv.index("--model") - 1] == "-p"
+    assert argv[argv.index("--model") + 1] == "claude-opus-5-5"
 
 
 @pytest.mark.parametrize("engine", ["claude", "pi"])

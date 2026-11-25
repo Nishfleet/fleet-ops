@@ -102,6 +102,7 @@ jobs:
       default: ${{ steps.repo.outputs.default }}
       go: ${{ steps.round.outputs.go }}
       engine: ${{ steps.round.outputs.engine }}
+      model: ${{ steps.round.outputs.model }}
     steps:
       - name: App token
         id: app-token
@@ -180,8 +181,9 @@ jobs:
           # conclusion "failure" names the dead job. All rounds ride the same cap of 3
           # answered rounds: each distinct change-request head, each "answering red CI"
           # comment this step left on the PR, and this red head itself count one round;
-          # rounds 1 and 2 go to the regular builder, round 3 to the senior builder, and
-          # a fourth labels the PR needs-owner and runs nothing.
+          # round 1 stays on the pi builder, round 2 goes to Sonnet 5.5 and round 3 to
+          # Opus 5.5 on the Claude engine, and a fourth labels the PR needs-owner and
+          # runs nothing.
           # https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
           # https://docs.github.com/en/rest/issues/comments#list-issue-comments
           rounds=$(jq '[.[] | select(.state == "CHANGES_REQUESTED") | .commit_id] | unique | length' "$RUNNER_TEMP/reviews.json")
@@ -202,18 +204,27 @@ jobs:
             gh api "repos/$REPO/issues/$PR/comments" -f body="agent: review round $rounds still asks for changes; three rounds were answered, the third by the senior builder, so the owner decides." > /dev/null
             echo go=false >> "$GITHUB_OUTPUT"; exit 0
           fi
-          # The third answered round goes to the senior builder (fleet-ops#11964, owner
-          # 2026-11-13): the work job reads engine=claude and lands on the Claude pool's
-          # `senior` runner. The comment marks the round, so review.yml hands the
-          # re-review to review-fable.
+          # Rounds 2 and 3 go to the Claude engine, the model named in the step output
+          # and in the round comment, never left to the account default (fleet-ops#12057,
+          # owner 2026-11-16: "2nd step on sonnet then?", "3rd on opus"): round 2 to
+          # claude-sonnet-5-5, round 3 to claude-opus-5-5, which the work job lands on
+          # the Claude pool's `senior` runner (fleet-ops#11964). A dispatched round keeps
+          # engine=pi in its run name, so the comments naming the model are what mark the
+          # head Claude-built for review.yml's review-fable.
+          model=''
           senior=''
-          if [ "$rounds" -eq 3 ]; then
+          if [ "$rounds" -ge 2 ]; then
             echo "engine=claude" >> "$GITHUB_OUTPUT"
-            senior=1
-            gh api "repos/$REPO/issues/$PR/comments" -f body="agent: senior builder takes round 3: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
+            model=claude-sonnet-5-5
+            if [ "$rounds" -eq 3 ]; then
+              model=claude-opus-5-5
+              senior=1
+              gh api "repos/$REPO/issues/$PR/comments" -f body="agent: senior builder takes round 3 ($model): $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
+            fi
+            echo "model=$model" >> "$GITHUB_OUTPUT"
           fi
           if [ -n "$failing" ]; then
-            gh api "repos/$REPO/issues/$PR/comments" -f body="agent: answering red CI on $sha ($failing): $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
+            gh api "repos/$REPO/issues/$PR/comments" -f body="agent: answering red CI on $sha ($failing${model:+, $model}): $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
             eof="RED_$(openssl rand -hex 16)"
             { echo "task<<$eof"
               if [ "$senior" ]; then echo "Two earlier answers did not close this. Fix every open finding below, or say in the commit message why a finding is wrong."; echo; fi
@@ -221,7 +232,7 @@ jobs:
               if [ -n "$findings" ]; then echo; echo "$findings"; fi
               echo "$eof"; echo "ref=$ref"; echo go=true; } >> "$GITHUB_OUTPUT"; exit 0
           fi
-          gh api "repos/$REPO/issues/$PR/comments" -f body="agent: answering review round $rounds: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
+          gh api "repos/$REPO/issues/$PR/comments" -f body="agent: answering review round $rounds${model:+ ($model)}: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
           eof="REVIEW_$(openssl rand -hex 16)"
           { echo "task<<$eof"
             if [ "$senior" ]; then echo "Two earlier answers did not close this. Fix every open finding below, or say in the commit message why a finding is wrong."; echo; fi
@@ -261,8 +272,8 @@ jobs:
     needs: claim
     if: needs.claim.outputs.go == 'true'
     # engine=claude goes to the Claude pool's `senior` label (tasks/runners.yml), everything else to `agent`.
-    # A senior round sets engine in the claim job (fleet-ops#11964), so a dispatched
-    # engine=claude and a senior round both land here.
+    # Rounds 2 and 3 set engine in the claim job (fleet-ops#12057; the senior round began
+    # it, fleet-ops#11964), so a dispatched engine=claude and a Claude round both land here.
     # https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/using-labels-with-self-hosted-runners
     # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability
     runs-on: [self-hosted, "${{ (needs.claim.outputs.engine || inputs.engine) == 'claude' && 'senior' || 'agent' }}"]
@@ -273,6 +284,10 @@ jobs:
       proof: ${{ steps.bundle.outputs.proof }}
     env:
       ENGINE: ${{ needs.claim.outputs.engine || inputs.engine || 'pi' }}
+      # The round names its model, so the account default is never picked up (fleet-ops#12057):
+      # a hand-started engine=claude dispatch sets no model and lands on Sonnet 5.5.
+      # https://code.claude.com/docs/en/cli-reference
+      MODEL: ${{ needs.claim.outputs.model || 'claude-sonnet-5-5' }}
       BASE: ${{ needs.claim.outputs.base }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -332,7 +347,9 @@ jobs:
             token=$(seat_token "$seat")
             [ -n "$token" ] || { echo "seat $seat holds no token"; return 1; }
             echo "::add-mask::$token"
-            CLAUDE_CODE_OAUTH_TOKEN="$token" claude -p --permission-mode dontAsk --settings /etc/claude-code/roles/lane-worker.json --setting-sources project,local < "$RUNNER_TEMP/packet.md" | tee "$out"
+            # --model names the round's model, never the account default (fleet-ops#12057).
+            # https://code.claude.com/docs/en/cli-reference
+            CLAUDE_CODE_OAUTH_TOKEN="$token" claude -p --model "$MODEL" --permission-mode dontAsk --settings /etc/claude-code/roles/lane-worker.json --setting-sources project,local < "$RUNNER_TEMP/packet.md" | tee "$out"
           }
           case "$ENGINE" in
             # Role file, dontAsk (fleet-ops#11878, owner 2026-11-10): skip-permissions flags are
