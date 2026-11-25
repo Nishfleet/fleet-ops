@@ -21,7 +21,10 @@
 # telemetry env and the enabled plugins (README, "Agent autonomy drop-in", "Beacon OTLP drop-in" and
 # "Claude plugin drop-ins"). The box-wide file those merge into,
 # managed-settings.json, has its own task below (README, "Managed-settings
-# defaults"). A drop-in
+# defaults"). Its env block sets DISABLE_AUTOUPDATER, the vendor's switch for
+# staying on the version the operator provides, so the box's one Claude Code
+# install (tasks/mcp-and-agent-clis.yml, fleet-ops#12040) never grows a
+# second copy in a session's home. A drop-in
 # that does not parse stops Claude Code from starting on the whole box, so
 # validate refuses any file that is not a JSON object before it reaches
 # /etc. /etc/claude-code is not in owned_dirs: the directory is installed

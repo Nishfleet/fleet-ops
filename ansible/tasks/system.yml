@@ -207,7 +207,10 @@
 # not listed: LibreOffice and Pillow above depend on them, and removing a
 # library removes the packages that depend on it.
 # rootlesskit and slirp4netns were the retired eval engine dockerd-eval's
-# runtime, with only that unit calling them (fleet-ops#11853).
+# runtime, with only that unit calling them (fleet-ops#11853). claude-code is
+# the apt copy of Claude Code (fleet-ops#12040): the box keeps one install, the
+# native one tasks/mcp-and-agent-clis.yml declares, per the vendor's setup docs
+# (https://code.claude.com/docs/en/setup, one install method per machine).
 - name: Remove packages nothing on the box uses
   ansible.builtin.apt:
     name:
@@ -253,6 +256,7 @@
       - xfonts-scalable
       - rootlesskit
       - slirp4netns
+      - claude-code
     state: absent
     purge: true
     autoremove: true

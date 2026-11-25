@@ -1,9 +1,9 @@
 """The Claude engine's runners run as their own user, and its seat tokens stay in that home (fleet-ops#11958).
 
 The pool is built like the review pool: its own user fleet-claude, its own home, two runners,
-and the two seat files copied there and nowhere a shared-pool job can read. `claude` comes from
-the system package; no task installs anything into fleet-claude's home, and no PATH entry names
-a folder under it.
+and the two seat files copied there and nowhere a shared-pool job can read. `claude` is the
+root-owned native install on the system PATH (tasks/mcp-and-agent-clis.yml); no task installs
+anything into fleet-claude's home, and no PATH entry names a folder under it.
 https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
 https://code.claude.com/docs/en/authentication#generate-a-long-lived-token
 """

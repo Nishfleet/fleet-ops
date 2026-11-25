@@ -133,8 +133,6 @@
   loop:
     - {src: AGENTS.md, dest: .pi/agent/AGENTS.md}
     - {src: config/pi-models.json, dest: .pi/agent/models.json}
-    - {src: config/claude-agents/helper.md, dest: .claude/agents/helper.md}
-    - {src: config/claude-agents/scout.md, dest: .claude/agents/scout.md}
     - {src: config/user-tmpfiles.d/agent-worktrees.conf, dest: .config/user-tmpfiles.d/agent-worktrees.conf}
     - {src: credentials/app-manifest.json, dest: .config/fleet-worker/app-manifest.json}
   loop_control:
