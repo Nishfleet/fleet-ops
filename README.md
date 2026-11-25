@@ -41,7 +41,7 @@ is one line and updates every gate at once.
   gate turns the gate off and a malformed one makes the relay refuse new sends). It also fails when the roster names an agent the relay does not have.
 - The locked listener unit itself is already in the repo and installed by the host playbook:
   `rootfs/etc/systemd/system/tincan-listen-claude-vps.service` (fleet-ops#9985).
-- The daily update (`ansible/update.yml`) restarts that system unit
+- The Sunday tool update (`ansible/update.yml`) restarts that system unit
   after a tincan upgrade once its control group holds only its own process, as root.
 - Install or re-run: `sudo systemctl start fleet-host-config.service`. Read it:
   `jq . ~/.local/state/tincan-relay/approval.json`. Live agents:
