@@ -24,12 +24,23 @@
 # 2026-11-04, so a charge is caught the morning after it starts, not within the
 # hour. That is the cost of covering every service with one rule.
 #
-# The window is 35 days because the API returns nothing unless the range holds
-# the billing anchor day (the 6th). A window that holds the previous anchor
-# returns both periods, so the last day of a period is still read the next day.
+# The window is 31 days, the widest a usage query may ask for: the from/to
+# pages of the account-usage API say "The maximum date range is 31 days"
+# (https://developers.cloudflare.com/api/resources/billing/subresources/usage/),
+# and v1's from/to pages require the range to hold the billing anchor day (the
+# 6th) or the API returns nothing. 31 days is both bounds at once: two 6ths are
+# at most 31 days apart, so every 31-day window holds one, which keeps the
+# closing period in view across the roll-over and still reads the last day of a
+# period the next day. It was 35 days, four days past the cap, so the read asked
+# for more than the endpoint documents (fleet-ops#12147). That read is what
+# failed on 2026-11-26: the API answered 503 and 504 for every window measured,
+# 5 to 35 days, with a token that verifies active and still lists accounts, so
+# the rule reported DatasourceError for the hour rather than a cost.
 # The root selector keeps only the latest day, one row per service, so each row
 # becomes one alert instance labelled service and day. If the API returns no
 # rows at all, the endpoint changed (it is alpha), so the rule alerts on NoData.
+# tests/test_cloudflare_billed_cost_rule.py holds the window at 31 days and the
+# selector on the latest day.
 apiVersion: 1
 
 groups:
@@ -43,7 +54,7 @@ groups:
         condition: B
         data:
           - refId: A
-            relativeTimeRange: {from: 3024000, to: 0}
+            relativeTimeRange: {from: 2678400, to: 0}
             datasourceUid: fleet-cloudflare
             model:
               refId: A
