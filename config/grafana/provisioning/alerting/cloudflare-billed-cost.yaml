@@ -24,12 +24,33 @@
 # 2026-11-04, so a charge is caught the morning after it starts, not within the
 # hour. That is the cost of covering every service with one rule.
 #
-# The window is 35 days because the API returns nothing unless the range holds
-# the billing anchor day (the 6th). A window that holds the previous anchor
-# returns both periods, so the last day of a period is still read the next day.
+# The window is 31 days, the widest a usage query may ask for: the from/to
+# pages of the account-usage API say "The maximum date range is 31 days"
+# (https://developers.cloudflare.com/api/resources/billing/subresources/usage/),
+# and v1's from/to pages require the range to hold the billing anchor day (the
+# 6th) or the API returns nothing. 31 days is both bounds at once: two 6ths are
+# at most 31 days apart, so every 31-day window holds one, which keeps the
+# closing period in view across the roll-over and still reads the last day of a
+# period the next day. It was 35 days, four days past the cap, so the read asked
+# for more than the endpoint documents; the window now sits at the cap, which
+# the endpoint's own docs justify.
+#
+# The 35-to-31 change did not cause and does not fix the 2026-11-26
+# DatasourceError: that was Cloudflare's own API outage that day ("Cloudflare
+# Dashboard and Cloudflare API service issues", major, www.cloudflarestatus.com,
+# investigated 16:03Z, fix implemented 16:39Z, and the rule's 15:49Z read
+# answered 504 Gateway Timeout inside that window). During the outage the API
+# answered 503 and 504 for every window measured, 5 to 35 days, with a token
+# that verifies active and still lists accounts, and the edge came back before
+# the data path: reads without the billing anchor day returned fast and empty
+# while reads covering the 6th still timed out past 60 s while the incident sat
+# in monitoring. The rule reports DatasourceError for that hour rather than a
+# cost and resumes on the next good hour; no config change fixes an outage.
 # The root selector keeps only the latest day, one row per service, so each row
 # becomes one alert instance labelled service and day. If the API returns no
 # rows at all, the endpoint changed (it is alpha), so the rule alerts on NoData.
+# tests/test_cloudflare_billed_cost_rule.py holds the read inside the
+# documented 31-day cap.
 apiVersion: 1
 
 groups:
@@ -43,7 +64,7 @@ groups:
         condition: B
         data:
           - refId: A
-            relativeTimeRange: {from: 3024000, to: 0}
+            relativeTimeRange: {from: 2678400, to: 0}
             datasourceUid: fleet-cloudflare
             model:
               refId: A
