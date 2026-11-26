@@ -95,17 +95,29 @@
   when: shared_next != shared_now
   diff: false
 
+# CLAUDE_CODE_CONFIG_LOCK_WAIT_MS is Claude Code's own knob for a config call
+# that races another Claude Code process holding the user config's lock: without
+# it the CLI gives up at once and exits nonzero, naming the variable as the
+# remedy ("If other Claude Code processes use that file, they may have kept it
+# locked: ... with CLAUDE_CODE_CONFIG_LOCK_WAIT_MS=60000 set to wait up to a
+# minute"). The box runs Claude sessions all day (the tincan listener, hermes
+# jobs), and the deploy that landed at 2026-11-26 17:03 UTC lost that race: the
+# unguarded remove below failed and took the whole run down with it
+# (fleet-ops#12149, the SystemUnitFailed alert for fleet-host-config.service),
+# leaving the entry in place for the next deploy. Waiting up to a minute for the
+# lock lets both calls get through a live session instead; the timeouts below
+# clear the wait budget.
 - name: Read Claude Code's drive entry
   become: true
   become_user: nish
-  environment: "{{ nish_env }}"
+  environment: "{{ nish_env | combine({'CLAUDE_CODE_CONFIG_LOCK_WAIT_MS': '60000'}) }}"
   ansible.builtin.command:
     argv: ["{{ nish_home }}/.local/bin/claude", mcp, get, drive]
   register: drive_entry
   changed_when: false
   failed_when: false
   check_mode: false
-  timeout: 60
+  timeout: 120
 
 # The drive filesystem server is retired here (fleet-ops#11862): it duplicates
 # Claude Code's own file tools and its npx launcher is not on a detached job's
@@ -117,11 +129,11 @@
 - name: Drop the retired drive entry from Claude Code's user config  # noqa: no-changed-when
   become: true
   become_user: nish
-  environment: "{{ nish_env }}"
+  environment: "{{ nish_env | combine({'CLAUDE_CODE_CONFIG_LOCK_WAIT_MS': '60000'}) }}"
   ansible.builtin.command:
     argv: ["{{ nish_home }}/.local/bin/claude", mcp, remove, drive, --scope, user]
   when: drive_entry.rc == 0
-  timeout: 60
+  timeout: 120
 
 - name: Read Hermes' config
   become: true
