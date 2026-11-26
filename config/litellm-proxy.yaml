@@ -328,7 +328,9 @@ model_list:
 router_settings:
   routing_strategy: simple-shuffle
   # One task = one model: Pi sends x-litellm-session-id and session_affinity pins it to a row (fleet-ops#9015).
-  optional_pre_call_checks: ["prompt_caching", "session_affinity"]
+  # prompt_caching is out (fleet-ops#12143, docs/litellm-router-notes.md note 22): its prefix pin held the
+  # whole group on one row for days while z.ai drew 0 of 529 calls on 2026-11-23. Rollback: re-add the word.
+  optional_pre_call_checks: ["session_affinity"]
   # Pins and counters live in Redis because the proxy runs 2 workers; host/port/password, never redis_url.
   redis_host: 127.0.0.1
   redis_port: 6379
