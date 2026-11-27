@@ -34,6 +34,26 @@
 
 # The DNS drop-in (fleet-ops#12151): resolved.conf(5) drop-ins override the main
 # resolved.conf; resolved reads them only at start, so the handler restarts it.
+#
+# systemd-resolved runs as its own user (systemd-resolve, systemd-resolved.service
+# User=), and this unit runs with UMask=0077, so copy creating a missing dest
+# directory leaves it owner-only: the 2026-11-27 11:26Z run made
+# /etc/systemd/resolved.conf.d 0700, resolved then could not read the drop-in it
+# had just installed, and the fallback resolvers stayed inert (SystemUnitFailed,
+# fleet-ops#12154). This task names the mode the service needs, on the first run
+# and on every run after, so the copy below never lands in a 0700 directory, and
+# a repair notifies the same restart: the file below can come out unchanged when
+# only the directory's mode was wrong, and resolved reads the drop-in only at
+# start, so without the notify the repair would sit unread until the next boot.
+- name: Make the resolved drop-in directory readable by the service
+  ansible.builtin.file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart systemd-resolved
+
 - name: Install the resolved DNS drop-in
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/systemd/resolved.conf.d/"
