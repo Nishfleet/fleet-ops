@@ -52,3 +52,18 @@ def test_host_yml_installs_the_login_profile() -> None:
     assert 'src: "{{ rootfs }}/etc/zsh/zprofile"' in task
     assert "dest: /etc/zsh/zprofile" in task
     assert "mode: preserve" in task
+
+
+def test_host_play_makes_the_resolved_dropin_dir_readable_by_the_service() -> None:
+    """systemd-resolved runs as systemd-resolve, and the unit's UMask=0077 makes
+    copy create a missing dest directory owner-only, so a 0700
+    /etc/systemd/resolved.conf.d hides the DNS drop-in from the service
+    (fleet-ops#12154). The play must name the directory's mode itself."""
+    play = ansible_host.text()
+    start = play.index("Make the resolved drop-in directory readable by the service")
+    task = play[start:play.index("- name:", start)]
+    assert "path: /etc/systemd/resolved.conf.d" in task
+    assert 'mode: "0755"' in task
+    # A repair must reach the service: the drop-in file can be unchanged when only
+    # the directory's mode was wrong, and resolved reads drop-ins only at start.
+    assert "notify: Restart systemd-resolved" in task
