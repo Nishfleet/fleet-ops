@@ -1,7 +1,9 @@
 # Tether (fleet-ops#9980, phase 1): a system unit with its own service user,
-# because per-user units silently ignore sandbox settings on this box. This
-# run never enables or starts tether-agent.service: it stays disabled until
-# the tasks below put a pinned, checksummed release at /opt/tether/current
+# because per-user units silently ignore sandbox settings on this box. Since
+# fleet-ops#12062 the unit is the fleet-tether quadlet (a rootful Podman
+# container that keeps tether's uid, so its nft fence still matches),
+# rendered and enabled below. Nothing starts tether until the tasks below
+# put a pinned, checksummed release at /opt/tether/current
 # (root-owned, so the service user cannot rewrite its own code). The marker
 # file is the lasting off-switch: while it exists this run creates nothing
 # for tether, removes its firewall rule and keeps the unit disabled and
@@ -13,15 +15,40 @@
     path: "{{ tether_off_marker }}"
   register: tether_off
 
-# tether-agent.service is enabled by hand (this run never enables it), so
-# the release-change restart handler fires only when that wants symlink
-# exists. Read-only, so it runs with and without the marker.
-- name: Look for an enabled tether-agent unit
+# fleet-tether.service is enabled by the run below, so on the run that first
+# enables it the unit starts fresh anyway and the release-change restart
+# handler fires only on later runs, when this wants symlink exists.
+# Read-only, so it runs with and without the marker.
+- name: Look for an enabled tether quadlet
   tags: [tether, tether-release]
   ansible.builtin.stat:
-    path: /etc/systemd/system/multi-user.target.wants/tether-agent.service
+    path: /etc/systemd/system/multi-user.target.wants/fleet-tether.service
     follow: false
   register: tether_agent_enabled
+
+# fleet-ops#12062: membership in the docker group is root access — a member
+# mounts the whole host filesystem into any container and runs as root in
+# it. Only root may talk to the engine, so the account that the old per-user
+# Cua flow needed is dropped here; every engine read this play makes (the
+# Space block below, docker inspect) runs as root instead. Guarded twice, so
+# a box without the group or without the membership does nothing here:
+# gpasswd(1) is the stock tool for removing one member of one group.
+- name: Look for the docker group
+  tags: [tether]
+  ansible.builtin.command:
+    argv: [getent, group, docker]
+  register: tether_docker_group
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Remove nish from the docker group
+  tags: [tether]
+  ansible.builtin.command:
+    argv: [gpasswd, -d, nish, docker]
+  register: tether_docker_del
+  changed_when: tether_docker_del.rc == 0
+  when: tether_docker_group.rc == 0 and 'nish' in (tether_docker_group.stdout.split(':')[3] | default('')).split(',')
 
 - name: Create the tether group
   tags: [tether]
@@ -302,7 +329,7 @@
       # The running agent keeps the old release until it restarts (v0.1.2
       # landed on 23 Oct and the unit kept running 0.1.1), so the link move
       # notifies the restart handler.
-      notify: Restart tether-agent after its release changed
+      notify: Restart the tether quadlet after its release changed
       ignore_errors: "{{ ansible_check_mode }}"
 
     # Keep the new release and the one `current` pointed at before: one
@@ -429,18 +456,17 @@
 # and read for its live address and token. Docker restart policy is `no`,
 # so a reboot leaves it stopped, and a start gives it a new published port
 # while the Cua daemon keeps answering with the old one; `--embedded` reads
-# Docker's live port. These tasks run as nish, like the other Cua tasks, and
-# carry no tether tag (CI's `--tags tether --check` cannot become nish). A
-# failure is recorded here and fails the run at its last tether task, so the
-# rest of the host config still applies. tether.nft is then rendered with no
+# Docker's live port. These tasks run as root since fleet-ops#12062: the
+# engine's socket is root-only now (the docker group lost its last member,
+# above), and the CLI talks to the same daemon either way. They carry no
+# tether tag (CI's `--tags tether --check` runs unprivileged, where the
+# commands are skipped). A failure is recorded here and fails the run at its
+# last tether task, so the rest of the host config still applies. tether.nft is then rendered with no
 # Space port (it fails closed), the env file stays as it was, and the last
 # rendered fence file (tether-space.nft) stays as it was: it is rendered
 # inside the block, only from an address read this run, and never removed.
 # The waits add up to about 110 s, well inside the deploy job's 10 minutes.
 - name: Ready tether's own Cua Space, or record why it failed
-  become: true
-  become_user: nish
-  environment: "{{ nish_env }}"
   when: not tether_off.stat.exists
   block:
     - name: Wait until the Cua daemon answers
@@ -522,8 +548,7 @@
     # veth pair on docker0. NET_RAW cannot be dropped through Cua (it sets no
     # CapDrop), but a runsc container's root has no NET_RAW or NET_ADMIN, and
     # the interface match holds either way.
-    - name: Read the peer interface index of tether's Cua Space container  # noqa: partial-become
-      become_user: root
+    - name: Read the peer interface index of tether's Cua Space container
       ansible.builtin.command:
         argv: ["{{ nsenter_cli }}", -t, "{{ (tether_space_net.stdout | trim | from_json).pid | int }}", -n, "{{ ip_cli }}", -j, link, show, eth0]
       register: tether_space_peer
@@ -557,8 +582,7 @@
     # the token read and the env file, so a new address is fenced within
     # seconds. A step above that fails never reaches this: the last rendered
     # file stays. Not tagged tether and not tied to the tether marker.
-    - name: Render the fence around tether's Cua Space  # noqa: partial-become
-      become_user: root
+    - name: Render the fence around tether's Cua Space
       ansible.builtin.template:
         src: "{{ tether_space_nft_src }}"
         dest: "{{ tether_space_nft }}"
@@ -567,8 +591,7 @@
         mode: "0644"
         validate: "{{ nft_cli }} -c -f %s"
 
-    - name: Load the fence around tether's Cua Space  # noqa: partial-become
-      become_user: root
+    - name: Load the fence around tether's Cua Space
       ansible.builtin.command:
         argv: ["{{ nft_cli }}", -f, "{{ tether_space_nft }}"]
       changed_when: false
@@ -636,9 +659,6 @@
 # the switch contains the Space too. Nothing here removes the fence file. The
 # listing may fail (daemon down: the Space is then down too); the stop may not.
 - name: List the Cua Spaces while the tether marker exists
-  become: true
-  become_user: nish
-  environment: "{{ nish_env }}"
   ansible.builtin.command:
     argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
   register: tether_space_marker_ls
@@ -647,9 +667,6 @@
   when: tether_off.stat.exists
 
 - name: Stop tether's Cua Space while the tether marker exists  # noqa: no-changed-when
-  become: true
-  become_user: nish
-  environment: "{{ nish_env }}"
   ansible.builtin.command:
     argv: ["{{ cua_cli }}", spaces, stop, "{{ tether_space_ref }}"]
   when:
@@ -672,7 +689,7 @@
   diff: false
   ignore_errors: "{{ ansible_check_mode }}"
   when: not tether_off.stat.exists and tether_space_port is defined and tether_space_token is defined
-  notify: Restart tether-agent after its release changed
+  notify: Restart the tether quadlet after its release changed
 
 - name: Remove tether's Cua Space env file while the marker exists
   tags: [tether]
@@ -692,6 +709,27 @@
     key: tether
     fail_key: false
   when: not tether_off.stat.exists
+
+# The quadlet, rendered into podman's system search path
+# (https://docs.podman.io/en/v4.9.3/markdown/podman-systemd.unit.5.html).
+# It mounts the release tree read-only and keeps tether's uid, so a release
+# change is still just a restart; a uid is stable, so this renders the same
+# every run. Notified onto the restart handler too, so a quadlet change (a
+# digest bump) restarts the running container onto it.
+- name: Render the tether quadlet
+  tags: [tether]
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/templates/fleet-tether.container.j2"
+    dest: /etc/containers/systemd/fleet-tether.container
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    tether_uid: "{{ getent_passwd.tether[1] }}"
+    tether_gid: "{{ getent_passwd.tether[2] }}"
+  when: not tether_off.stat.exists and getent_passwd is defined and getent_passwd.tether is not none
+  notify: Restart the tether quadlet after its release changed
+  ignore_errors: "{{ ansible_check_mode }}"
 
 - name: Read the host's addresses and bridges
   tags: [tether]
@@ -751,10 +789,27 @@
 - name: Keep tether disabled and stopped while the marker exists
   tags: [tether]
   ansible.builtin.systemd_service:
-    name: tether-agent.service
+    name: fleet-tether.service
     enabled: false
     state: stopped
     daemon_reload: true
   when: tether_off.stat.exists
-  # Under --check the copy above did not really install the unit yet.
+  # Under --check the quadlet above was not really rendered yet.
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# The quadlet's [Install] WantedBy=multi-user.target is applied by systemctl
+# enable, after daemon-reload has let the generator turn the rendered file
+# into fleet-tether.service. A cold start pulls the image; the unit's
+# TimeoutStartSec=900 covers it. First run after a release install starts it
+# on that release, which is why the stat task above gates only the restart
+# handler, not this.
+- name: Enable and start the tether quadlet
+  tags: [tether]
+  ansible.builtin.systemd_service:
+    name: fleet-tether.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not tether_off.stat.exists
+  # Under --check the quadlet above was not really rendered yet.
   ignore_errors: "{{ ansible_check_mode }}"

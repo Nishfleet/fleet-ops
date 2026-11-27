@@ -1,0 +1,75 @@
+# Tether as a rootful Podman quadlet (fleet-ops#12062): the retired
+# tether-agent.service ran the pinned release straight off the host with the
+# system node. This unit runs the same release in a container whose process
+# keeps tether's uid, so the nft fence keyed on that uid
+# (templates/tether.nft.j2) still matches. Rendered by tasks/tether.yml into
+# /etc/containers/systemd/, the system search path podman-systemd.unit(5)
+# names: https://docs.podman.io/en/v4.9.3/markdown/podman-systemd.unit.5.html
+[Unit]
+Description=tether agent (Podman)
+# Same shape the retired unit had: the fence keyed on tether's uid must load
+# before tether runs. tasks/tether.yml enables the unit once the pinned,
+# checksummed release is in place; installing the release never enables it.
+Wants=network-online.target
+After=network-online.target nftables.service
+Requires=nftables.service
+ConditionPathExists=/opt/tether/current/dist/index.js
+StartLimitIntervalSec=3600
+StartLimitBurst=5
+
+[Container]
+# Digest-pinned like the other quadlets (the tag is only a label); Renovate
+# bumps the digest.
+Image=docker.io/library/node:22.23.3@sha256:69a5713e7f4997e96d579aafd78734810e0dac0dd5ee4621d72c27a2891a4088
+ContainerName=fleet-tether
+# Host networking, like the old unit: no published port, no bridge.
+Network=host
+# tether keeps its own uid, so the fence rule `meta skuid {{ tether_uid }}`
+# keeps matching. Rootful podman, no user namespace: host uid = container
+# uid, and /var/lib/tether stays owned by the same uid it always was
+# (podman-systemd.unit(5): without UserNS the uid/gid are the host's).
+User={{ tether_uid }}
+Group={{ tether_gid }}
+WorkingDir=/var/lib/tether
+# The whole release tree, read-only: a release change lands when the unit
+# restarts (the handler in ansible/host.yml), exactly like the old ExecStart
+# did from the same /opt/tether/current path.
+Volume=/opt/tether:/opt/tether:ro
+# Durable state stays where it is on the host (fleet-ops#9980). DO NOT move
+# this mount: Tether's DurableObject state lives in it.
+Volume=/var/lib/tether:/var/lib/tether
+# The retired unit's RuntimeDirectory=tether, as quadlet's equivalent.
+Tmpfs=/run/tether:mode=0700,uid={{ tether_uid }},gid={{ tether_gid }}
+# The env files stay on the host and are read by systemd into the service
+# environment, `-` prefixes and all, and EnvironmentHost hands that
+# environment to the container. fleet-litellm-proxy@.container avoids
+# --env-host because the --user manager environment is huge; this system
+# unit's environment is only these files plus NODE_ENV.
+EnvironmentHost=true
+NoNewPrivileges=true
+
+[Service]
+# The unit runs as tether and the container process is its child (podman
+# runs with --cgroups=split, so the container lands in a child cgroup the
+# unit's MemoryMax bounds), which is also why the old unit's
+# IPAddressDeny/IPAddressAllow block is not carried over: podman itself needs
+# non-local egress for a cold pull (TimeoutStartSec below), and tether's own
+# egress is fenced by the nft rule on its uid.
+User={{ tether_uid }}
+Group={{ tether_gid }}
+SyslogIdentifier=tether
+UMask=0077
+Environment=NODE_ENV=production
+EnvironmentFile=-/etc/tether/tether.env
+EnvironmentFile=-/etc/tether/photon.env
+EnvironmentFile=-/etc/tether/calendar.env
+EnvironmentFile=-/etc/tether/cua.env
+MemoryHigh=512M
+MemoryMax=1G
+Restart=on-failure
+RestartSec=5
+# A cold start pulls the image first (podman-systemd.unit(5) suggests 900s).
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
