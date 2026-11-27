@@ -111,14 +111,7 @@ scrape_configs:
   # visitor. The Access application recovered the same evening and the probe
   # went green again; the job stays, because this probe is the detector for
   # exactly that. Deleting it would only have silenced the symptom.
-  # SiteDown fired for five instances at once, 2026-11-27 10:32Z
-  # (fleet-ops#12151): both provider recursive resolvers stopped answering
-  # from 10:11Z to 10:35Z, every outbound lookup from the box timed out
-  # (probe_dns_lookup_time_seconds pinned at the module's 10s), and all
-  # twelve site probes failed together — the sites were never down; local
-  # jobs were untouched. systemd-resolved rotated back onto a live resolver
-  # and the probes went green with no fleet change; the probe stays the
-  # detector, and it is exactly what turns a box-side DNS outage into a page.
+  # SiteDown fired for five probes at once 2026-11-27 10:32Z (fleet-ops#12151): the box's own resolvers went silent; the fix is the independent fallback DNS in resolved.conf.d/60-fleet-dns.conf.
   - job_name: site-0509
     metrics_path: /probe
     params:

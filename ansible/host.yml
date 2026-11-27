@@ -405,6 +405,13 @@
         name: systemd-journald.service
         state: restarted
 
+    # The DNS drop-in is read only at start (fleet-ops#12151). Restart is quick
+    # and keeps the stub listener up for the lookups the rest of the play makes.
+    - name: Restart systemd-resolved
+      ansible.builtin.systemd_service:
+        name: systemd-resolved.service
+        state: restarted
+
     - name: Load audit rules  # noqa: no-changed-when
       ansible.builtin.command: /usr/sbin/augenrules --load
 
