@@ -32,6 +32,17 @@
     mode: preserve
   notify: Restart journald
 
+# The DNS drop-in (fleet-ops#12151): resolved.conf(5) drop-ins override the main
+# resolved.conf; resolved reads them only at start, so the handler restarts it.
+- name: Install the resolved DNS drop-in
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/resolved.conf.d/"
+    dest: /etc/systemd/resolved.conf.d/
+    owner: root
+    group: root
+    mode: preserve
+  notify: Restart systemd-resolved
+
 - name: Install tmpfiles.d entries
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/tmpfiles.d/"

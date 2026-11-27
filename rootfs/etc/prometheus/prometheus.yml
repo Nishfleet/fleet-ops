@@ -111,6 +111,7 @@ scrape_configs:
   # visitor. The Access application recovered the same evening and the probe
   # went green again; the job stays, because this probe is the detector for
   # exactly that. Deleting it would only have silenced the symptom.
+  # SiteDown fired for five probes at once 2026-11-27 10:32Z (fleet-ops#12151): the box's own resolvers went silent; the fix is the independent fallback DNS in resolved.conf.d/60-fleet-dns.conf.
   - job_name: site-0509
     metrics_path: /probe
     params:
