@@ -259,6 +259,15 @@ groups:
       # draws landed on both z.ai rows (200s, no 429s, the plan's wall off): the fix
       # is still traffic, not a rule change, and the window stays 24 hours.
       # fleet-ops#12128 (seen live 2026-11-23; #12143 repeated it on 2026-11-25, both z.ai rows healthy and no refusal, ten fresh-session probe draws cleared it): z.ai undrawn on a plainly busy day (529 worker-capable calls, all on the MiniMax rows) — the prompt_caching pre-call check pinned the group's shared prefix on one row (docs/litellm-router-notes.md note 22, tests/test_router_paid_plan_draw.py); dropping that check (fleet-ops#12143) puts the plain-row draw back; the rule and the 24-hour window unchanged.
+      # fleet-ops#12158 (seen live 2026-11-28): CommandCode, #10327's mechanism once
+      # more. It fired at the 24-hour mark (11:53 UTC) with both rows healthy (state 0,
+      # no 429 all window) and the plan's last counted success on the 2026-11-27 11:53
+      # UTC window edge: the window's worker-capable calls had been dealt to MiniMax
+      # and z.ai, and the session pin held each run to its first row. Fresh-session
+      # probe draws on both CommandCode rows answered 200 and the page cleared on the
+      # counter's next rise (12:13 UTC), no rule change; the window stays 24 hours.
+      # The issue also filed a blank instance bullet (this alert's only identity label
+      # is api_base), so the filing template now falls back to api_base too.
       # https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
       # https://prometheus.io/docs/prometheus/latest/querying/functions/ (increase,
       # present_over_time)

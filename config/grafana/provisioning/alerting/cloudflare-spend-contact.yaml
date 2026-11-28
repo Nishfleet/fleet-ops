@@ -33,6 +33,9 @@ contactPoints:
               {{- end -}}
 
 
+  # The per-instance bullet names the alert's identity label. A paid plan carries
+  # api_base and neither name nor instance, so PaidPlanIdle filed a blank bullet
+  # and its issue did not say which plan had gone quiet (fleet-ops#12158).
   - orgId: 1
     name: prometheus-alert-dispatch
     receivers:
@@ -49,7 +52,7 @@ contactPoints:
               {{- with index .Alerts 0 -}}
               {{- $$units := "" -}}
               {{- range $$.Alerts -}}
-              {{- $$units = printf "%s- %s (started firing %s UTC)\n" $$units (or .Labels.name .Labels.instance) (.StartsAt.Format "2006-01-02 15:04:05") -}}
+              {{- $$units = printf "%s- %s (started firing %s UTC)\n" $$units (or .Labels.name .Labels.instance .Labels.api_base) (.StartsAt.Format "2006-01-02 15:04:05") -}}
               {{- end -}}
               {{- coll.Dict "title" (printf "alert: %s" .Labels.prom_alertname)
                      "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` is firing for %d instance(s):\n\n%s\nSource: the Grafana prometheus-alerts rule, fleet-ops#10300. One issue covers every instance of this alert name (fleet-ops#10327): fix the one cause behind them.\n\nFix the cause, prove the alert resolved, then close this issue. If the failed unit is on the polkit start list, re-run it with `systemctl start <unit>` once your fix is live, and show `Result=success`." .Annotations.summary .Annotations.description .Labels.prom_alertname (len $$.Alerts) $$units)
