@@ -81,6 +81,19 @@ def test_paid_plan_idle_alert_covers_every_paid_router_endpoint():
     assert not uncovered, f"paid plans PaidPlanIdle does not watch: {uncovered}. Add the plan's api_base to its regex in rootfs/etc/prometheus/fleet_rules.yml; plans marked `via` are out of scope"
 
 
+def test_paid_plan_idle_issue_names_the_plan():
+    """The Prometheus filing template must fall back to api_base: PaidPlanIdle carries
+    api_base and no name/instance, so fleet-ops#12158's issue filed a blank instance
+    bullet and did not say which plan had gone quiet."""
+    contact = yaml.safe_load((ROOT / "config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml").read_text())
+    points = {c["name"]: c for c in contact["contactPoints"]}
+    tpl = points["prometheus-alert-dispatch"]["receivers"][0]["settings"]["payload"]["template"]
+    assert re.search(r"\(or [^)\n]*\.Labels\.api_base[^)\n]*\)", tpl), (
+        "the prometheus-alert-dispatch instance bullet must fall back to .Labels.api_base in its or-chain, "
+        "or a PaidPlanIdle issue does not name its plan (fleet-ops#12158)"
+    )
+
+
 REMOVED_PROVIDER_HOSTS = frozenset({"api.cline.bot", "ollama.com"})
 
 
